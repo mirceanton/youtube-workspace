@@ -19,7 +19,7 @@ repository settings on GitHub, in this order of importance.
 | 6 | Settings, Actions, General | Workflow permissions can stay on the default; every workflow declares its own `permissions`. Keep "Allow GitHub Actions to create and approve pull requests" off | Least privilege |
 | 7 | Renovate | The shared preset `github>mirceanton/renovate-config` is used by `.renovaterc.json`. The Renovate app must be installed on this repository; merging `.renovaterc.json` to `main` completes its onboarding PR (`renovate/configure`) | Dependency updates |
 | 8 | After the first release | ghcr.io packages `youtube-workspace-web` and `youtube-workspace-mcp` are created private and linked to this repository by the publish job. Change their visibility under the package settings if you want them public, and keep "Actions access" set to this repository with Write | Pulling images |
-| 9 | When pull requests start | Branch protection on `main`: require the checks `Typecheck, lint and format`, `Workflow syntax (actionlint)`, `Unit and integration tests`, `Build every package and the web UI`, and the `Build and smoke-test` and `Trivy` jobs | Merge gate |
+| 9 | When pull requests start | Branch protection on `main`: require the checks `Typecheck, lint and format`, `Workflow syntax (actionlint)`, `Unit and integration tests`, `Build every package and the web UI`, `Build and smoke-test web`, `Build and smoke-test mcp`, `Dependency audit (pnpm)`, `Trivy filesystem scan`, `Trivy image scan (web)`, `Trivy image scan (mcp)` and `Secret scan (git history)` | Merge gate |
 
 Everything else (the `GITHUB_TOKEN`, the ghcr.io login, the build cache) uses the automatic token.
 
@@ -34,10 +34,10 @@ actionlint versions a developer gets from `mise install`.
 | Workflow | Runs on | Jobs |
 | --- | --- | --- |
 | `lint.yaml` | push, pull request, manual | `actionlint` over the workflow files; `pnpm lint` (`tsc -b` + oxlint) and `pnpm format:check` |
-| `test.yaml` | push, pull request, manual | Starts a `postgres:16` service (healthcheck `pg_isready`), exports `MIGRATION_DATABASE_URL`, runs `pnpm migrate` twice (the second run must be a no-op), then `pnpm test` (unit and integration) |
+| `test.yaml` | push, pull request, manual | Starts a `postgres:16` service (healthcheck `pg_isready`), exports `MIGRATION_DATABASE_URL`, runs `pnpm migrate` twice (the second run must be a no-op), then `pnpm test` (unit and integration, every vitest project) and `pnpm --filter @ytw/policy test`, which runs with `--coverage` and enforces the 100 % gate that the root run cannot (vitest ignores per-package thresholds there) |
 | `build.yaml` | push, pull request, manual | `pnpm build` (every package and the Vite bundle) and a check that the entry points exist. This is the PRD "build on every pull request" gate |
 | `security.yaml` | push, pull request, manual, **weekly** | `audit` (`pnpm audit --audit-level=high`), `trivy-fs` (lockfile vulnerabilities, secrets, Dockerfile misconfiguration), `trivy-image` (builds each image and scans it), `secrets` (gitleaks CLI over the whole git history, findings redacted), `codeql` and `dependency-review` (see step 4 above; skipped otherwise) |
-| `docker.yaml` | push, pull request, manual, **release published** | `verify` builds both images for linux/amd64, runs `docker/smoke.sh`, and (on `main`, on request, and for now on `claude/**`) also builds linux/arm64 under QEMU without publishing. `publish` runs only for a published release: it builds amd64 and arm64, adds an SBOM and max-mode provenance, and pushes to ghcr.io |
+| `docker.yaml` | push, pull request, manual, **release published** | `verify` builds both images for linux/amd64, runs `docker/smoke.sh`, and (on `main` and on request) also builds linux/arm64 under QEMU without publishing. `publish` runs only for a published release: it builds amd64 and arm64, adds an SBOM and max-mode provenance, and pushes to ghcr.io |
 | `release.yaml` | **manual only** (nightly schedule disabled) | `verify-ci` requires the latest `lint`, `test`, `build`, `security` and `docker` runs for the commit to have succeeded; `release` creates the next semantic version and GitHub release from the conventional commits since the last release |
 
 Pushes to `claude/**` run the same workflows as pushes to `main`, because the integration branch
@@ -105,6 +105,24 @@ using the image's own `HEALTHCHECK`, and that `/healthz` returns `status: ok`, t
 the stamped version and commit. The container gets `docker/smoke.env`. When a service starts
 requiring another environment variable at boot, add a placeholder value for it to that file in the
 same change; the failure shows the service's own "Invalid environment" message.
+
+## Extending CI
+
+- **Integration tests** find Postgres through `MIGRATION_DATABASE_URL`
+  (`postgres://postgres:postgres@localhost:5432/youtube_workspace`, the superuser of the
+  `postgres:16` service). A test harness that creates one database per test file needs exactly that
+  privilege; if it wants a differently named variable, export it in the `env:` block of the `test`
+  job as well.
+- **A package with its own enforced coverage threshold** needs a separate step in `test.yaml`
+  (`pnpm --filter <package> test`, as for `@ytw/policy`), because the root `pnpm test` runs every
+  package as a vitest project and vitest ignores per-package thresholds there.
+- **A new required environment variable in a service** needs a placeholder in `docker/smoke.env`.
+- **A new workspace package** is picked up by every workflow and by the Docker build context
+  automatically (`pnpm-workspace.yaml` lists the folders); do not add its folder to `.dockerignore`.
+- **A new workflow** follows the pattern of the existing ones: pinned action SHAs with a version
+  comment, `permissions: { contents: read }` at the top, `persist-credentials: false` on checkout,
+  a `timeout-minutes`, and untrusted values (`github.event.*`) only through `env:`, never inside
+  `run:` scripts.
 
 ## Reproducing CI locally
 

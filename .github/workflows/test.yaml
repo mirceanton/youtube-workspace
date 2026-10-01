@@ -50,3 +50,8 @@ jobs:
         run: mise exec -- pnpm migrate
       - name: Run unit and integration tests
         run: mise exec -- pnpm test
+      # The root run loads every package as a vitest project, and vitest ignores per-package
+      # coverage thresholds there. The policy package enforces 100 % coverage (PLAN T20), so its
+      # own script, which runs with --coverage, is the one that gates it.
+      - name: Run the policy tests with the coverage gate
+        run: mise exec -- pnpm --filter @ytw/policy test

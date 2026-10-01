@@ -81,12 +81,13 @@ jobs:
           VERSION: ${{ steps.build-meta.outputs.version }}
         run: docker/smoke.sh "ytw-${TARGET}:ci" "$SERVICE" "$PORT" "$VERSION" "$GITHUB_SHA"
       # The arm64 image is only published with a release. Building it under QEMU on every push would
-      # be slow, so it is checked on main, on request, and (below) before a release is published.
+      # get slow as the dependency tree grows, so it is checked on main and on request (manual run
+      # with "multi-arch" ticked); the publish job below builds both platforms for every release.
       - name: Set up QEMU
-        if: ${{ inputs.multi-arch || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
+        if: ${{ inputs.multi-arch || github.ref == 'refs/heads/main' }}
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - name: Build image (linux/amd64 and linux/arm64, not published)
-        if: ${{ inputs.multi-arch || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
+        if: ${{ inputs.multi-arch || github.ref == 'refs/heads/main' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
