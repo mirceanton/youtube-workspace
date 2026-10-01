@@ -1,0 +1,60 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Keycloak smoke
+permissions: { contents: read }
+
+# Starts the Keycloak service from docker-compose.yml with the dev realm imported and runs a headless
+# login for both dev users against it (scripts/keycloak-smoke.sh). This is the only place the realm
+# export is proven against a real Keycloak: the agent sandbox cannot pull the image. Runs only when
+# something that can change the outcome changes, which includes Renovate's image bumps.
+# Pushes to claude/** are included because the integration branch has no pull request flow yet.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/keycloak-smoke.yaml"
+      - ".env.example"
+      - "dev/keycloak/**"
+      - "docker-compose.yml"
+      - "scripts/keycloak-smoke.sh"
+  push:
+    branches: ["main", "claude/**", "renovate/**"]
+    paths:
+      - ".github/workflows/keycloak-smoke.yaml"
+      - ".env.example"
+      - "dev/keycloak/**"
+      - "docker-compose.yml"
+      - "scripts/keycloak-smoke.sh"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Dev realm login flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint the shell scripts
+        run: shellcheck dev/keycloak/validate-realm.sh scripts/keycloak-smoke.sh
+      - name: Validate the realm export
+        run: dev/keycloak/validate-realm.sh
+      - name: Start Keycloak
+        # Healthy means the realm is imported and its discovery document is served.
+        run: docker compose up --detach --wait --wait-timeout 300 keycloak
+      - name: Log in as both dev users
+        run: scripts/keycloak-smoke.sh
+      - name: Show Keycloak state
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail 200 keycloak
+      - name: Stop Keycloak
+        if: always()
+        run: docker compose down --volumes
