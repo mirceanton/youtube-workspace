@@ -1,0 +1,84 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Release
+permissions: { contents: read }
+
+# Creates the next semantic version (from conventional commits) as a GitHub release. Publishing the
+# release triggers docker.yaml, which pushes the images to ghcr.io.
+#
+# DISABLED SCHEDULE: the nightly run stays off until the repository secrets BOT_APP_ID and
+# BOT_APP_PRIVATE_KEY exist and the owner has confirmed (docs/ci-cd.md). To turn it on, uncomment
+# the two `schedule` lines below. Until then the workflow only runs when started by hand, and a
+# manual run defaults to a dry run (nothing is tagged or released).
+on:
+  # schedule:
+  #   - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Dry run mode (no actual release)"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A release is only cut from a commit whose CI finished green. The workflows are the ones that
+  # ran for the push to main that produced this commit.
+  verify-ci:
+    name: Require green CI on this commit
+    if: ${{ github.repository_owner == 'mirceanton' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check the latest run of each CI workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          failed=0
+          for workflow in lint.yaml test.yaml build.yaml security.yaml docker.yaml; do
+            result=$(gh run list --repo "$REPOSITORY" --workflow "$workflow" --commit "$COMMIT" \
+              --event push --limit 1 --json status,conclusion \
+              --jq 'if length == 0 then "no run found" else .[0].status + "/" + (.[0].conclusion // "-") end')
+            echo "$workflow: $result"
+            if [ "$result" != "completed/success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::CI is not green for $COMMIT; not releasing."
+            exit 1
+          fi
+
+  release:
+    name: Release
+    needs: verify-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Generate Token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: "${{ secrets.BOT_APP_ID }}"
+          private-key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: "${{ steps.app-token.outputs.token }}"
+
+      - name: Release
+        uses: mirceanton/action-semver-release@fea37a9e8b01bdcba71c60327a8b02c6a0e844a5 # v3.0.2
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}

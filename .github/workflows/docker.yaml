@@ -1,0 +1,163 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Docker
+permissions: { contents: read }
+
+# Every push and pull request builds both images and smoke-tests them; nothing is published.
+# Images are pushed to ghcr.io only when a GitHub release is published (see release.yaml).
+# Pushes to claude/** are included because the integration branch has no pull request flow yet.
+on:
+  workflow_dispatch:
+    inputs:
+      multi-arch:
+        description: "Also build linux/arm64 under QEMU (slow); never publishes"
+        required: false
+        default: false
+        type: boolean
+  pull_request: { branches: ["main"] }
+  push: { branches: ["main", "claude/**", "renovate/**"] }
+  release:
+    types: ["published"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+jobs:
+  verify:
+    name: Build and smoke-test ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: web
+            service: web-server
+            port: 3000
+          - target: mcp
+            service: mcp
+            port: 3001
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compute build metadata
+        id: build-meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "$EVENT_NAME" = "release" ]; then
+            version="${TAG_NAME#v}"
+          else
+            version="0.0.0-ci.${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/${{ matrix.target }}.Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: ytw-${{ matrix.target }}:ci
+          build-args: |
+            APP_VERSION=${{ steps.build-meta.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=docker-${{ matrix.target }}
+          cache-to: type=gha,scope=docker-${{ matrix.target }},mode=max
+      - name: Smoke-test the image
+        env:
+          TARGET: ${{ matrix.target }}
+          SERVICE: ${{ matrix.service }}
+          PORT: ${{ matrix.port }}
+          VERSION: ${{ steps.build-meta.outputs.version }}
+        run: docker/smoke.sh "ytw-${TARGET}:ci" "$SERVICE" "$PORT" "$VERSION" "$GITHUB_SHA"
+      # The arm64 image is only published with a release. Building it under QEMU on every push would
+      # be slow, so it is checked on main, on request, and (below) before a release is published.
+      - name: Set up QEMU
+        if: ${{ inputs.multi-arch || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Build image (linux/amd64 and linux/arm64, not published)
+        if: ${{ inputs.multi-arch || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/${{ matrix.target }}.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          sbom: false
+          build-args: |
+            APP_VERSION=${{ steps.build-meta.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=docker-${{ matrix.target }}
+
+  publish:
+    name: Publish ${{ matrix.target }}
+    # Only a published release pushes images; forks have no registry credentials to use.
+    if: ${{ github.event_name == 'release' && github.repository_owner == 'mirceanton' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [web, mcp]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: "${{ github.event.release.tag_name }}"
+          persist-credentials: false
+      - name: Compute build metadata
+        id: build-meta
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: echo "version=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Login to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: "ghcr.io"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+      - name: Compute image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/mirceanton/youtube-workspace-${{ matrix.target }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/${{ matrix.target }}.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.build-meta.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          # Supply-chain metadata attached to the image index in the registry.
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=docker-${{ matrix.target }}

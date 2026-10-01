@@ -1,0 +1,52 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Test
+permissions: { contents: read }
+
+# Pushes to claude/** are included because the integration branch has no pull request flow yet.
+on:
+  workflow_dispatch: {}
+  pull_request: { branches: ["main"] }
+  push: { branches: ["main", "claude/**", "renovate/**"] }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit and integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A throwaway Postgres, as in docker-compose.yml. Integration tests create and drop their own
+    # uniquely named databases on it, so the superuser connection below is the one they need.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: youtube_workspace
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d youtube_workspace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 10s
+    env:
+      # Dev-only credentials of the service container above; nothing real is configured here.
+      MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/youtube_workspace
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+      - name: Apply migrations
+        run: mise exec -- pnpm migrate
+      - name: Apply migrations again (must be a no-op)
+        run: mise exec -- pnpm migrate
+      - name: Run unit and integration tests
+        run: mise exec -- pnpm test
