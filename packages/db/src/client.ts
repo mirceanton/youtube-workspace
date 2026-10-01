@@ -3,8 +3,8 @@
  * queries, and {@link withActor}, the transaction every mutation runs in. Conventions:
  * docs/database.md.
  */
-import { ACTOR_TYPES, type ActorType } from "@ytw/shared";
-import pg from "pg";
+import { ACTOR_TYPES, type ActorType } from "@ytw/shared/constants";
+import { Pool, type QueryResult, type QueryResultRow } from "pg";
 import { ValidationError, formatAllowed, toDbError } from "./errors.js";
 
 /** The fixed database roles created by migration 0001 (PRD 5, "Database roles"). */
@@ -40,10 +40,10 @@ export function sql(strings: TemplateStringsArray, ...values: unknown[]): SqlQue
 
 /** Anything that runs a query: a pool, a pooled client or a {@link ActorTx}. */
 export interface Queryable {
-  query<R extends pg.QueryResultRow = pg.QueryResultRow>(
+  query<R extends QueryResultRow = QueryResultRow>(
     query: string | SqlQuery,
     values?: unknown[],
-  ): Promise<pg.QueryResult<R>>;
+  ): Promise<QueryResult<R>>;
 }
 
 export interface CreatePoolOptions {
@@ -66,8 +66,8 @@ export interface CreatePoolOptions {
  * Creates the process's pool for its own role. Call {@link assertPoolRole} once at startup so a
  * `DATABASE_URL` that points at the wrong role (or a superuser) stops the process.
  */
-export function createPool(options: CreatePoolOptions): pg.Pool {
-  const pool = new pg.Pool({
+export function createPool(options: CreatePoolOptions): Pool {
+  const pool = new Pool({
     connectionString: options.connectionString,
     application_name: options.applicationName ?? options.role.replace("_", "-"),
     max: options.max ?? 10,
@@ -115,7 +115,11 @@ export interface Actor {
 
 /** The transaction handed to the {@link withActor} callback. Errors are already typed. */
 export interface ActorTx extends Queryable {
-  readonly actor: { readonly name: string; readonly type: ActorType; readonly tokenId: string | null };
+  readonly actor: {
+    readonly name: string;
+    readonly type: ActorType;
+    readonly tokenId: string | null;
+  };
 }
 
 /**
@@ -128,14 +132,13 @@ export interface ActorTx extends Queryable {
  * parameters, the transaction-level setting is a second line of defence.
  */
 export async function withActor<T>(
-  pool: pg.Pool,
+  pool: Pool,
   actor: Actor,
   fn: (tx: ActorTx) => Promise<T>,
 ): Promise<T> {
   if (!(ACTOR_TYPES as readonly string[]).includes(actor.type)) {
     // ytw_set_actor rejects it too; failing early names the valid values without a round trip.
     throw new ValidationError(
-      "validation",
       `actor_type ${JSON.stringify(actor.type)} is not valid; valid values: ${formatAllowed(ACTOR_TYPES)}`,
       { field: "actor_type", value: actor.type, allowed: [...ACTOR_TYPES] },
     );
@@ -147,10 +150,10 @@ export async function withActor<T>(
 
   const tx: ActorTx = {
     actor: normalized,
-    async query<R extends pg.QueryResultRow = pg.QueryResultRow>(
+    async query<R extends QueryResultRow = QueryResultRow>(
       query: string | SqlQuery,
       values?: unknown[],
-    ): Promise<pg.QueryResult<R>> {
+    ): Promise<QueryResult<R>> {
       if (finished) {
         throw new Error("withActor: the transaction has already finished");
       }

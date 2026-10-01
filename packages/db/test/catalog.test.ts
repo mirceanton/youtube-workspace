@@ -1,6 +1,6 @@
 // Catalog and privilege audit (PRD 5 "Database roles", PRD 9 "Security"). These tests run against
 // every migration in the directory, so they keep covering the schema as later tasks add to it.
-import { QUERY_SQL_TIMEOUT_MS } from "@ytw/shared";
+import { QUERY_SQL_TIMEOUT_MS } from "@ytw/shared/constants";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { APP_ROLES } from "../src/client.js";
 import { createTestDb, type TestDb } from "../src/testing.js";
@@ -17,7 +17,9 @@ afterAll(async () => {
 });
 
 /** Runs `statements` as the superuser inside a transaction that is always rolled back. */
-async function violationsAfter(statements: string): Promise<{ rule: string; object: string; detail: string }[]> {
+async function violationsAfter(
+  statements: string,
+): Promise<{ rule: string; object: string; detail: string }[]> {
   const client = await db.admin.connect();
   try {
     await client.query("BEGIN");
@@ -64,7 +66,11 @@ describe("catalog guard", () => {
     ],
     ["secret_table_location", "CREATE TABLE public.web_sessions (id int)", "public.web_sessions"],
     ["secret_table_location", "CREATE TABLE public.api_tokens (id int)", "public.api_tokens"],
-    ["app_role_owns_object", "CREATE TABLE owned (id int); ALTER TABLE owned OWNER TO ytw_web", "public.owned"],
+    [
+      "app_role_owns_object",
+      "CREATE TABLE owned (id int); ALTER TABLE owned OWNER TO ytw_web",
+      "public.owned",
+    ],
     ["app_role_membership", "GRANT pg_read_all_data TO ytw_readonly", "pg_read_all_data"],
     ["app_role_attributes", "ALTER ROLE ytw_mcp CREATEDB", "ytw_mcp"],
     [
@@ -91,9 +97,9 @@ describe("catalog guard", () => {
 
   it.each(scenarios)("reports %s for: %s", async (rule, statements, mention) => {
     const rows = await violationsAfter(statements);
-    const hits = rows.filter((row) => row.rule === rule);
-    expect(hits.length, JSON.stringify(rows)).toBeGreaterThan(0);
-    expect(hits.some((row) => `${row.object} ${row.detail}`.includes(mention)), JSON.stringify(hits)).toBe(true);
+    const reported = rows.map((row) => `${row.rule}: ${row.object} ${row.detail}`);
+    const escaped = mention.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    expect(reported).toContainEqual(expect.stringMatching(new RegExp(`^${rule}: .*${escaped}`)));
   });
 });
 
@@ -106,7 +112,7 @@ describe("application roles", () => {
       [APP_ROLES],
     );
     expect(rows).toEqual(
-      [...APP_ROLES].sort().map((rolname) => ({
+      APP_ROLES.toSorted().map((rolname) => ({
         rolname,
         rolsuper: false,
         rolcreaterole: false,
@@ -141,7 +147,9 @@ describe("application roles", () => {
     const web = db.pool("ytw_web");
     expect(
       await sqlstate(
-        web.query("INSERT INTO events (actor, actor_type, action) VALUES ('mallory', 'human', 'insert')"),
+        web.query(
+          "INSERT INTO events (actor, actor_type, action) VALUES ('mallory', 'human', 'insert')",
+        ),
       ),
     ).toBe("42501");
     expect(await sqlstate(web.query("UPDATE events SET actor = 'mallory'"))).toBe("42501");
@@ -177,7 +185,10 @@ describe("application roles", () => {
     );
     expect(definers.rows.length).toBeGreaterThan(0);
     for (const row of definers.rows) {
-      expect(row.config, row.fn).toContain("search_path=pg_catalog, public, pg_temp");
+      expect(row).toEqual({
+        fn: row.fn,
+        config: expect.arrayContaining(["search_path=pg_catalog, public, pg_temp"]),
+      });
     }
   });
 });
@@ -202,13 +213,17 @@ describe("ytw_readonly", () => {
     try {
       expect(
         await sqlstate(
-          client.query("INSERT INTO events (actor, actor_type, action) VALUES ('x', 'agent', 'insert')"),
+          client.query(
+            "INSERT INTO events (actor, actor_type, action) VALUES ('x', 'agent', 'insert')",
+          ),
         ),
       ).toBe("25006");
       await client.query("SET default_transaction_read_only = off");
       expect(
         await sqlstate(
-          client.query("INSERT INTO events (actor, actor_type, action) VALUES ('x', 'agent', 'insert')"),
+          client.query(
+            "INSERT INTO events (actor, actor_type, action) VALUES ('x', 'agent', 'insert')",
+          ),
         ),
       ).toBe("42501");
       expect(
@@ -216,7 +231,9 @@ describe("ytw_readonly", () => {
           client.query("SELECT ytw_log_event('x', 'agent', NULL, 'tool.call', NULL, NULL, '{}')"),
         ),
       ).toBe("42501");
-      expect(await sqlstate(client.query("SELECT ytw_set_actor('x', 'agent', NULL)"))).toBe("42501");
+      expect(await sqlstate(client.query("SELECT ytw_set_actor('x', 'agent', NULL)"))).toBe(
+        "42501",
+      );
     } finally {
       client.release(true);
     }
@@ -229,10 +246,12 @@ describe("ytw_readonly", () => {
     await db.admin.query("CREATE TABLE ytw_private.secret_fixture (token_hash text)");
     try {
       await db.admin.query("GRANT SELECT ON ytw_private.secret_fixture TO ytw_readonly");
-      expect(await sqlstate(readonly.query("SELECT * FROM ytw_private.secret_fixture"))).toBe("42501");
-      expect(await sqlstate(db.pool("ytw_web").query("SELECT * FROM ytw_private.secret_fixture"))).toBe(
+      expect(await sqlstate(readonly.query("SELECT * FROM ytw_private.secret_fixture"))).toBe(
         "42501",
       );
+      expect(
+        await sqlstate(db.pool("ytw_web").query("SELECT * FROM ytw_private.secret_fixture")),
+      ).toBe("42501");
     } finally {
       await db.admin.query("DROP TABLE ytw_private.secret_fixture");
     }
@@ -248,10 +267,10 @@ describe("ytw_readonly", () => {
         WHERE c.relname IN ('api_tokens', 'web_sessions') AND c.relkind IN ('r', 'p', 'v', 'm')`,
     );
     for (const row of rows) {
-      expect(row, row.relation).toMatchObject({ schema: "ytw_private", readable: false });
-      expect(await sqlstate(db.pool("ytw_readonly").query(`SELECT * FROM ${row.relation} LIMIT 1`))).toBe(
-        "42501",
-      );
+      expect(row).toEqual({ relation: row.relation, schema: "ytw_private", readable: false });
+      expect(
+        await sqlstate(db.pool("ytw_readonly").query(`SELECT * FROM ${row.relation} LIMIT 1`)),
+      ).toBe("42501");
     }
     const schema = await db.admin.query<{ usage: boolean }>(
       "SELECT has_schema_privilege('ytw_readonly', 'ytw_private', 'USAGE') AS usage",

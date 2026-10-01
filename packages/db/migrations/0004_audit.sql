@@ -64,11 +64,14 @@ CREATE TRIGGER events_no_truncate
 
 -- 3. The actor of the current transaction. Every mutating database function calls this first, with
 --    its own p_actor, p_actor_type, p_token_id parameters. The values live in transaction-local
---    settings (app.actor, app.actor_type, app.token_id) that ytw_audit() reads.
+--    settings (app.actor, app.actor_type, app.token_id) that ytw_audit() reads. SECURITY DEFINER
+--    only so that it may call ytw_raise() when withActor() calls it directly as an application
+--    role; it touches no table, and the settings it writes are ones any role could set itself.
 CREATE FUNCTION public.ytw_set_actor(p_actor text, p_actor_type text, p_token_id uuid)
 RETURNS void
 LANGUAGE plpgsql
 VOLATILE
+SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
@@ -164,11 +167,12 @@ $$;
 -- 5. The generic audit trigger. Attach it to every business table:
 --      CREATE TRIGGER ideas_audit AFTER INSERT OR UPDATE ON ideas
 --        FOR EACH ROW EXECUTE FUNCTION ytw_audit('idea');
---    Argument 1: entity_type written to events (default: the table name). Further arguments: extra
---    column names to redact. The row's `id` column becomes events.entity_id.
+--    Argument 1: entity_type written to events (default: the table name). Further arguments name
+--    columns: `col` is redacted (kept as "[redacted]"), `-col` is left out of the payload entirely
+--    (for derived data such as a generated tsvector). The row's `id` becomes events.entity_id.
 --    Payloads: insert {"new": row}; update {"old": changed columns, "new": changed columns}
---    (updated_at is not counted as a change); delete {"old": row}. An update whose only change is
---    last_used_at (API token use) is not logged.
+--    (updated_at and omitted columns are not counted as changes); delete {"old": row}. An update
+--    whose only change is last_used_at (API token use) is not logged.
 CREATE FUNCTION public.ytw_audit()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -180,7 +184,9 @@ DECLARE
   v_actor_type text := nullif(current_setting('app.actor_type', true), '');
   v_token_id text := nullif(current_setting('app.token_id', true), '');
   v_entity_type text := coalesce(nullif(TG_ARGV[0], ''), TG_TABLE_NAME);
-  v_redact text[] := CASE WHEN TG_NARGS > 1 THEN TG_ARGV[1:TG_NARGS - 1] ELSE '{}'::text[] END;
+  v_args text[] := CASE WHEN TG_NARGS > 1 THEN TG_ARGV[1:TG_NARGS - 1] ELSE '{}'::text[] END;
+  v_redact text[] := ARRAY(SELECT a FROM unnest(v_args) a WHERE a NOT LIKE '-%');
+  v_omit text[] := ARRAY(SELECT substr(a, 2) FROM unnest(v_args) a WHERE a LIKE '-%');
   v_old jsonb;
   v_new jsonb;
   v_changed text[];
@@ -206,6 +212,9 @@ BEGIN
   IF TG_OP IN ('INSERT', 'UPDATE') THEN
     v_new := to_jsonb(NEW);
   END IF;
+  v_id := coalesce(v_new, v_old) ->> 'id';
+  v_old := v_old - v_omit;
+  v_new := v_new - v_omit;
 
   IF TG_OP = 'UPDATE' THEN
     SELECT coalesce(array_agg(n.key ORDER BY n.key), '{}'::text[]) INTO v_changed
@@ -228,8 +237,6 @@ BEGIN
   ELSE
     v_payload := jsonb_build_object('old', public.ytw_audit_scrub(v_old, v_redact));
   END IF;
-
-  v_id := coalesce(v_new, v_old) ->> 'id';
 
   INSERT INTO public.events (actor, actor_type, token_id, action, entity_type, entity_id, payload)
   VALUES (

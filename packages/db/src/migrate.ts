@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import pg from "pg";
+import { Client, DatabaseError } from "pg";
 import { APP_ROLES, type AppRole, type Queryable } from "./client.js";
 import { isPgError } from "./errors.js";
 
@@ -116,7 +116,9 @@ export function defaultMigrationsDir(): string {
 }
 
 /** Reads and validates the migration files, sorted by version. */
-export async function loadMigrations(dir: string = defaultMigrationsDir()): Promise<MigrationFile[]> {
+export async function loadMigrations(
+  dir: string = defaultMigrationsDir(),
+): Promise<MigrationFile[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const problems: string[] = [];
   const files: MigrationFile[] = [];
@@ -155,7 +157,7 @@ export async function loadMigrations(dir: string = defaultMigrationsDir()): Prom
   if (problems.length > 0) {
     throw new MigrationError(`invalid migration files in ${dir}:\n- ${problems.join("\n- ")}`);
   }
-  return files.sort((a, b) => a.version.localeCompare(b.version));
+  return files.toSorted((a, b) => a.version.localeCompare(b.version));
 }
 
 /**
@@ -171,11 +173,11 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   const lockClient =
     options.lockDatabaseUrl === undefined
       ? undefined
-      : new pg.Client({
+      : new Client({
           connectionString: options.lockDatabaseUrl,
           application_name: "ytw-migrate-lock",
         });
-  const client = new pg.Client({
+  const client = new Client({
     connectionString: options.databaseUrl,
     application_name: "ytw-migrate",
   });
@@ -191,15 +193,17 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
     await client.connect();
     await acquireLock(client, MIGRATION_LOCK_KEY, lockTimeoutMs);
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS public.schema_migrations (
-        version text PRIMARY KEY CHECK (version ~ '^[0-9]{4}$'),
-        filename text NOT NULL UNIQUE,
-        checksum text NOT NULL CHECK (checksum ~ '^[0-9a-f]{64}$'),
-        applied_at timestamptz NOT NULL DEFAULT now(),
-        applied_by text NOT NULL DEFAULT current_user,
-        duration_ms integer NOT NULL
-      )`);
+    if (!(await hasMigrationsTable(client))) {
+      await client.query(`
+        CREATE TABLE public.schema_migrations (
+          version text PRIMARY KEY CHECK (version ~ '^[0-9]{4}$'),
+          filename text NOT NULL UNIQUE,
+          checksum text NOT NULL CHECK (checksum ~ '^[0-9a-f]{64}$'),
+          applied_at timestamptz NOT NULL DEFAULT now(),
+          applied_by text NOT NULL DEFAULT current_user,
+          duration_ms integer NOT NULL
+        )`);
+    }
     const applied = await readApplied(client);
     const status = compare(files, applied);
     const problems = [
@@ -262,14 +266,13 @@ export async function migrationStatus(
   migrationsDir?: string,
 ): Promise<MigrationStatus> {
   const files = await loadMigrations(migrationsDir);
-  const exists = await db.query<{ present: boolean }>(
-    "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS present",
-  );
-  const applied = exists.rows[0]?.present === true ? await readApplied(db) : [];
+  const applied = (await hasMigrationsTable(db)) ? await readApplied(db) : [];
   const status = compare(files, applied);
   return {
     upToDate:
-      status.pendingFiles.length === 0 && status.changed.length === 0 && status.unknown.length === 0,
+      status.pendingFiles.length === 0 &&
+      status.changed.length === 0 &&
+      status.unknown.length === 0,
     applied: applied.length,
     pending: status.pendingFiles.map((file) => file.filename),
     changed: status.changed,
@@ -290,7 +293,7 @@ export function scramSha256Verifier(password: string, salt: Buffer = randomBytes
   return `SCRAM-SHA-256$${SCRAM_ITERATIONS}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
 }
 
-async function acquireLock(client: pg.Client, key: string, timeoutMs: number): Promise<void> {
+async function acquireLock(client: Client, key: string, timeoutMs: number): Promise<void> {
   await client.query(`SET lock_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
   try {
     await client.query("SELECT pg_advisory_lock($1::bigint)", [key]);
@@ -305,6 +308,13 @@ async function acquireLock(client: pg.Client, key: string, timeoutMs: number): P
   } finally {
     await client.query("RESET lock_timeout");
   }
+}
+
+async function hasMigrationsTable(db: Queryable): Promise<boolean> {
+  const { rows } = await db.query<{ present: boolean }>(
+    "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS present",
+  );
+  return rows[0]?.present === true;
 }
 
 async function readApplied(db: Queryable): Promise<AppliedRow[]> {
@@ -340,7 +350,7 @@ function compare(files: MigrationFile[], applied: AppliedRow[]) {
   return { pendingFiles, changed, changedDescriptions, unknown };
 }
 
-async function applyFile(client: pg.Client, file: MigrationFile): Promise<number> {
+async function applyFile(client: Client, file: MigrationFile): Promise<number> {
   const started = performance.now();
   await client.query("BEGIN");
   try {
@@ -370,7 +380,7 @@ async function applyFile(client: pg.Client, file: MigrationFile): Promise<number
 }
 
 async function catalogViolations(
-  client: pg.Client,
+  client: Client,
 ): Promise<{ rule: string; object: string; detail: string }[]> {
   const guard = await client.query<{ present: boolean }>(
     "SELECT to_regprocedure('public.ytw_catalog_violations()') IS NOT NULL AS present",
@@ -388,7 +398,7 @@ function describeFailure(file: MigrationFile, err: unknown): string {
   if (!isPgError(err)) {
     return `${file.filename} failed: ${err instanceof Error ? err.message : String(err)}`;
   }
-  const pgErr = err as pg.DatabaseError;
+  const pgErr = err as DatabaseError;
   const position = Number(pgErr.position);
   const where =
     Number.isInteger(position) && position > 0
@@ -421,7 +431,7 @@ function validatePasswords(
   return result;
 }
 
-async function setRolePassword(client: pg.Client, role: AppRole, password: string): Promise<void> {
+async function setRolePassword(client: Client, role: AppRole, password: string): Promise<void> {
   const exists = await client.query("SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1", [role]);
   if (exists.rowCount === 0) {
     throw new MigrationError(`cannot set the password for ${role}: the role does not exist`);

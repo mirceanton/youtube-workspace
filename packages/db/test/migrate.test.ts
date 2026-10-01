@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import pg from "pg";
+import { Client } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   MIGRATION_LOCK_KEY,
@@ -26,6 +26,16 @@ async function scenario(): Promise<{ db: TestDb; dir: string }> {
   const copy = await copyMigrations();
   cleanups.push(() => db.drop(), copy.remove);
   return { db, dir: copy.dir };
+}
+
+/** A temporary directory holding exactly `files`, removed after the file. */
+async function dirWith(files: Record<string, string>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "ytw-db-files-"));
+  cleanups.push(() => rm(dir, { recursive: true, force: true }));
+  for (const [name, content] of Object.entries(files)) {
+    await writeFile(join(dir, name), content);
+  }
+  return dir;
 }
 
 function run(db: TestDb, dir: string, extra: { lockTimeoutMs?: number } = {}) {
@@ -67,9 +77,9 @@ describe("migrate", () => {
     expect(result.alreadyApplied).toBe(0);
     expect(result.passwordsSet).toEqual(["ytw_web", "ytw_mcp", "ytw_readonly"]);
     const rows = await appliedRows(db);
-    expect(rows.map(({ version, filename, checksum }) => ({ version, filename, checksum }))).toEqual(
-      files.map(({ version, filename, checksum }) => ({ version, filename, checksum })),
-    );
+    expect(
+      rows.map(({ version, filename, checksum }) => ({ version, filename, checksum })),
+    ).toEqual(files.map(({ version, filename, checksum }) => ({ version, filename, checksum })));
     expect(await migrationStatus(db.admin, dir)).toMatchObject({ upToDate: true, pending: [] });
     // Progress lines never carry a password.
     for (const password of Object.values(testRolePasswords())) {
@@ -99,7 +109,7 @@ describe("migrate", () => {
     // No shared lock database and no passwords: only the per-database lock serialises these two.
     const bare = () => migrate({ databaseUrl: db.url("admin"), migrationsDir: dir });
     const results = await Promise.all([bare(), bare()]);
-    const counts = results.map((result) => result.applied.length).sort((a, b) => a - b);
+    const counts = results.map((result) => result.applied.length).toSorted((a, b) => a - b);
     expect(counts).toEqual([0, files.length]);
     expect(await appliedRows(db)).toHaveLength(files.length);
   });
@@ -134,7 +144,9 @@ describe("migrate", () => {
 
     const err = await failure(run(db, dir));
 
-    expect(err.message).toMatch(/0002_catalog_guard\.sql was applied but is now named 0002_renamed_guard\.sql/);
+    expect(err.message).toMatch(
+      /0002_catalog_guard\.sql was applied but is now named 0002_renamed_guard\.sql/,
+    );
     expect(err.message).toMatch(/0004_audit\.sql is recorded as applied but is missing/);
     expect(await migrationStatus(db.admin, dir)).toMatchObject({
       upToDate: false,
@@ -151,7 +163,9 @@ describe("migrate", () => {
 
     const err = await failure(run(db, dir));
 
-    expect(err.message).toMatch(/9400_earlier\.sql is pending but older than the newest applied migration \(9500\)/);
+    expect(err.message).toMatch(
+      /9400_earlier\.sql is pending but older than the newest applied migration \(9500\)/,
+    );
   });
 
   it("rolls a failing file back completely and reports the file and line", async () => {
@@ -190,7 +204,7 @@ describe("migrate", () => {
 
   it("fails with a clear error when another run holds the lock too long", async () => {
     const { db, dir } = await scenario();
-    const holder = new pg.Client({ connectionString: db.url("admin") });
+    const holder = new Client({ connectionString: db.url("admin") });
     await holder.connect();
     try {
       await holder.query("SELECT pg_advisory_lock($1::bigint)", [MIGRATION_LOCK_KEY]);
@@ -209,7 +223,7 @@ describe("role passwords", () => {
     const { db, dir } = await scenario();
     await run(db, dir);
     for (const role of ["ytw_web", "ytw_mcp", "ytw_readonly"] as const) {
-      const client = new pg.Client({ connectionString: db.url(role) });
+      const client = new Client({ connectionString: db.url(role) });
       await client.connect();
       const { rows } = await client.query<{ user: string }>('SELECT current_user AS "user"');
       await client.end();
@@ -238,21 +252,14 @@ describe("role passwords", () => {
     const salt = Buffer.from("0123456789abcdef");
     const a = scramSha256Verifier("correct-horse-battery", salt);
     expect(a).toBe(scramSha256Verifier("correct-horse-battery", salt));
-    expect(a).toMatch(/^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]{24}\$[A-Za-z0-9+/=]{44}:[A-Za-z0-9+/=]{44}$/);
+    expect(a).toMatch(
+      /^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]{24}\$[A-Za-z0-9+/=]{44}:[A-Za-z0-9+/=]{44}$/,
+    );
     expect(scramSha256Verifier("correct-horse-battery")).not.toBe(a);
   });
 });
 
 describe("migration files", () => {
-  async function dirWith(files: Record<string, string>): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "ytw-db-files-"));
-    cleanups.push(() => rm(dir, { recursive: true, force: true }));
-    for (const [name, content] of Object.entries(files)) {
-      await writeFile(join(dir, name), content);
-    }
-    return dir;
-  }
-
   it("must be named NNNN_lower_snake_case.sql with unique numbers", async () => {
     const badName = await dirWith({ "0001_ok.sql": "", "1_short.sql": "", "0002_Mixed.sql": "" });
     const err = await failure(loadMigrations(badName));

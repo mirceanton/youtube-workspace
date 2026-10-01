@@ -23,8 +23,8 @@ async function main(): Promise<number> {
   const databaseUrl = process.env.MIGRATION_DATABASE_URL?.trim();
   if (databaseUrl === undefined || databaseUrl === "") {
     console.error(
-      "MIGRATION_DATABASE_URL is not set. Set it to a privileged connection string " +
-        "(see .env.example); `pnpm migrate` reads the repository's .env file.",
+      "MIGRATION_DATABASE_URL is not set. Pass the privileged connection string to this command " +
+        "only, e.g. `MIGRATION_DATABASE_URL=postgres://... pnpm migrate` (see .env.example).",
     );
     return 2;
   }
@@ -55,15 +55,12 @@ async function main(): Promise<number> {
   return 0;
 }
 
-main().then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      err instanceof MigrationError ? `@ytw/db: ${message}` : `@ytw/db: migration failed: ${message}`,
-    );
-    process.exitCode = 1;
-  },
-);
+try {
+  process.exitCode = await main();
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(
+    err instanceof MigrationError ? `@ytw/db: ${message}` : `@ytw/db: migration failed: ${message}`,
+  );
+  process.exitCode = 1;
+}

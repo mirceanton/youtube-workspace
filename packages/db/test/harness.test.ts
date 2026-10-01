@@ -1,12 +1,47 @@
-import pg from "pg";
-import { describe, expect, it } from "vitest";
+import { Client } from "pg";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { APP_ROLES } from "../src/client.js";
 import { migrationStatus } from "../src/migrate.js";
-import { createTestDb, testServerUrl } from "../src/testing.js";
+import {
+  DEFAULT_TEST_DATABASE_URL,
+  DEV_ROLE_PASSWORDS,
+  createTestDb,
+  testRolePasswords,
+  testServerUrl,
+} from "../src/testing.js";
 import { failure } from "./helpers.js";
 
+describe("harness configuration", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("uses TEST_DATABASE_URL, else MIGRATION_DATABASE_URL's server, else the dev default", () => {
+    vi.stubEnv("TEST_DATABASE_URL", "postgres://admin:pw@db.test:6543/maint");
+    vi.stubEnv("MIGRATION_DATABASE_URL", "postgres://ci:secret@ci-db:5432/youtube_workspace");
+    expect(testServerUrl()).toBe("postgres://admin:pw@db.test:6543/maint");
+
+    vi.stubEnv("TEST_DATABASE_URL", "");
+    expect(testServerUrl()).toBe("postgres://ci:secret@ci-db:5432/postgres");
+
+    vi.stubEnv("MIGRATION_DATABASE_URL", "");
+    expect(testServerUrl()).toBe(DEFAULT_TEST_DATABASE_URL);
+  });
+
+  it("takes role passwords from YTW_*_PASSWORD, else the .env.example dev values", () => {
+    vi.stubEnv("YTW_WEB_PASSWORD", "");
+    vi.stubEnv("YTW_MCP_PASSWORD", "mcp-password-from-environment");
+    vi.stubEnv("YTW_READONLY_PASSWORD", "");
+    expect(testRolePasswords()).toEqual({
+      ytw_web: DEV_ROLE_PASSWORDS.ytw_web,
+      ytw_mcp: "mcp-password-from-environment",
+      ytw_readonly: DEV_ROLE_PASSWORDS.ytw_readonly,
+    });
+  });
+});
+
 async function databaseExists(name: string): Promise<boolean> {
-  const client = new pg.Client({ connectionString: testServerUrl() });
+  const client = new Client({ connectionString: testServerUrl() });
   await client.connect();
   try {
     const { rowCount } = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]);
@@ -27,9 +62,11 @@ describe("createTestDb", () => {
         const violations = await db.admin.query("SELECT * FROM ytw_catalog_violations()");
         expect(violations.rows).toEqual([]);
         for (const role of APP_ROLES) {
-          const { rows } = await db.pool(role).query<{ who: string; db: string }>(
-            "SELECT current_user AS who, current_database() AS db",
-          );
+          const { rows } = await db
+            .pool(role)
+            .query<{ who: string; db: string }>(
+              "SELECT current_user AS who, current_database() AS db",
+            );
           expect(rows[0]).toEqual({ who: role, db: db.name });
         }
       }

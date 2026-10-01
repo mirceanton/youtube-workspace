@@ -72,6 +72,9 @@ export class DbError extends Error {
 /** An argument is missing, malformed or outside its allowed values (details: field, value, allowed). */
 export class ValidationError extends DbError {
   override name = "ValidationError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("validation", message, details, hint, options);
+  }
   get field(): string | undefined {
     return stringDetail(this.details, "field");
   }
@@ -83,6 +86,9 @@ export class ValidationError extends DbError {
 /** A referenced record does not exist (details: entity, id). */
 export class NotFoundError extends DbError {
   override name = "NotFoundError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("not_found", message, details, hint, options);
+  }
   get entity(): string | undefined {
     return stringDetail(this.details, "entity");
   }
@@ -94,11 +100,17 @@ export class NotFoundError extends DbError {
 /** The actor is not allowed to do this (details: reason). */
 export class ForbiddenError extends DbError {
   override name = "ForbiddenError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("forbidden", message, details, hint, options);
+  }
 }
 
 /** The expected or base version is stale (details: latest_version, expected_version). */
 export class VersionConflictError extends DbError {
   override name = "VersionConflictError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("version_conflict", message, details, hint, options);
+  }
   get latestVersion(): number | undefined {
     return numberDetail(this.details, "latest_version");
   }
@@ -107,6 +119,9 @@ export class VersionConflictError extends DbError {
 /** The state machine does not allow the change (details: from, to, allowed). */
 export class InvalidTransitionError extends DbError {
   override name = "InvalidTransitionError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("invalid_transition", message, details, hint, options);
+  }
   get allowed(): string[] | undefined {
     return stringListDetail(this.details, "allowed");
   }
@@ -115,6 +130,9 @@ export class InvalidTransitionError extends DbError {
 /** A record with the same natural key exists (details: entity, existing_id). */
 export class DuplicateError extends DbError {
   override name = "DuplicateError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("duplicate", message, details, hint, options);
+  }
   get existingId(): string | undefined {
     return stringDetail(this.details, "existing_id");
   }
@@ -123,15 +141,20 @@ export class DuplicateError extends DbError {
 /** Append-only data cannot be changed or deleted (details: table, operation). */
 export class ImmutableError extends DbError {
   override name = "ImmutableError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("immutable", message, details, hint, options);
+  }
 }
 
 /** A write ran without an audit actor: a bug in a database function or its caller. */
 export class MissingActorError extends DbError {
   override name = "MissingActorError";
+  constructor(message: string, details?: DbErrorDetails, hint?: string, options?: ErrorOptions) {
+    super("missing_actor", message, details, hint, options);
+  }
 }
 
 type DbErrorClass = new (
-  kind: DbErrorKind,
   message: string,
   details?: DbErrorDetails,
   hint?: string,
@@ -189,7 +212,7 @@ export function toDbError(err: unknown): unknown {
   }
   const ErrorClass = ERROR_CLASSES[kind];
   const hint = err.hint === undefined || err.hint === "" ? undefined : err.hint;
-  return new ErrorClass(kind, err.message, parseDetails(err.detail), hint, { cause: err });
+  return new ErrorClass(err.message, parseDetails(err.detail), hint, { cause: err });
 }
 
 /**

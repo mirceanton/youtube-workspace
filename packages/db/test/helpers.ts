@@ -5,22 +5,22 @@ import { join } from "node:path";
 import { defaultMigrationsDir } from "../src/migrate.js";
 
 /** Runs `promise`, expects it to fail, and returns the error. */
-export async function failure(promise: Promise<unknown>): Promise<Error & Record<string, unknown>> {
+export async function failure(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise;
   } catch (err) {
     if (err instanceof Error) {
-      return err as Error & Record<string, unknown>;
+      return err;
     }
-    throw new Error(`rejected with a non-Error: ${String(err)}`);
+    throw new Error(`rejected with a non-Error: ${String(err)}`, { cause: err });
   }
   throw new Error("expected the promise to reject, but it resolved");
 }
 
-/** The SQLSTATE of the error `promise` fails with. */
+/** The SQLSTATE of the error `promise` fails with (driver errors and typed DbErrors alike). */
 export async function sqlstate(promise: Promise<unknown>): Promise<string> {
   const err = await failure(promise);
-  const code = err.code ?? (err.cause as Record<string, unknown> | undefined)?.code;
+  const code: unknown = Reflect.get(err, "code") ?? Reflect.get(err, "sqlstate");
   return typeof code === "string" ? code : `no SQLSTATE: ${err.message}`;
 }
 

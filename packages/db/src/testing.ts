@@ -15,14 +15,15 @@
  * });
  * ```
  *
- * The server is `TEST_DATABASE_URL` (a superuser connection; default: the local dev cluster from
- * `scripts/pg-local.sh` / docker compose). Each database gets a unique name and is created from
+ * The server is `TEST_DATABASE_URL` (a superuser connection), else the one in
+ * `MIGRATION_DATABASE_URL`, else the local dev cluster of `scripts/pg-local.sh` / docker compose
+ * (see {@link testServerUrl}). Each database gets a unique name and is created from
  * template0, so files and workers run in parallel safely. Migrations run under the cluster-wide
  * migration lock because the application roles are shared by every database in the cluster.
  * Never use this module outside tests.
  */
 import { randomBytes } from "node:crypto";
-import pg from "pg";
+import { Client, Pool } from "pg";
 import { APP_ROLES, type AppRole } from "./client.js";
 import { ROLE_PASSWORD_ENV, migrate } from "./migrate.js";
 
@@ -50,19 +51,33 @@ export interface TestDb {
   /** The database name, unique per call (`ytw_test_...`). */
   readonly name: string;
   /** Superuser pool on this database, for fixtures and assertions only (never for code under test). */
-  readonly admin: pg.Pool;
+  readonly admin: Pool;
   /** Pool that logs in as an application role (created on first use). */
-  pool(role: AppRole): pg.Pool;
+  pool(role: AppRole): Pool;
   /** Connection string for an application role or the superuser, e.g. for a server under test. */
   url(role: AppRole | "admin"): string;
   /** Ends every pool and drops the database. Safe to call more than once. */
   drop(): Promise<void>;
 }
 
-/** The superuser connection string the harness uses. */
+/**
+ * The superuser connection string the harness uses: `TEST_DATABASE_URL`; otherwise the server and
+ * credentials of `MIGRATION_DATABASE_URL` (as CI exports it) with the `postgres` maintenance
+ * database; otherwise {@link DEFAULT_TEST_DATABASE_URL}. The maintenance database doubles as the
+ * shared lock database, so every harness on one cluster must resolve to the same database name.
+ */
 export function testServerUrl(): string {
-  const configured = process.env.TEST_DATABASE_URL?.trim();
-  return configured === undefined || configured === "" ? DEFAULT_TEST_DATABASE_URL : configured;
+  const explicit = process.env.TEST_DATABASE_URL?.trim();
+  if (explicit !== undefined && explicit !== "") {
+    return explicit;
+  }
+  const migration = process.env.MIGRATION_DATABASE_URL?.trim();
+  if (migration !== undefined && migration !== "") {
+    const url = new URL(migration);
+    url.pathname = "/postgres";
+    return url.toString();
+  }
+  return DEFAULT_TEST_DATABASE_URL;
 }
 
 /** Role passwords for test databases: YTW_*_PASSWORD when set, otherwise {@link DEV_ROLE_PASSWORDS}. */
@@ -114,7 +129,7 @@ class TestDatabase implements TestDb {
   readonly name: string;
   readonly #serverUrl: string;
   readonly #passwords: Record<AppRole, string>;
-  readonly #pools = new Map<AppRole | "admin", pg.Pool>();
+  readonly #pools = new Map<AppRole | "admin", Pool>();
   #dropped = false;
 
   constructor(serverUrl: string, name: string, passwords: Record<AppRole, string>) {
@@ -123,11 +138,11 @@ class TestDatabase implements TestDb {
     this.#passwords = passwords;
   }
 
-  get admin(): pg.Pool {
+  get admin(): Pool {
     return this.#poolFor("admin");
   }
 
-  pool(role: AppRole): pg.Pool {
+  pool(role: AppRole): Pool {
     if (!(APP_ROLES as readonly string[]).includes(role)) {
       throw new TypeError(`unknown application role: ${String(role)}`);
     }
@@ -153,17 +168,19 @@ class TestDatabase implements TestDb {
     this.#pools.clear();
     await Promise.allSettled(pools.map((pool) => pool.end()));
     await withAdminClient(this.#serverUrl, async (client) => {
-      await client.query(`DROP DATABASE IF EXISTS ${client.escapeIdentifier(this.name)} WITH (FORCE)`);
+      await client.query(
+        `DROP DATABASE IF EXISTS ${client.escapeIdentifier(this.name)} WITH (FORCE)`,
+      );
     });
   }
 
-  #poolFor(role: AppRole | "admin"): pg.Pool {
+  #poolFor(role: AppRole | "admin"): Pool {
     if (this.#dropped) {
       throw new Error(`test database ${this.name} was already dropped`);
     }
     let pool = this.#pools.get(role);
     if (pool === undefined) {
-      pool = new pg.Pool({
+      pool = new Pool({
         connectionString: this.url(role),
         application_name: `ytw-test-${role}`,
         max: 4,
@@ -179,9 +196,9 @@ class TestDatabase implements TestDb {
 
 async function withAdminClient(
   serverUrl: string,
-  fn: (client: pg.Client) => Promise<void>,
+  fn: (client: Client) => Promise<void>,
 ): Promise<void> {
-  const client = new pg.Client({ connectionString: serverUrl, application_name: "ytw-test-admin" });
+  const client = new Client({ connectionString: serverUrl, application_name: "ytw-test-admin" });
   try {
     await client.connect();
   } catch (err) {
