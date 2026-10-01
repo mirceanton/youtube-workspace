@@ -21,7 +21,8 @@ export const baseProjectConfig = defineProject({
     },
   },
   test: {
-    include: ["test/**/*.test.{ts,tsx}"],
+    // Tests may live in test/ or next to the code they cover in src/ (e.g. src/routes/x/x.test.ts).
+    include: ["{src,test}/**/*.test.{ts,tsx}"],
     // Same cap as the root config, so package-scoped runs (`pnpm --filter <pkg> test`) stay modest.
     maxWorkers: 2,
   },
