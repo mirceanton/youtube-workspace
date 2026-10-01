@@ -8,12 +8,22 @@
       "@ytw/source": "./src/index.ts",
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./testing": {
+      "@ytw/source": "./src/testing.ts",
+      "types": "./dist/src/testing.d.ts",
+      "default": "./dist/src/testing.js"
     }
   },
   "scripts": {
     "build": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
     "test": "vitest run",
-    "migrate": "echo '@ytw/db: the migration runner does not exist yet (task T10 adds it); nothing was applied.'"
+    "migrate": "tsx --conditions=@ytw/source --env-file-if-exists=../../.env src/bin/migrate.ts"
+  },
+  "dependencies": {
+    "@types/pg": "^8.23.0",
+    "@ytw/shared": "workspace:*",
+    "pg": "^8.23.0"
   }
 }
