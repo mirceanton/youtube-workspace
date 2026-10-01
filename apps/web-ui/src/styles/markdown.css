@@ -1,0 +1,124 @@
+/*
+ * Typography for MarkdownView. Spacing is in em, so the block follows whatever font size its
+ * container sets (the script reader lets people enlarge it) and line length stays comfortable.
+ */
+.markdown {
+  max-width: 68ch;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown :where(p, ul, ol, pre, blockquote, table, hr, details) {
+  margin-block: 0.85em;
+}
+
+.markdown :where(h1, h2, h3, h4, h5, h6) {
+  margin-block: 1.4em 0.5em;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+.markdown h1 {
+  font-size: 1.6em;
+}
+
+.markdown h2 {
+  font-size: 1.35em;
+}
+
+.markdown h3 {
+  font-size: 1.15em;
+}
+
+.markdown :where(ul, ol) {
+  padding-inline-start: 1.5em;
+}
+
+.markdown ul {
+  list-style: disc;
+}
+
+.markdown ol {
+  list-style: decimal;
+}
+
+.markdown li > :where(ul, ol) {
+  margin-block: 0.25em;
+}
+
+.markdown li + li {
+  margin-block-start: 0.25em;
+}
+
+.markdown a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.markdown blockquote {
+  border-inline-start: 0.25em solid var(--line-strong);
+  padding-inline-start: 1em;
+  color: var(--ink-muted);
+}
+
+.markdown code {
+  background: var(--subtle);
+  border-radius: 0.3em;
+  padding: 0.1em 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.markdown pre {
+  background: var(--subtle);
+  border-radius: 0.5em;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.9em;
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.markdown .markdown-table-scroll {
+  overflow-x: auto;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 0.95em;
+}
+
+.markdown :where(th, td) {
+  border: 1px solid var(--line);
+  padding: 0.4em 0.7em;
+  text-align: start;
+  vertical-align: top;
+}
+
+.markdown th {
+  background: var(--subtle);
+  font-weight: 600;
+}
+
+.markdown input[type="checkbox"] {
+  margin-inline-end: 0.5em;
+}

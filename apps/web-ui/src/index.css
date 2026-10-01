@@ -1,11 +1,42 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
+@import "./styles/theme.css";
+@import "./styles/markdown.css";
 
 @layer base {
   html {
-    color-scheme: light dark;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
-    @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+    @apply bg-canvas text-ink font-sans antialiased;
+    /* Phones with a notch: viewport-fit=cover is set in index.html, shell components add the insets. */
+    overscroll-behavior-y: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  /* Buttons inside the page should not inherit the browser's 1.5-line quirks on iOS. */
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }

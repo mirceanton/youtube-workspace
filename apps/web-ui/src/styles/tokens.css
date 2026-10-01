@@ -1,0 +1,73 @@
+/*
+ * Design tokens: the only place colours are defined. Light and dark follow the system setting
+ * (PRD 6); there is no manual toggle. test/tokens.test.ts parses this file and checks the WCAG 2.1
+ * AA contrast of every text/background pair listed there in both schemes, so keep the values as
+ * plain #rrggbb hex and add a pair to the test when you add a token that carries text.
+ *
+ *   canvas   page background            surface  cards, dialogs, inputs
+ *   subtle   quiet fills (chips, code)  line     decorative hairlines (not for input borders)
+ *   line-strong  borders of controls (>= 3:1)   ink / ink-muted  text
+ *   brand    primary action fill, brand-ink is the text on it
+ *   link     link text                  focus    focus ring
+ *   danger / ok / warn / info   status text colour, *-soft is the matching fill
+ *   chart-1..4  line series (blue, orange, aqua, yellow; the validated order of the data-viz palette)
+ */
+:root {
+  color-scheme: light dark;
+
+  --canvas: #f6f6f3;
+  --surface: #ffffff;
+  --subtle: #ecece8;
+  --line: #d9d8d2;
+  --line-strong: #85847e;
+  --ink: #14141a;
+  --ink-muted: #56554f;
+  --brand: #c8191e;
+  --brand-ink: #ffffff;
+  --link: #1558b0;
+  --focus: #1558b0;
+  --danger: #b3261e;
+  --danger-soft: #fcebea;
+  --ok: #17683a;
+  --ok-soft: #e6f4ec;
+  --warn: #8a5300;
+  --warn-soft: #fff3d4;
+  --info: #1558b0;
+  --info-soft: #e8f0fb;
+
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-grid: #e1e0d9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #111110;
+    --surface: #1b1b19;
+    --subtle: #262624;
+    --line: #3a3a36;
+    --line-strong: #8f8e87;
+    --ink: #f3f3ef;
+    --ink-muted: #b9b8b0;
+    --brand: #ef5350;
+    --brand-ink: #14100f;
+    --link: #7fb2f5;
+    --focus: #7fb2f5;
+    --danger: #ff8a80;
+    --danger-soft: #3a1a18;
+    --ok: #6fcf97;
+    --ok-soft: #16301f;
+    --warn: #f2b84b;
+    --warn-soft: #3a2c0c;
+    --info: #7fb2f5;
+    --info-soft: #14263f;
+
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-grid: #2c2c2a;
+  }
+}

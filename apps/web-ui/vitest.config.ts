@@ -4,5 +4,11 @@ import viteConfig from "./vite.config.ts";
 
 export default mergeConfig(
   mergeConfig(viteConfig, baseProjectConfig),
-  defineProject({ test: { name: "@ytw/web-ui", environment: "jsdom" } }),
+  defineProject({
+    test: {
+      name: "@ytw/web-ui",
+      environment: "jsdom",
+      setupFiles: ["./test/setup.ts"],
+    },
+  }),
 );

@@ -6,6 +6,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": ["vite/client"],
+    "paths": { "@/*": ["./src/*"] },
     "jsx": "react-jsx",
     "noEmit": true,
     "allowImportingTsExtensions": true,
@@ -21,5 +22,6 @@
     "erasableSyntaxOnly": true
   },
   "include": ["src", "test"],
+  "exclude": ["test/node"],
   "references": [{ "path": "../../packages/shared" }]
 }

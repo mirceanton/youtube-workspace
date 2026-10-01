@@ -1,0 +1,36 @@
+/* uPlot restyled with the design tokens. Loaded together with the chart chunk. */
+.uplot {
+  font-family: inherit;
+}
+
+.uplot .u-legend {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  text-align: start;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.uplot .u-legend .u-series {
+  padding: 0.125rem 0.75rem 0.125rem 0;
+  /* The legend is a key and a hover read-out, not a control: no click-to-hide targets under 44 px. */
+  pointer-events: none;
+}
+
+.uplot .u-legend .u-series th {
+  font-weight: 500;
+}
+
+.uplot .u-legend .u-value {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.uplot .u-cursor-x,
+.uplot .u-cursor-y {
+  border-color: var(--line-strong);
+}
+
+.uplot .u-select {
+  background: color-mix(in srgb, var(--line-strong) 25%, transparent);
+}

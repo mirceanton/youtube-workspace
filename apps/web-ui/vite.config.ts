@@ -20,6 +20,8 @@ export default defineConfig({
   resolve: {
     // "@ytw/source" resolves workspace packages to their TypeScript sources (see vitest.shared.ts).
     conditions: ["@ytw/source", ...defaultClientConditions],
+    // `@/` is `src/` (mirrored by `paths` in tsconfig.app.json).
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   server: {
     // If the port is taken Vite moves to the next free one; set WEB_UI_PORT when the OIDC redirect
