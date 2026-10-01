@@ -62,7 +62,7 @@ workers never collide: T10 `0001-0009`, T11 `0010-0029`, T12 `0030-0039`, T13 `0
 T16 fixes `0070-0099`, T61 indexes `0100-0119`, T60 fixes `0120-0139`, anyone later `0200+` (ask orchestrator).
 
 **DB function convention (defined by T10, followed by T12-T15).** Every mutating function is `SECURITY DEFINER`, has
-`SET search_path = pg_catalog, public`, `REVOKE EXECUTE ... FROM PUBLIC`, `GRANT EXECUTE` only to the roles that need it,
+`SET search_path = pg_catalog, public, pg_temp` (pg_temp LAST, so temp tables cannot hijack the function; see docs/database.md), `REVOKE EXECUTE ... FROM PUBLIC`, `GRANT EXECUTE` only to the roles that need it,
 starts with `p_actor text, p_actor_type text, p_token_id uuid` and calls `ytw_set_actor(...)` so the audit trigger can write
 `events`. Errors use custom SQLSTATEs (mapped to typed errors in `packages/db/src/errors.ts`): version conflict, invalid
 stage transition, forbidden, not found, validation. TS wrappers return typed results and throw typed errors that carry the
