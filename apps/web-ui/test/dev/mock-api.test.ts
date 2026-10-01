@@ -185,7 +185,7 @@ describe("mock API: routing and extension", () => {
   });
 
   it("passes non-/api URLs to the real fetch", async () => {
-    const passthrough = vi.fn(async () => new Response("asset"));
+    const passthrough = vi.fn<typeof fetch>(async () => new Response("asset"));
     const api = createMockApi({ passthrough });
     expect(await (await api.fetch("/assets/app.js")).text()).toBe("asset");
     expect(passthrough).toHaveBeenCalledTimes(1);

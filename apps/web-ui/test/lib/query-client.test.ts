@@ -45,24 +45,24 @@ describe("shouldRetry", () => {
   });
 });
 
-describe("live updates", () => {
-  function observe(fn: () => Promise<number>) {
-    const client = createQueryClient();
-    client.mount(); // what <QueryClientProvider> does: subscribe to focus and online events
-    const observer = new QueryObserver(client, { queryKey: ["live"], queryFn: fn });
-    const stop = observer.subscribe(() => undefined);
-    return {
-      client,
-      unsubscribe: () => {
-        stop();
-        client.unmount();
-      },
-    };
-  }
+function observe(fn: () => Promise<number>) {
+  const client = createQueryClient();
+  client.mount(); // what <QueryClientProvider> does: subscribe to focus and online events
+  const observer = new QueryObserver(client, { queryKey: ["live"], queryFn: fn });
+  const stop = observer.subscribe(() => undefined);
+  return {
+    client,
+    unsubscribe: () => {
+      stop();
+      client.unmount();
+    },
+  };
+}
 
+describe("live updates", () => {
   it("refetches an active query every 15 seconds", async () => {
     vi.useFakeTimers();
-    const fn = vi.fn(() => Promise.resolve(1));
+    const fn = vi.fn<() => Promise<number>>(() => Promise.resolve(1));
     const { unsubscribe } = observe(fn);
     await vi.advanceTimersByTimeAsync(0);
     expect(fn).toHaveBeenCalledTimes(1);
@@ -77,7 +77,7 @@ describe("live updates", () => {
 
   it("pauses while the tab is hidden and catches up when it is shown again", async () => {
     vi.useFakeTimers();
-    const fn = vi.fn(() => Promise.resolve(1));
+    const fn = vi.fn<() => Promise<number>>(() => Promise.resolve(1));
     const { unsubscribe } = observe(fn);
     await vi.advanceTimersByTimeAsync(0);
     expect(fn).toHaveBeenCalledTimes(1);

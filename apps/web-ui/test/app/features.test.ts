@@ -27,13 +27,14 @@ function valid(overrides: Partial<FeatureDefinition> = {}): FeatureDefinition {
 }
 
 function problemsOf(modules: Record<string, unknown>): string {
+  let thrown: unknown;
   try {
     discoverFeatures(modules);
   } catch (error) {
-    expect(error).toBeInstanceOf(FeatureDiscoveryError);
-    return (error as Error).message;
+    thrown = error;
   }
-  throw new Error("expected discoverFeatures to throw");
+  expect(thrown).toBeInstanceOf(FeatureDiscoveryError);
+  return (thrown as Error).message;
 }
 
 describe("feature auto-discovery with import.meta.glob", () => {

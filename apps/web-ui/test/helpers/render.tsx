@@ -75,7 +75,7 @@ export function renderWithSession(
     client = createTestQueryClient(),
     route = "/",
   }: RenderKitOptions = {},
-): ReturnType<typeof render> & { client: QueryClient } {
+) {
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={client}>

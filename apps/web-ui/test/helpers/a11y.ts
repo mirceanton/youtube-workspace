@@ -14,5 +14,6 @@ export async function expectNoA11yViolations(container: Element): Promise<void> 
     (violation) =>
       `${violation.id}: ${violation.help}\n${violation.nodes.map((node) => `  ${node.html}`).join("\n")}`,
   );
-  expect(summary, summary.join("\n\n")).toEqual([]);
+  // One string to compare, so a failure prints every violation with its markup.
+  expect(summary.join("\n\n")).toBe("");
 }

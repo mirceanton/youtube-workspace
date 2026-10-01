@@ -4,7 +4,7 @@ import { Link, useRouteError } from "react-router";
 import { Button } from "@/kit/Button.tsx";
 import { buttonClasses } from "@/kit/button-styles.ts";
 import { Card } from "@/kit/Card.tsx";
-import { EmptyState, ErrorState } from "@/kit/states.tsx";
+import { EmptyState, ErrorState, LoadingState } from "@/kit/states.tsx";
 import { LOGOUT_PATH } from "@/lib/contract.ts";
 import { browser } from "@/lib/navigation.ts";
 import { useDocumentTitle } from "@/lib/useDocumentTitle.ts";
@@ -139,4 +139,9 @@ export function RouteErrorPage() {
       onRetry={() => browser.reload()}
     />
   );
+}
+
+/** Shown while the first route's code (a lazily loaded page) is still being fetched. */
+export function HydrateFallback() {
+  return <LoadingState className="min-h-dvh" />;
 }

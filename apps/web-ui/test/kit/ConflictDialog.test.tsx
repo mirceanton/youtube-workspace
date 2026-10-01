@@ -11,7 +11,11 @@ const error = new ConflictError("Version 3 is no longer the latest; the latest i
 });
 
 function setup(props: Partial<React.ComponentProps<typeof ConflictDialog>> = {}) {
-  const handlers = { onReload: vi.fn(), onMerge: vi.fn(), onKeepEditing: vi.fn() };
+  const handlers = {
+    onReload: vi.fn<() => void>(),
+    onMerge: vi.fn<() => void>(),
+    onKeepEditing: vi.fn<() => void>(),
+  };
   const view = render(<ConflictDialog open entity="idea" error={error} {...handlers} {...props} />);
   return { ...view, ...handlers };
 }
@@ -113,7 +117,12 @@ describe("ConflictDialog", () => {
   it("closes when the parent sets open to false", () => {
     const view = setup();
     view.rerender(
-      <ConflictDialog open={false} entity="idea" onReload={vi.fn()} onKeepEditing={vi.fn()} />,
+      <ConflictDialog
+        open={false}
+        entity="idea"
+        onReload={vi.fn<() => void>()}
+        onKeepEditing={vi.fn<() => void>()}
+      />,
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });

@@ -22,6 +22,15 @@ afterEach(() => {
   setOnline(true);
 });
 
+function RefProbe() {
+  const ref = useRef<HTMLButtonElement>(null);
+  return (
+    <Button ref={ref} data-testid="b" onClick={() => ref.current?.setAttribute("data-clicked", "")}>
+      Go
+    </Button>
+  );
+}
+
 describe("Button", () => {
   it("is at least 44 px tall (and wide, for icon buttons)", () => {
     expect(buttonClasses()).toContain("min-h-11");
@@ -42,19 +51,7 @@ describe("Button", () => {
   });
 
   it("passes refs and other props through", () => {
-    function Probe() {
-      const ref = useRef<HTMLButtonElement>(null);
-      return (
-        <Button
-          ref={ref}
-          data-testid="b"
-          onClick={() => ref.current?.setAttribute("data-clicked", "")}
-        >
-          Go
-        </Button>
-      );
-    }
-    render(<Probe />);
+    render(<RefProbe />);
     fireEvent.click(screen.getByTestId("b"));
     expect(screen.getByTestId("b")).toHaveAttribute("data-clicked");
   });
@@ -161,7 +158,7 @@ describe("EmptyState, LoadingState, ErrorState", () => {
 
   it("ErrorState shows the server's message and retries on request", async () => {
     const user = userEvent.setup();
-    const retry = vi.fn();
+    const retry = vi.fn<() => void>();
     render(<ErrorState error={new ApiError("The database is down", 503)} onRetry={retry} />);
     expect(screen.getByRole("alert")).toHaveTextContent("The database is down");
     await user.click(screen.getByRole("button", { name: "Try again" }));
@@ -258,28 +255,24 @@ describe("PageHeader", () => {
   });
 });
 
-describe("Dialog", () => {
-  function Host({ dismissible = true }: { dismissible?: boolean }) {
-    const ref = useRef<HTMLButtonElement>(null);
-    const onClose = vi.fn();
-    return (
-      <>
-        <Dialog
-          open
-          onClose={onClose}
-          title="Rename"
-          description="Pick a new name"
-          dismissible={dismissible}
-          initialFocus={ref}
-          footer={<Button ref={ref}>Save</Button>}
-        >
-          <p>Body</p>
-        </Dialog>
-        <output data-testid="closed">{onClose.mock.calls.length}</output>
-      </>
-    );
-  }
+function Host({ dismissible = true }: { dismissible?: boolean }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  return (
+    <Dialog
+      open
+      onClose={() => undefined}
+      title="Rename"
+      description="Pick a new name"
+      dismissible={dismissible}
+      initialFocus={ref}
+      footer={<Button ref={ref}>Save</Button>}
+    >
+      <p>Body</p>
+    </Dialog>
+  );
+}
 
+describe("Dialog", () => {
   it("is a labelled modal dialog with description, body and footer", () => {
     render(<Host />);
     const dialog = screen.getByRole("dialog", { name: "Rename" });
@@ -307,7 +300,7 @@ describe("Dialog", () => {
   });
 
   it("asks the parent to close on Escape and backdrop click, and cancels the browser's own close", () => {
-    const onClose = vi.fn();
+    const onClose = vi.fn<() => void>();
     render(
       <Dialog open onClose={onClose} title="T">
         x
@@ -325,7 +318,7 @@ describe("Dialog", () => {
   });
 
   it("a non-dismissible dialog ignores Escape, backdrop clicks and has no close button", () => {
-    const onClose = vi.fn();
+    const onClose = vi.fn<() => void>();
     render(
       <Dialog open onClose={onClose} title="Decide" dismissible={false}>
         x

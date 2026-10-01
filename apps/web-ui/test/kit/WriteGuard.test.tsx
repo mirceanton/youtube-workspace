@@ -125,12 +125,12 @@ describe("WriteGuard", () => {
   });
 });
 
-describe("useWriteGuard", () => {
-  function Probe() {
-    const state = useWriteGuard("scripts");
-    return <output>{`${state.allowed}|${state.reason}|${state.message ?? ""}`}</output>;
-  }
+function Probe() {
+  const state = useWriteGuard("scripts");
+  return <output>{`${state.allowed}|${state.reason}|${state.message ?? ""}`}</output>;
+}
 
+describe("useWriteGuard", () => {
   it("returns the decision and the reason", () => {
     const owner = renderWithSession(<Probe />, { session: personaSession("owner") });
     expect(screen.getByRole("status")).toHaveTextContent("true|null|");

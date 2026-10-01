@@ -153,7 +153,7 @@ describe("apiRequest: requests", () => {
 
 describe("apiRequest: errors", () => {
   it("maps 401 to UnauthorizedError and triggers the login redirect once", async () => {
-    const handler = vi.fn();
+    const handler = vi.fn<() => void>();
     setUnauthorizedHandler(handler);
     stubFetch(json({ error: "Not signed in" }, 401));
     const error = await api.get("/api/things").catch((e: unknown) => e);

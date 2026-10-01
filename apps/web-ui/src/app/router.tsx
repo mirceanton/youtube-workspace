@@ -4,14 +4,8 @@ import { ACCESS_DENIED_PATH } from "@/lib/contract.ts";
 import { AppShell } from "./AppShell.tsx";
 import type { FeatureDefinition } from "./features.ts";
 import { HomeRedirect } from "./HomeRedirect.tsx";
-import { LoadingState } from "@/kit/states.tsx";
-import { AccessDeniedPage, NotFoundPage, RouteErrorPage } from "./pages.tsx";
+import { AccessDeniedPage, HydrateFallback, NotFoundPage, RouteErrorPage } from "./pages.tsx";
 import { SessionGate } from "./SessionGate.tsx";
-
-// Shown while the first route's code (a lazily loaded page) is still being fetched.
-function HydrateFallback() {
-  return <LoadingState className="min-h-dvh" />;
-}
 
 /**
  * The route table:

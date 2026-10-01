@@ -101,15 +101,15 @@ describe("production bundle of the app", () => {
   });
 });
 
-describe("a feature that uses the heavy kit components", () => {
-  async function heavyBuild() {
-    return bundle({
-      build: {
-        rolldownOptions: { input: resolve(appRoot, "test/bundle-fixture/entry.tsx") },
-      },
-    });
-  }
+async function heavyBuild() {
+  return bundle({
+    build: {
+      rolldownOptions: { input: resolve(appRoot, "test/bundle-fixture/entry.tsx") },
+    },
+  });
+}
 
+describe("a feature that uses the heavy kit components", () => {
   it("loads zod, uPlot and the markdown renderer lazily, never with the initial download", async () => {
     const chunks = await heavyBuild();
     const initial = new Set(initialChunks(chunks).map((chunk) => chunk.fileName));

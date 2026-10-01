@@ -35,6 +35,16 @@ const FORBIDDEN_TAGS = [
   "dialog",
 ];
 const SAFE_SCHEMES = /^(https?:|mailto:|#)/;
+const FORBIDDEN_ATTRIBUTES = [
+  "style",
+  "srcdoc",
+  "src",
+  "action",
+  "formaction",
+  "xlink:href",
+  "data",
+  "background",
+];
 
 async function renderMarkdown(
   markdown: string,
@@ -46,47 +56,46 @@ async function renderMarkdown(
   return view;
 }
 
-/** Nothing in the rendered DOM may be live: no script-capable element, handler, style or unsafe URL. */
-function expectInert(root: Element): void {
+/** Everything wrong with a rendered DOM: no script-capable element, handler, style or unsafe URL may be live. */
+function problemsIn(root: Element): string[] {
+  const problems: string[] = [];
   for (const tag of FORBIDDEN_TAGS) {
-    expect(root.querySelector(tag), `<${tag}> must not be rendered`).toBeNull();
+    if (root.querySelector(tag)) problems.push(`<${tag}> was rendered`);
   }
   for (const element of root.querySelectorAll("*")) {
     for (const attribute of element.attributes) {
-      expect(attribute.name.startsWith("on"), `${element.tagName} has ${attribute.name}`).toBe(
-        false,
-      );
-      expect([
-        "style",
-        "srcdoc",
-        "src",
-        "action",
-        "formaction",
-        "xlink:href",
-        "data",
-        "background",
-      ]).not.toContain(attribute.name);
+      if (attribute.name.startsWith("on"))
+        problems.push(`${element.tagName} has ${attribute.name}`);
+      if (FORBIDDEN_ATTRIBUTES.includes(attribute.name)) {
+        problems.push(`${element.tagName} has ${attribute.name}`);
+      }
     }
     if (element.tagName === "INPUT") {
-      expect(element.getAttribute("type")).toBe("checkbox");
-      expect(element.hasAttribute("disabled")).toBe(true);
+      const inert = element.getAttribute("type") === "checkbox" && element.hasAttribute("disabled");
+      if (!inert) problems.push("an <input> other than a disabled checkbox was rendered");
     }
   }
   for (const anchor of root.querySelectorAll("a")) {
     const href = anchor.getAttribute("href");
     if (href === null) continue;
-    expect(href, `unsafe href ${href}`).toMatch(SAFE_SCHEMES);
+    if (!SAFE_SCHEMES.test(href)) problems.push(`unsafe href ${href}`);
     if (href.startsWith("http")) {
-      expect(anchor.getAttribute("target")).toBe("_blank");
       const rel = anchor.getAttribute("rel") ?? "";
-      expect(rel).toContain("noopener");
-      expect(rel).toContain("noreferrer");
+      const safeTab =
+        anchor.getAttribute("target") === "_blank" &&
+        rel.includes("noopener") &&
+        rel.includes("noreferrer");
+      if (!safeTab)
+        problems.push(`external link ${href} lacks target=_blank rel=noopener noreferrer`);
     }
-    expect(
-      anchor.attributes.length,
-      "anchors carry only href, target, rel and title",
-    ).toBeLessThanOrEqual(4);
+    if (anchor.attributes.length > 4)
+      problems.push("an anchor carries more than href, target, rel, title");
   }
+  return problems;
+}
+
+function expectInert(root: Element): void {
+  expect(problemsIn(root)).toEqual([]);
 }
 
 describe("MarkdownView: XSS payload corpus", () => {
