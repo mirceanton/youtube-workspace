@@ -1,5 +1,3 @@
-import { z } from "zod";
-
 /**
  * Objects that carry an access level for every user and every API token (PRD 7, "Access model").
  * `videos` covers videos and their metric snapshots; `activity` is the audit log.
@@ -16,12 +14,10 @@ export const RESOURCES = [
   "activity",
 ] as const;
 export type Resource = (typeof RESOURCES)[number];
-export const resourceSchema = z.enum(RESOURCES);
 
 /** Access levels in ascending order: each level includes everything before it (Write includes Read). */
 export const LEVELS = ["none", "read", "write"] as const;
 export type Level = (typeof LEVELS)[number];
-export const levelSchema = z.enum(LEVELS);
 
 /**
  * Levels that may ever be stored for a resource. The activity log is None or Read only (PRD 7);
@@ -48,19 +44,3 @@ export const RESOURCE_LABELS: Readonly<Record<Resource, string>> = {
 
 /** One level per resource: a user's levels, a token's levels, or a token's effective levels. */
 export type ResourceLevels = Record<Resource, Level>;
-
-/** Every resource must be present, and each level must be grantable for its resource. */
-export const resourceLevelsSchema = z
-  .record(resourceSchema, levelSchema)
-  .superRefine((levels, ctx) => {
-    for (const resource of RESOURCES) {
-      const allowed = GRANTABLE_LEVELS[resource];
-      if (!allowed.includes(levels[resource])) {
-        ctx.addIssue({
-          code: "custom",
-          path: [resource],
-          message: `"${levels[resource]}" is not allowed for ${resource}; valid levels: ${allowed.join(", ")}`,
-        });
-      }
-    }
-  });

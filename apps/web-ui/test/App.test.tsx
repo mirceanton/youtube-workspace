@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { IDEA_PIPELINE, IDEA_STAGE_LABELS } from "@ytw/shared";
+import { IDEA_PIPELINE, IDEA_STAGE_LABELS } from "@ytw/shared/constants";
 import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../src/App.tsx";
 

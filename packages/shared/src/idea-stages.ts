@@ -1,5 +1,3 @@
-import { z } from "zod";
-
 /** Every stage an idea can be in (PRD 4, "Idea stages"). */
 export const IDEA_STAGES = [
   "inbox",
@@ -11,7 +9,6 @@ export const IDEA_STAGES = [
   "dropped",
 ] as const;
 export type IdeaStage = (typeof IDEA_STAGES)[number];
-export const ideaStageSchema = z.enum(IDEA_STAGES);
 
 /** The forward pipeline in order. `dropped` sits outside it. */
 export const IDEA_PIPELINE = [

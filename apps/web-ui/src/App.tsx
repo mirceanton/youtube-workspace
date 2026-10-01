@@ -1,4 +1,4 @@
-import { IDEA_PIPELINE, IDEA_STAGE_LABELS } from "@ytw/shared";
+import { IDEA_PIPELINE, IDEA_STAGE_LABELS } from "@ytw/shared/constants";
 
 export function App() {
   return (

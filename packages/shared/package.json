@@ -9,6 +9,11 @@
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
     },
+    "./constants": {
+      "@ytw/source": "./src/constants.ts",
+      "types": "./dist/src/constants.d.ts",
+      "default": "./dist/src/constants.js"
+    },
     "./api/*": {
       "@ytw/source": "./src/api/*.ts",
       "types": "./dist/src/api/*.d.ts",
