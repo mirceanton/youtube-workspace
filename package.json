@@ -1,0 +1,27 @@
+{
+  "name": "youtube-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" run dev",
+    "build": "pnpm -r run build",
+    "typecheck": "tsc -b",
+    "lint": "tsc -b && oxlint --deny-warnings",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "migrate": "pnpm --filter @ytw/db run migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "oxlint": "^1.86.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

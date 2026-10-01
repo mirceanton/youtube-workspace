@@ -1,0 +1,6 @@
+pnpm-lock.yaml
+dist/
+coverage/
+node_modules/
+# Markdown is hand-formatted (wide tables in the PRD and plan read better unwrapped).
+*.md

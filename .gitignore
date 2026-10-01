@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+
+# Local configuration: never commit secrets. Only the documented example is tracked.
+.env
+.env.*
+!.env.example
+
+# Playwright output (e2e/)
+playwright-report/
+test-results/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

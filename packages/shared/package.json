@@ -1,0 +1,26 @@
+{
+  "name": "@ytw/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@ytw/source": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./api/*": {
+      "@ytw/source": "./src/api/*.ts",
+      "types": "./dist/src/api/*.d.ts",
+      "default": "./dist/src/api/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc -b && oxlint --deny-warnings",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  }
+}

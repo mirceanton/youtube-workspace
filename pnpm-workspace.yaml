@@ -1,0 +1,23 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "e2e"
+
+# Versions shared by more than one workspace package. Reference them from a
+# package.json as `"zod": "catalog:"` so every package resolves the same
+# version and Renovate bumps them in one place.
+catalog:
+  fastify: ^5.12.5
+  zod: ^4.6.5
+
+# Packages allowed to run install/postinstall scripts. Everything else is
+# blocked; add an entry here (with a reason in the commit message) only when
+# a dependency genuinely needs its build step.
+allowBuilds:
+  esbuild: true
+
+# Require published packages to be at least 24h old before pnpm will
+# install them, as a defense against just-published/compromised releases.
+# This matches pnpm's own default; made explicit so it's a documented,
+# intentional policy rather than an implicit CLI default.
+minimumReleaseAge: 1440

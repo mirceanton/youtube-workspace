@@ -1,0 +1,19 @@
+{
+  "name": "@ytw/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "scripts": {
+    "dev": "tsx watch --conditions=@ytw/source --env-file-if-exists=../../.env --env-file-if-exists=.env src/index.ts",
+    "build": "tsc -b",
+    "start": "node dist/src/index.js",
+    "lint": "tsc -b && oxlint --deny-warnings",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ytw/shared": "workspace:*",
+    "fastify": "catalog:",
+    "zod": "catalog:"
+  }
+}

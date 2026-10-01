@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/db" },
+    { "path": "packages/policy" },
+    { "path": "packages/tokens" },
+    { "path": "packages/script-md" },
+    { "path": "packages/observability" },
+    { "path": "apps/mcp" },
+    { "path": "apps/web-server" },
+    { "path": "apps/web-ui" },
+    { "path": "e2e" }
+  ]
+}
