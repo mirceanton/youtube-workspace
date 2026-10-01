@@ -15,7 +15,7 @@ docker compose up -d     # Postgres and Keycloak; or: pnpm dev:stack (waits unti
 pnpm dev                 # web server, MCP server and web UI
 ```
 
-Keycloak takes 20 to 40 seconds to start the first time. It is healthy once the realm is imported
+Keycloak takes up to a minute to start (about 40 seconds on GitHub Actions). It is healthy once the realm is imported
 and `http://localhost:8080/realms/youtube-workspace/.well-known/openid-configuration` answers.
 `docker compose up -d keycloak` starts only Keycloak.
 
@@ -68,8 +68,8 @@ below).
 - **Group membership mapper** on the client: adds a `groups` claim to the ID token, the access token
   and the userinfo response, with short group names (`full.path` off), so the claim looks like
   `"groups": ["youtube-workspace-users"]`. A user in no group gets an empty list. With full paths
-  turned on it would be `["/youtube-workspace-users"]`; the web server's group check tolerates
-  that form, but the realm does not use it.
+  turned on it would be `["/youtube-workspace-users"]`; the realm does not use that form, so
+  `OIDC_REQUIRED_GROUP` is the bare name.
 - The standard client scopes (`profile`, `email`, `roles`, ...) give the ID token `sub`,
   `preferred_username` (the audit actor), `name` and `email`.
 
