@@ -163,17 +163,40 @@ describe("feature declaration checks", () => {
   });
 
   it.each([
-    ["an unknown resource", { resource: "comments", level: "read" }],
-    ["level none", { resource: "ideas", level: "none" }],
-    ["an empty list", []],
-    ["a string other than any", "everyone"],
-    ["a missing value", undefined],
-  ])("rejects requires with %s", (_name, requires) => {
+    ["an unknown resource", { resource: "comments", level: "read" }, "valid objects"],
+    ["level none", { resource: "ideas", level: "none" }, "needs level read or write"],
+    [
+      "write on the read-only activity log",
+      { resource: "activity", level: "write" },
+      "can never be held",
+    ],
+    ["an empty list", [], "the list is empty"],
+    [
+      "a list with a bad entry",
+      ["authenticated", { resource: "ideas", level: "owner" }],
+      "needs level",
+    ],
+    ["a string that is not a rule", "everyone", "Unknown access rule"],
+    ["the public rule (features sit behind the login)", "public", "Unknown access rule"],
+    ["a missing value", undefined, "Unknown access rule"],
+  ])("rejects requires with %s", (_name, requires, detail) => {
+    const message = problemsOf({ "../features/ideas/routes.tsx": mod({ ...valid(), requires }) });
+    expect(message).toContain("requires is invalid");
+    expect(message).toContain(detail);
+    expect(message).toContain('"authenticated", "admin"');
+  });
+
+  it.each([
+    ["a read requirement", { resource: "ideas", level: "read" }],
+    ["a write requirement", { resource: "scripts", level: "write" }],
+    ["read on the activity log", { resource: "activity", level: "read" }],
+    ["authenticated", "authenticated"],
+    ["admin", "admin"],
+    ["a list mixing them", [{ resource: "ideas", level: "write" }, "admin"]],
+  ])("accepts requires with %s", (_name, requires) => {
     expect(
-      problemsOf({
-        "../features/ideas/routes.tsx": mod({ ...valid(), requires }),
-      }),
-    ).toContain("requires must be");
+      discoverFeatures({ "../features/ideas/routes.tsx": mod({ ...valid(), requires }) }),
+    ).toHaveLength(1);
   });
 
   it.each([
@@ -204,10 +227,10 @@ describe("feature declaration checks", () => {
 
 describe("navEntriesFor", () => {
   const features = discoverFeatures(fixtureModules);
-  const ids = (levels: Parameters<typeof sessionWith>[0]) =>
-    navEntriesFor(features, sessionWith(levels).levels).map((e) => e.id);
+  const ids = (levels: Parameters<typeof sessionWith>[0], isAdmin = false) =>
+    navEntriesFor(features, sessionWith(levels, isAdmin)).map((e) => e.id);
 
-  it("shows a feature only when the stored levels satisfy its requirement", () => {
+  it("shows a feature only when the user's levels satisfy its requirement", () => {
     expect(ids({ ideas: "read" })).toEqual(["alpha", "delta"]);
     expect(ids({ ideas: "read", scripts: "write" })).toEqual(["beta", "alpha", "delta"]);
     expect(ids({ scripts: "read" })).toEqual(["delta"]);
@@ -219,18 +242,34 @@ describe("navEntriesFor", () => {
     expect(ids({ experiments: "read" })).toEqual(["delta"]);
   });
 
-  it('"any" needs some access, a feature without nav never appears, and None everywhere shows nothing', () => {
-    expect(ids({})).toEqual([]);
+  it('"authenticated" suits every signed-in user, and a feature without nav never appears', () => {
+    // A user with None everywhere never gets this far: SessionGate shows "access not granted".
+    expect(ids({})).toEqual(["delta"]);
     expect(ids({ videos: "read" })).toEqual(["delta"]);
     expect(ids({ ideas: "write" })).not.toContain("hidden");
+  });
+
+  it("gives admins everything the rules allow, whatever their stored rows say", () => {
+    // Policy layer: an admin has Write on every object, so every feature is open to them.
+    expect(ids({}, true)).toEqual(["beta", "alpha", "gamma", "delta"]);
+  });
+
+  it('"admin" opens a feature to admins only', () => {
+    const adminOnly = valid({
+      id: "access",
+      requires: "admin",
+      routes: [{ path: "access", element: null }],
+    });
+    expect(navEntriesFor([adminOnly], sessionWith({ ideas: "write" }))).toEqual([]);
+    expect(navEntriesFor([adminOnly], sessionWith({ ideas: "write" }, true))).toHaveLength(1);
   });
 
   it("links to /<id> unless the feature says otherwise", () => {
     const entries = navEntriesFor(
       [valid({ nav: { label: "Ideas", icon: Lightbulb, order: 1, to: "/ideas/board" } })],
-      sessionWith({ ideas: "read" }).levels,
+      sessionWith({ ideas: "read" }),
     );
     expect(entries[0]?.to).toBe("/ideas/board");
-    expect(navEntriesFor(features, sessionWith({ ideas: "read" }).levels)[0]?.to).toBe("/alpha");
+    expect(navEntriesFor(features, sessionWith({ ideas: "read" }))[0]?.to).toBe("/alpha");
   });
 });

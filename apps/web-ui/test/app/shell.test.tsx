@@ -16,7 +16,7 @@ const fixtures = discoverFeatures(
 function extra(id: string, order: number): FeatureDefinition {
   return defineFeature({
     id,
-    requires: "any",
+    requires: "authenticated",
     nav: { label: id[0]?.toUpperCase() + id.slice(1), icon: Star, order },
     routes: [{ path: id, element: <h1>{id} page</h1> }],
   });
@@ -398,7 +398,7 @@ describe("errors inside a screen", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const broken = defineFeature({
       id: "broken",
-      requires: "any",
+      requires: "authenticated",
       nav: { label: "Broken", icon: Star, order: 5 },
       routes: [
         {
@@ -422,7 +422,7 @@ describe("errors inside a screen", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const flaky = defineFeature({
       id: "flaky",
-      requires: "any",
+      requires: "authenticated",
       routes: [
         {
           path: "flaky",

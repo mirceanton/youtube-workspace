@@ -3,7 +3,7 @@ import { defineFeature } from "../../../../src/app/features.ts";
 
 export default defineFeature({
   id: "delta",
-  requires: "any",
+  requires: "authenticated",
   nav: { label: "Delta", icon: Settings, order: 90 },
   routes: [{ path: "delta", element: <h1>Delta page</h1> }],
 });

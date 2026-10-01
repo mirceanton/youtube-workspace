@@ -1,12 +1,14 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, useMemo } from "react";
 import {
-  GRANTABLE_LEVELS,
-  LEVELS,
-  RESOURCES,
-  type Level,
-  type Resource,
-  type ResourceLevels,
-} from "@ytw/shared/constants";
+  authorize,
+  can,
+  hasAnyAccess as principalHasAnyAccess,
+  userLevels,
+  type AccessRule,
+  type RequiredLevel,
+  type UserPrincipal,
+} from "@ytw/policy";
+import { GRANTABLE_LEVELS, RESOURCES, type Level, type Resource } from "@ytw/shared/constants";
 // Types only: importing values from "@ytw/shared/api/session" would pull zod into the shell.
 import type { MeResponse, SessionUser } from "@ytw/shared/api/session";
 import { api } from "./api.ts";
@@ -18,19 +20,18 @@ export type { MeResponse, SessionUser };
 /** Query key of the signed-in user. Invalidate it after changing a user's levels. */
 export const ME_QUERY_KEY = ["session"] as const;
 
-/** A level a feature can require: `none` would mean "anyone". */
-export type RequiredLevel = Exclude<Level, "none">;
-
-export interface AccessRequirement {
-  resource: Resource;
-  level: RequiredLevel;
-}
+export type { RequiredLevel };
 
 /**
- * What a feature needs before it is shown: one requirement, a list (any one of them is enough),
- * or `"any"` for screens every user with some access may open (the settings page, for example).
+ * One rule a feature or a part of a screen can declare, in the policy layer's vocabulary
+ * (`@ytw/policy`, docs/policy.md): a level on one object, `{ resource: "ideas", level: "read" }`;
+ * `"authenticated"` for screens every signed-in user may open (the settings page); `"admin"` for
+ * admin-only parts (the access matrix).
  */
-export type FeatureAccess = AccessRequirement | readonly AccessRequirement[] | "any";
+export type FeatureRule = Exclude<AccessRule, "public">;
+
+/** A rule, or a list of rules of which any one is enough. */
+export type FeatureAccess = FeatureRule | readonly FeatureRule[];
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -92,23 +93,34 @@ export function fetchMe(signal?: AbortSignal): Promise<MeResponse> {
   });
 }
 
-/** True when `actual` is at least `needed` (Write includes Read, Read includes None). */
-export function levelAtLeast(actual: Level, needed: Level): boolean {
-  return LEVELS.indexOf(actual) >= LEVELS.indexOf(needed);
+/**
+ * The signed-in user as the policy layer's principal, so the SPA decides what to show with the same
+ * code the servers use to decide what to allow (admins have Write on everything, Write includes
+ * Read, nothing can require Write on the activity log). The decision is still cosmetic: the server
+ * checks every request against the levels it loads itself.
+ */
+export function principalOf(me: MeResponse): UserPrincipal {
+  return {
+    kind: "user",
+    userId: me.user.id,
+    username: me.user.username,
+    isAdmin: me.user.isAdmin,
+    levels: me.levels,
+  };
 }
 
 /** True when the user has some access to at least one object; otherwise the app shows "access not granted". */
-export function hasAnyAccess(levels: ResourceLevels): boolean {
-  return RESOURCES.some((resource) => levels[resource] !== "none");
+export function hasAnyAccess(me: MeResponse): boolean {
+  return principalHasAnyAccess(principalOf(me));
 }
 
-/** Cosmetic check (the server decides): do `levels` satisfy a feature's requirement? */
-export function meetsRequirement(levels: ResourceLevels, requires: FeatureAccess): boolean {
-  if (requires === "any") return hasAnyAccess(levels);
-  const list: readonly AccessRequirement[] = Array.isArray(requires)
+/** Cosmetic check (the server decides): does this user satisfy a rule, or any rule of a list? */
+export function meetsRequirement(me: MeResponse, requires: FeatureAccess): boolean {
+  const principal = principalOf(me);
+  const rules: readonly FeatureRule[] = Array.isArray(requires)
     ? requires
-    : [requires as AccessRequirement];
-  return list.some(({ resource, level }) => levelAtLeast(levels[resource], level));
+    : [requires as FeatureRule];
+  return rules.some((rule) => authorize(principal, rule).allowed);
 }
 
 export const SessionContext = createContext<MeResponse | null>(null);
@@ -120,12 +132,18 @@ export function useSession(): MeResponse {
   return session;
 }
 
-/** The user's stored level for one object. */
-export function useLevel(resource: Resource): Level {
-  return useSession().levels[resource];
+/** The signed-in user as a policy principal (`can`, `authorize`, `grantOptions`, `describeLevels` take it). */
+export function usePrincipal(): UserPrincipal {
+  const me = useSession();
+  return useMemo(() => principalOf(me), [me]);
 }
 
-/** Whether the user's stored level for `resource` is at least `level`. Hiding UI with this is cosmetic. */
+/** The user's effective level for one object (an admin has Write everywhere; Activity is Read at most). */
+export function useLevel(resource: Resource): Level {
+  return userLevels(usePrincipal())[resource];
+}
+
+/** Whether the user has at least `level` on `resource`. Hiding UI with this is cosmetic. */
 export function useCan(resource: Resource, level: RequiredLevel): boolean {
-  return levelAtLeast(useLevel(resource), level);
+  return can(usePrincipal(), resource, level);
 }

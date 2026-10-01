@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.0",
+    "@ytw/policy": "workspace:*",
     "@ytw/shared": "workspace:*",
     "lucide-react": "^1.49.0",
     "react": "^19.3.0",

@@ -18,8 +18,7 @@ export interface RequireAccessProps {
  * (an admin-only tab). It is cosmetic: the server checks every request again.
  */
 export function RequireAccess({ requires, children, fallback }: RequireAccessProps) {
-  const { levels } = useSession();
-  if (meetsRequirement(levels, requires)) return children ?? <Outlet />;
+  if (meetsRequirement(useSession(), requires)) return children ?? <Outlet />;
   return (
     fallback ?? (
       <EmptyState

@@ -236,8 +236,8 @@ function ShellFrame({ entries, children }: { entries: NavEntry[]; children: Reac
  * handling. The navigation lists the features the user's levels allow (see features.ts).
  */
 export function AppShell({ features }: { features: readonly FeatureDefinition[] }) {
-  const { levels } = useSession();
-  const entries = useMemo(() => navEntriesFor(features, levels), [features, levels]);
+  const me = useSession();
+  const entries = useMemo(() => navEntriesFor(features, me), [features, me]);
   return (
     <ShellFrame entries={entries}>
       <Outlet />

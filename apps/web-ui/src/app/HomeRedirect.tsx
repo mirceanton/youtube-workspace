@@ -6,8 +6,7 @@ import { navEntriesFor, type FeatureDefinition } from "./features.ts";
 
 /** `/`: send the user to the first screen they may open (the dashboard, once it exists). */
 export function HomeRedirect({ features }: { features: readonly FeatureDefinition[] }) {
-  const { levels } = useSession();
-  const first = navEntriesFor(features, levels)[0];
+  const first = navEntriesFor(features, useSession())[0];
   if (first) return <Navigate to={first.to} replace />;
   return (
     <EmptyState

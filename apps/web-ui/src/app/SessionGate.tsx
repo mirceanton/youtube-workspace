@@ -22,7 +22,7 @@ export function SessionGate({ children }: { children: ReactNode }) {
   if (query.error instanceof ResponseShapeError) return <VersionMismatchPage />;
 
   if (query.data) {
-    if (!hasAnyAccess(query.data.levels)) {
+    if (!hasAnyAccess(query.data)) {
       return (
         <AccessNotGrantedPage
           me={query.data}

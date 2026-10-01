@@ -1,7 +1,7 @@
 import type { RouteObject } from "react-router";
 import type { IconComponent } from "@/kit/types.ts";
-import { meetsRequirement, type FeatureAccess } from "@/lib/session.ts";
-import { RESOURCES, type ResourceLevels } from "@ytw/shared/constants";
+import { validateRequirement } from "@ytw/policy";
+import { meetsRequirement, type FeatureAccess, type MeResponse } from "@/lib/session.ts";
 
 // Feature auto-discovery. A feature is a folder `src/features/<id>/` with a `routes.tsx` that
 // default-exports `defineFeature({...})`. The shell finds every such file with `import.meta.glob`
@@ -28,9 +28,10 @@ export interface FeatureDefinition {
   /** Unique, lower-case, equal to the folder name: `ideas`, `activity`. */
   id: string;
   /**
-   * Access needed to see the feature (nav item and routes): `{ resource: "ideas", level: "read" }`,
-   * an array (any one suffices), or `"any"` for screens every user with some access may open.
-   * Cosmetic: the server enforces the real rule on every request.
+   * Access needed to see the feature (nav item and routes), in the policy layer's vocabulary:
+   * `{ resource: "ideas", level: "read" }`, `"authenticated"` for screens every signed-in user may
+   * open, `"admin"` for admin-only screens, or an array of these (any one suffices). Cosmetic: the
+   * server enforces the real rule on every request.
    */
   requires: FeatureAccess;
   /** Omit for a feature that is reachable only by links (no nav item). */
@@ -65,20 +66,26 @@ function isComponent(value: unknown): boolean {
   );
 }
 
-function isRequirement(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const { resource, level } = value as { resource?: unknown; level?: unknown };
-  return (
-    typeof resource === "string" &&
-    (RESOURCES as readonly string[]).includes(resource) &&
-    (level === "read" || level === "write")
-  );
+/** Why a declared rule is unusable, or null. Uses the policy layer's own check for level rules. */
+function ruleProblem(rule: unknown): string | null {
+  if (rule === "authenticated" || rule === "admin") return null;
+  try {
+    validateRequirement(rule as Parameters<typeof validateRequirement>[0]);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
-function validateRequires(requires: unknown): boolean {
-  if (requires === "any") return true;
-  if (Array.isArray(requires)) return requires.length > 0 && requires.every(isRequirement);
-  return isRequirement(requires);
+/** Why `requires` is unusable (empty string when it is fine). */
+function requiresProblem(requires: unknown): string {
+  const rules = Array.isArray(requires) ? requires : [requires];
+  if (rules.length === 0) return "the list is empty";
+  for (const rule of rules) {
+    const problem = ruleProblem(rule);
+    if (problem) return problem;
+  }
+  return "";
 }
 
 function folderOf(path: string): string {
@@ -113,9 +120,11 @@ export function discoverFeatures(modules: Record<string, unknown>): FeatureDefin
       if (other) problems.push(`${where}: id is already used by ${other}`);
       else seenIds.set(id, file);
     }
-    if (!validateRequires(feature.requires)) {
+    const requiresIssue = requiresProblem(feature.requires);
+    if (requiresIssue) {
       problems.push(
-        `${where}: requires must be { resource, level: "read" | "write" }, an array of those, or "any"`,
+        `${where}: requires is invalid (${requiresIssue}); use { resource, level: "read" | "write" }, ` +
+          '"authenticated", "admin", or a list of these where any one suffices',
       );
     }
     if (feature.nav !== undefined) {
@@ -166,17 +175,14 @@ export interface NavEntry {
 }
 
 /**
- * The navigation for a user: features with a nav item whose requirement their levels satisfy, by
+ * The navigation for a user: features with a nav item whose requirement the user satisfies, by
  * `nav.order` (ties by id), whatever order the features arrive in.
  */
-export function navEntriesFor(
-  features: readonly FeatureDefinition[],
-  levels: ResourceLevels,
-): NavEntry[] {
+export function navEntriesFor(features: readonly FeatureDefinition[], me: MeResponse): NavEntry[] {
   return features
     .filter(
       (feature): feature is FeatureDefinition & { nav: FeatureNav } =>
-        feature.nav !== undefined && meetsRequirement(levels, feature.requires),
+        feature.nav !== undefined && meetsRequirement(me, feature.requires),
     )
     .toSorted((a, b) => a.nav.order - b.nav.order || a.id.localeCompare(b.id))
     .map((feature) => ({
