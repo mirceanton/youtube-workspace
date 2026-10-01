@@ -28,7 +28,7 @@ const logger = createLogger({
   level: env.LOG_LEVEL,
   version: env.APP_VERSION,
   commit: env.GIT_SHA,
-  secrets: secretValuesFromEnv(), // SESSION_SECRET, OIDC_CLIENT_SECRET, METRICS_TOKEN, ...
+  secrets: secretValuesFromEnv(), // SESSION_SECRET, OIDC_CLIENT_SECRET, METRICS_TOKEN, DATABASE_URL, ...
 });
 
 const app = Fastify({ ...fastifyLoggingOptions(logger), bodyLimit: 1024 * 1024 });
@@ -132,18 +132,29 @@ by `[REDACTED]`):
    (`{"refreshToken": "..."}`, also when that JSON is itself inside a JSON string, at any nesting
    depth), where the name is judged by the same rule as object keys in any naming style (`refresh_token`,
    `refreshToken`, `clientSecret`, `encryptionKey`; `max_tokens` and `tokenizer` are not credentials),
-   and the literal values passed as `secrets` (see `secretValuesFromEnv`; values shorter than 8
-   characters are ignored). The last pass over the line (`createLineScrubber`) never changes the
+   and the literal values passed as `secrets`. `secretValuesFromEnv` collects them: variables named
+   like a secret (`*_SECRET`, `*_PASSWORD`, `*_TOKEN`, `*_API_KEY`, `*_KEY`, ...) and connection
+   strings with a password (`DATABASE_URL`, `MIGRATION_DATABASE_URL`, `READONLY_DATABASE_URL`: the
+   whole URL, plus the password alone when it is at least 12 characters). Values shorter than 8
+   characters are ignored. The last pass over the line (`createLineScrubber`) never changes the
    structure of the JSON, and the message pino derives from an error (`log.error(err)`) is scrubbed
    like any other.
 
 Log arguments, request URLs and bodies are attacker controlled, so the value layer is built to be
 cheap on hostile input: every pattern is linear (a pattern that starts on a run of characters
-excludes that run's own characters in a lookbehind, with no nested quantifiers), and any single
-string longer than 16 KB (`MAX_SCRUB_LENGTH`) is cut to its first 12 KB and last 4 KB with
-`[truncated N characters]` in between, without leaving half of a token at the cut. Do not log request
-bodies wholesale; log identifiers. `test/scrub-performance.test.ts` holds a hostile 16 KB input for
-every pattern; a new pattern needs one there.
+excludes that run's own characters in a lookbehind, with no nested quantifiers), and the work per
+string is bounded. A string is always scrubbed first and shortened after: a result longer than 16 KB
+(`MAX_SCRUB_LENGTH`) keeps its first 12 KB and last 4 KB with `[truncated N characters]` in
+between, so a cut can never separate a credential's name from its value. Only the first 256 KB
+(`MAX_SCRUB_INPUT_LENGTH`) of a string are read at all; the rest is dropped and never logged
+(`[truncated N more characters]`). Do not log request bodies wholesale; log identifiers.
+`test/scrub-performance.test.ts` holds a hostile 16 KB input for every pattern (a new pattern needs
+one there) and sweeps credentials across every cut position.
+
+Not detected: a cookie interpolated into free text with nothing around it to recognise it by
+(`` `cookie header was ${name}=${value}` ``). The key layer only sees fields named `cookie`, the value
+layer only `Cookie: ...` text and `cookie=...` assignments. Services must never interpolate cookies,
+headers or request bodies into messages; log the field names or an identifier instead.
 
 Request lines use a serializer that picks `method`, `url`, `host` and the remote address explicitly,
 so headers are never part of them. Serializers passed to a child logger (Fastify route-level

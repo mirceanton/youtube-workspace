@@ -49,6 +49,7 @@ export { metricsRoutePlugin, type MetricsRouteOptions } from "./metrics-route.js
 export { observabilityPlugin, type Observability, type ObservabilityOptions } from "./plugin.js";
 export {
   MAX_REDACT_DEPTH,
+  MAX_SCRUB_INPUT_LENGTH,
   MAX_SCRUB_LENGTH,
   REDACTED,
   SCRUB_HEAD_LENGTH,

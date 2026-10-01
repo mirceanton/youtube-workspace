@@ -38,21 +38,45 @@ export interface CreateLoggerOptions {
 }
 
 /** Environment variable names whose values are secrets. */
-const SECRET_ENV_NAME = /(SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE_KEY|API_KEY|CREDENTIAL)/i;
+const SECRET_ENV_NAME = /(SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE_KEY|API_KEY|CREDENTIAL|(^|_)KEY$)/i;
+/** Names of connection strings, which carry a password inside the URL. */
+const URL_ENV_NAME = /((^|_)(URL|URI|DSN)$|CONNECTION)/i;
+/** `scheme://user:password@host`: the password is group 1. */
+const URL_PASSWORD = /^[a-z][a-z0-9+.-]*:\/\/[^\s:/?#@]*:([^\s/?#@]+)@/i;
+/** A bare password shorter than this is not registered: "postgres" would mangle every log line. */
+const MIN_URL_PASSWORD_LENGTH = 12;
 
 /**
- * Collects the values of secret-looking environment variables (`SESSION_SECRET`,
- * `OIDC_CLIENT_SECRET`, `METRICS_TOKEN`, ...) for {@link CreateLoggerOptions.secrets}. Passwords
- * inside connection strings are removed by pattern and need no registration.
+ * Collects the secret values of the environment for {@link CreateLoggerOptions.secrets}: variables
+ * named like a secret (`SESSION_SECRET`, `OIDC_CLIENT_SECRET`, `METRICS_TOKEN`, `*_API_KEY`,
+ * `ENCRYPTION_KEY`, ...) and connection strings that carry a password (`DATABASE_URL`,
+ * `MIGRATION_DATABASE_URL`, `READONLY_DATABASE_URL`), both whole and, when it is long enough to be a
+ * real password, the password alone. Passwords inside any URL are also removed by pattern.
  */
 export function secretValuesFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string[] {
   const values: string[] = [];
   for (const [name, value] of Object.entries(env)) {
-    if (value && SECRET_ENV_NAME.test(name)) values.push(value);
+    if (!value) continue;
+    if (SECRET_ENV_NAME.test(name)) {
+      values.push(value);
+    } else if (URL_ENV_NAME.test(name)) {
+      const password = URL_PASSWORD.exec(value)?.[1];
+      if (password === undefined) continue;
+      values.push(value);
+      if (password.length >= MIN_URL_PASSWORD_LENGTH) values.push(password, safeDecode(password));
+    }
   }
   return values;
+}
+
+function safeDecode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
 }
 
 /**

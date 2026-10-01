@@ -86,9 +86,11 @@ export function isSensitiveKey(key: string): boolean {
 //   first position of a run can start a match. A 16 KB URL built to make a naive regex backtrack
 //   quadratically cost hundreds of milliseconds of event loop; test/scrub-performance.test.ts keeps
 //   a hostile input per pattern.
-// - Bounded input. A string longer than MAX_SCRUB_LENGTH is cut (see `bound`) before any pattern
-//   sees it, so the work per string has a ceiling whatever the patterns do.
-// - Fail closed. Cutting removes text, and the cut never leaves half of a token behind.
+// - Bounded work. At most MAX_SCRUB_INPUT_LENGTH characters of a string are read; the rest is
+//   dropped unread, so the work per string has a ceiling whatever the patterns do. A longer result
+//   is shortened to MAX_SCRUB_LENGTH, but only AFTER scrubbing: cutting first could land between a
+//   credential's name and its value and leave the value behind with nothing to recognise it by.
+// - Fail closed. Anything that is cut or dropped is gone from the log, never passed through.
 
 /** Query-string / fragment parameters whose value is a credential or a one-time code. */
 const SENSITIVE_QUERY_PARAMS = [
@@ -317,44 +319,30 @@ function scrubBuiltIn(input: string, jsonLine: boolean): string {
   return out;
 }
 
-/** A single string longer than this is cut before it is scrubbed. */
+/** A scrubbed string longer than this is shortened for the log: its start and its end are kept. */
 export const MAX_SCRUB_LENGTH = 16 * 1024;
-/** How much of a cut string is kept: the start, which says what it was, and the end. */
 export const SCRUB_HEAD_LENGTH = 12 * 1024;
 export const SCRUB_TAIL_LENGTH = MAX_SCRUB_LENGTH - SCRUB_HEAD_LENGTH;
-/** The cut moves at most this far to avoid leaving part of a token behind. */
-const MAX_PARTIAL_TOKEN = 2048;
-
-function isTokenCharacter(code: number): boolean {
-  return (
-    (code >= 0x30 && code <= 0x39) || // 0-9
-    (code >= 0x41 && code <= 0x5a) || // A-Z
-    (code >= 0x61 && code <= 0x7a) || // a-z
-    code === 0x2e || // .
-    code === 0x5f || // _
-    code === 0x7e || // ~
-    code === 0x2b || // +
-    code === 0x2f || // /
-    code === 0x3d || // =
-    code === 0x2d || // -
-    code === 0x25 // %
-  );
-}
+/**
+ * Only this many characters of a string are scrubbed. The rest is dropped unread and never reaches
+ * the log, so the work per string has a ceiling whatever its size. The ceiling is far above what
+ * a request URL (16 KB, the header limit) or a sane log message can reach; it only exists for
+ * strings nobody should be logging.
+ */
+export const MAX_SCRUB_INPUT_LENGTH = 256 * 1024;
 
 /**
- * Cuts the middle out of an over-long string. The kept head and tail stop before any run of token
- * characters that the cut would have split, so a secret straddling the cut is removed whole instead
- * of half of it staying in the log.
+ * Shortens text that has ALREADY been scrubbed. Cutting only after scrubbing is what keeps a cut
+ * from separating a credential's name from its value: the value is gone before anything is cut.
+ * `omitted` counts the characters beyond {@link MAX_SCRUB_INPUT_LENGTH} that were never read.
  */
-function bound(input: string): string {
-  if (input.length <= MAX_SCRUB_LENGTH) return input;
-  let headEnd = SCRUB_HEAD_LENGTH;
-  const headFloor = Math.max(0, headEnd - MAX_PARTIAL_TOKEN);
-  while (headEnd > headFloor && isTokenCharacter(input.charCodeAt(headEnd - 1))) headEnd -= 1;
-  let tailStart = input.length - SCRUB_TAIL_LENGTH;
-  const tailCeiling = Math.min(input.length, tailStart + MAX_PARTIAL_TOKEN);
-  while (tailStart < tailCeiling && isTokenCharacter(input.charCodeAt(tailStart))) tailStart += 1;
-  return `${input.slice(0, headEnd)}[truncated ${tailStart - headEnd} characters]${input.slice(tailStart)}`;
+function shorten(scrubbed: string, omitted: number): string {
+  let out = scrubbed;
+  if (out.length > MAX_SCRUB_LENGTH) {
+    const removed = out.length - MAX_SCRUB_LENGTH;
+    out = `${out.slice(0, SCRUB_HEAD_LENGTH)}[truncated ${removed} characters]${out.slice(out.length - SCRUB_TAIL_LENGTH)}`;
+  }
+  return omitted > 0 ? `${out}[truncated ${omitted} more characters]` : out;
 }
 
 /** Literal secrets shorter than this are ignored: replacing "abc" everywhere would wreck the logs. */
@@ -363,7 +351,7 @@ export const MIN_LITERAL_SECRET_LENGTH = 8;
 /**
  * Builds the scrubber for individual strings (field values, messages, error stacks). `secrets` are
  * literal values (for example `SESSION_SECRET`) that are removed wherever they appear, in plain and
- * JSON-escaped form. Strings longer than {@link MAX_SCRUB_LENGTH} are cut.
+ * JSON-escaped form. Strings are scrubbed first and shortened after: see {@link MAX_SCRUB_LENGTH} and {@link MAX_SCRUB_INPUT_LENGTH}.
  */
 export function createStringScrubber(secrets: readonly string[] = []): (input: string) => string {
   return buildScrubber(secrets, false);
@@ -371,7 +359,7 @@ export function createStringScrubber(secrets: readonly string[] = []): (input: s
 
 /**
  * Builds the scrubber for a finished JSON log line. Same rules as {@link createStringScrubber}, but
- * every replacement keeps the line valid JSON, and the line is never cut (its strings were cut when
+ * every replacement keeps the line valid JSON, and the line is never cut (its strings were shortened when
  * they were scrubbed individually).
  */
 export function createLineScrubber(secrets: readonly string[] = []): (line: string) => string {
@@ -390,12 +378,16 @@ function buildScrubber(secrets: readonly string[], jsonLine: boolean): (input: s
   const ordered = [...literals].toSorted((a, b) => b.length - a.length);
   return (input: string): string => {
     // Literals first, on the whole string: a pattern could otherwise redact only the part of a
-    // secret that happens to match it, and a cut could split a secret in two.
+    // secret that happens to match it, and the window below could split a secret in two.
     let out = input;
     for (const literal of ordered) {
       if (out.includes(literal)) out = out.split(literal).join(REDACTED);
     }
-    return scrubBuiltIn(jsonLine ? out : bound(out), jsonLine);
+    if (jsonLine) return scrubBuiltIn(out, true);
+    // Scrub first, shorten after (see `shorten`). Past the ceiling the rest is dropped unread.
+    const omitted = Math.max(0, out.length - MAX_SCRUB_INPUT_LENGTH);
+    const window = omitted > 0 ? out.slice(0, MAX_SCRUB_INPUT_LENGTH) : out;
+    return shorten(scrubBuiltIn(window, false), omitted);
   };
 }
 

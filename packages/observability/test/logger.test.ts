@@ -270,6 +270,35 @@ describe("secrets are absent from emitted log lines", () => {
     );
   });
 
+  it("also collects connection strings with a password, and long passwords alone", () => {
+    const longPassword = "Zk3-pg-p4ssw0rd-long%40enough";
+    const databaseUrl = `postgres://ytw_web:${longPassword}@db.internal:5432/ytw`;
+    const shortUrl = "postgres://postgres:postgres@localhost:5432/ytw";
+    const values = secretValuesFromEnv({
+      DATABASE_URL: databaseUrl,
+      READONLY_DATABASE_URL: shortUrl,
+      OIDC_ISSUER_URL: "https://sso.example.test/realms/ytw",
+      ENCRYPTION_KEY: SECRET.password,
+      PRIMARY_KEYBOARD: "not-a-secret-value",
+    });
+    expect(values).toContain(databaseUrl);
+    expect(values).toContain(longPassword);
+    expect(values).toContain("Zk3-pg-p4ssw0rd-long@enough");
+    expect(values).toContain(shortUrl);
+    expect(values).not.toContain("postgres"); // a short dev password would mangle every line
+    expect(values).toContain(SECRET.password);
+    expect(values).not.toContain("https://sso.example.test/realms/ytw");
+    expect(values).not.toContain("not-a-secret-value");
+
+    const { logger, sink } = memoryLogger({ secrets: values });
+    logger.info({ dsn: databaseUrl, readonly: shortUrl }, `connecting to ${databaseUrl}`);
+    logger.info(`bad password ${longPassword} for ytw_web`);
+    expect(sink.text).not.toContain(longPassword);
+    expect(sink.text).not.toContain("Zk3-pg");
+    expect(sink.text).not.toContain("postgres:postgres");
+    expect(sink.records).toHaveLength(2);
+  });
+
   it("keeps every line valid JSON after scrubbing", () => {
     const { logger, sink } = memoryLogger({ secrets: ['we"ird\\secret-value'] });
     logger.info({ a: 'we"ird\\secret-value', b: `Bearer ${SECRET.opaqueBearer}` }, "x");

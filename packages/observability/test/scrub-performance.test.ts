@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_SCRUB_INPUT_LENGTH,
   MAX_SCRUB_LENGTH,
   SCRUB_HEAD_LENGTH,
   SCRUB_TAIL_LENGTH,
@@ -160,7 +161,12 @@ describe("value patterns are linear", () => {
   });
 });
 
-describe("strings are bounded before they are scrubbed", () => {
+/** `total` characters of whitespace with `block` placed so that it starts at index `start`. */
+function blockAt(block: string, start: number, total: number): string {
+  return " ".repeat(start) + block + " ".repeat(total - start - block.length);
+}
+
+describe("strings are scrubbed first and shortened after", () => {
   const scrub = createStringScrubber([SECRET.literal]);
   const token = SECRET.jwt;
 
@@ -169,7 +175,7 @@ describe("strings are bounded before they are scrubbed", () => {
     expect(scrub(text)).toBe(text);
   });
 
-  it("cuts the middle out of an over-long string and says so", () => {
+  it("shortens an over-long string to its start and end and says so", () => {
     const text = "head-" + "x ".repeat(MAX_SCRUB_LENGTH) + "-tail";
     const out = scrub(text);
     expect(out.length).toBeLessThan(MAX_SCRUB_LENGTH + 100);
@@ -178,13 +184,67 @@ describe("strings are bounded before they are scrubbed", () => {
     expect(out).toMatch(/\[truncated \d+ characters\]/);
   });
 
-  it("drops a secret that sits in the removed middle", () => {
+  it("redacts a secret that sits in the part that is cut out", () => {
     const filler = "a ".repeat(MAX_SCRUB_LENGTH / 2);
     const out = scrub(`${filler}Bearer ${SECRET.opaqueBearer} ${SECRET.apiToken} ${filler}`);
     expect(findLeaks(out)).toEqual([]);
   });
 
-  it("removes literal secrets before cutting, so no fragment survives at either cut", () => {
+  // A cut that lands between a credential's name and its value leaves the value with nothing to
+  // recognise it by. The value below has no ytw_ or JWT shape and is not a registered literal, so
+  // only its name can find it. Each block is placed so that the cuts of an earlier version (the end
+  // of the kept head, and the start of the kept tail) fall on every character of the block.
+  const VALUE = "opaque-value-9f8e7d6c5b4a";
+  const GAP = " ".repeat(40);
+  const BLOCKS: Record<string, string> = {
+    "Bearer then whitespace": `Bearer${GAP}${VALUE}`,
+    "password = value": `password${GAP}=${GAP}${VALUE}`,
+    '"client_secret": "value"': `{"client_secret":${GAP}"${VALUE}"}`,
+    "Cookie: name=value": `Cookie:${GAP}sid=${VALUE}`,
+    "authorization: basic value": `authorization: basic${GAP}${VALUE}`,
+  };
+
+  for (const [name, block] of Object.entries(BLOCKS)) {
+    it(`never separates a name from its value at the cut: ${name}`, () => {
+      const total = MAX_SCRUB_LENGTH + 1024;
+      const leaks: string[] = [];
+      for (const cut of [SCRUB_HEAD_LENGTH, total - SCRUB_TAIL_LENGTH]) {
+        for (let offset = -block.length - 6; offset <= 6; offset += 3) {
+          const out = scrub(blockAt(block, cut + offset, total));
+          if (out.includes(VALUE)) leaks.push(`cut ${cut} offset ${offset}`);
+        }
+      }
+      expect(leaks).toEqual([]);
+    });
+  }
+
+  it("drops what lies beyond the scrubbing ceiling, and says so", () => {
+    const secretAfter = `${" x".repeat(MAX_SCRUB_INPUT_LENGTH / 2)} Bearer ${VALUE} cookie: sid=${VALUE}`;
+    const out = scrub(secretAfter);
+    expect(out).not.toContain(VALUE);
+    expect(out).toMatch(/\[truncated \d+ more characters\]$/);
+    expect(out.length).toBeLessThan(MAX_SCRUB_LENGTH + 200);
+  });
+
+  it("never separates a name from its value at the scrubbing ceiling", () => {
+    const leaks: string[] = [];
+    for (const [name, block] of Object.entries(BLOCKS)) {
+      for (let offset = -block.length - 6; offset <= 6; offset += 12) {
+        const start = MAX_SCRUB_INPUT_LENGTH + offset;
+        const out = scrub(blockAt(block, start, MAX_SCRUB_INPUT_LENGTH + 4096));
+        if (out.includes(VALUE)) leaks.push(`${name} offset ${offset}`);
+      }
+    }
+    expect(leaks).toEqual([]);
+  });
+
+  it("scrubs a very large string within a bounded time", () => {
+    const huge = `${"word ".repeat(400_000)} password=${VALUE}`;
+    expect(huge.length).toBeGreaterThan(MAX_SCRUB_INPUT_LENGTH * 7);
+    expect(timeIt(() => scrub(huge), 1)).toBeLessThan(250);
+  });
+
+  it("removes literal secrets before anything is cut, so no fragment survives at either cut", () => {
     for (let offset = -40; offset <= 40; offset += 5) {
       const atHead =
         " ".repeat(SCRUB_HEAD_LENGTH + offset) + SECRET.literal + " ".repeat(MAX_SCRUB_LENGTH);
@@ -198,7 +258,7 @@ describe("strings are bounded before they are scrubbed", () => {
     }
   });
 
-  it("does not leave half a token behind when the cut falls inside it", () => {
+  it("does not leave half a token behind when a cut falls inside it", () => {
     for (let offset = -token.length - 10; offset <= 10; offset += 7) {
       const atHead = " ".repeat(SCRUB_HEAD_LENGTH + offset) + token + " ".repeat(MAX_SCRUB_LENGTH);
       const atTail = " ".repeat(MAX_SCRUB_LENGTH) + token + " ".repeat(SCRUB_TAIL_LENGTH + offset);
