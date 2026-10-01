@@ -59,7 +59,7 @@ matters.
 | Only `docs/**`, `*.md` or `LICENSE` changed | **None** (`paths-ignore` on the push trigger) |
 | Anything else on `claude/**` or `renovate/**` | `check`, `test` |
 | Same, and the **head commit message contains `[ci full]`** (any case) | `check`, `test`, `images` x2, `scan` (`codeql` when allowed) |
-| Same, and the push changed `docker/**`, `.dockerignore`, `.gitleaks.toml`, `.github/workflows/**`, `.github/actions/**`, `.github/scripts/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or the root `package.json` | the same full set |
+| Same, and the push changed `docker/**`, `.dockerignore`, `.gitleaks.toml`, `.gitleaksignore`, `.github/workflows/**`, `.github/actions/**`, `.github/scripts/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or the root `package.json` | the same full set |
 | Push to `main`, pull request, manual run, weekly schedule | the full set, always |
 
 Measured on the integration branch (GitHub bills every runner job rounded up to a whole minute):
@@ -165,7 +165,11 @@ over the whole git history with `.gitleaks.toml`, which extends gitleaks' defaul
 gitleaks GitHub Action is not used because it needs a license key for organization-owned
 repositories; the CLI is MIT licensed.
 
-`.gitleaks.toml` contains two allowlists and nothing else.
+A single finding that is already in pushed history can also be acknowledged by its exact
+fingerprint (`commit:file:rule:line`, as gitleaks prints it) in `.gitleaksignore`; the history of the
+integration branch cannot be rewritten. That is the preferred way to accept a one-off false
+positive. `.gitleaks.toml` is for classes of fixtures that will keep coming back, and contains two
+allowlists and nothing else.
 
 1. **The redaction fixtures.** The tests of `@ytw/observability` need fake credentials
    (`packages/observability/test/helpers.ts`, the `SECRET` fixtures: an API token, a JWT, a
@@ -187,8 +191,9 @@ honest: it builds throwaway repositories and requires that a planted token is re
 application code, inside the allowlisted file and under a `tokenId` key, that a fake value is
 reported in another file, and that the fake value and a UUID row id are accepted where the allowlists
 say. The fixtures are generated at run time, so nothing in the repository looks like a credential to
-the scanner. A secret that was committed is found by the history scan for as long as the commit is
-reachable, so a rule change is the only way to accept a false positive that is already in history.
+the scanner. A finding stays in the history scan for as long as its commit is reachable, so a false
+positive that is already pushed can only be accepted by a rule or a fingerprint; a real secret must
+be rotated, never allowlisted.
 
 ## Extending CI
 

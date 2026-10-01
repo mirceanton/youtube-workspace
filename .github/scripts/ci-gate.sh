@@ -15,7 +15,7 @@ set -euo pipefail
 # Paths whose change can alter an image or a scan result: the Docker files and context rules, the
 # secret scan configuration, the workflows, local actions and scripts themselves, and the
 # dependency manifests.
-relevant='^(docker/|\.dockerignore$|\.gitleaks\.toml$|\.github/(workflows|actions|scripts)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$)'
+relevant='^(docker/|\.dockerignore$|\.gitleaks(\.toml|ignore)$|\.github/(workflows|actions|scripts)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$)'
 optin='[ci full]'
 
 decide() {

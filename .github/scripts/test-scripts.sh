@@ -60,6 +60,7 @@ gate "dockerignore" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.doc
 gate "workflow" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.github/workflows/ci.yaml
 gate "local action" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.github/actions/setup/action.yaml
 gate "secret scan configuration" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.gitleaks.toml
+gate "secret scan ignore list" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.gitleaksignore
 gate "CI script" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.github/scripts/ci-gate.sh
 gate "lockfile" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=pnpm-lock.yaml
 gate "workspace file" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=pnpm-workspace.yaml
