@@ -59,7 +59,7 @@ matters.
 | Only `docs/**`, `*.md` or `LICENSE` changed | **None** (`paths-ignore` on the push trigger) |
 | Anything else on `claude/**` or `renovate/**` | `check`, `test` |
 | Same, and the **head commit message contains `[ci full]`** (any case) | `check`, `test`, `images` x2, `scan` (`codeql` when allowed) |
-| Same, and the push changed `docker/**`, `.dockerignore`, `.github/workflows/**`, `.github/actions/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or the root `package.json` | the same full set |
+| Same, and the push changed `docker/**`, `.dockerignore`, `.gitleaks.toml`, `.github/workflows/**`, `.github/actions/**`, `.github/scripts/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or the root `package.json` | the same full set |
 | Push to `main`, pull request, manual run, weekly schedule | the full set, always |
 
 Measured on the integration branch (GitHub bills every runner job rounded up to a whole minute):
@@ -165,20 +165,30 @@ over the whole git history with `.gitleaks.toml`, which extends gitleaks' defaul
 gitleaks GitHub Action is not used because it needs a license key for organization-owned
 repositories; the CLI is MIT licensed.
 
-`.gitleaks.toml` contains **one** allowlist, for the fake credentials that the redaction tests of
-`@ytw/observability` need (`packages/observability/test/helpers.ts`, the `SECRET` fixtures: an API
-token, a JWT, a password, a client secret and a database password, all invented). The tests prove
-that these exact values never reach a log line, so they have to look like real credentials. The
-allowlist uses `condition = "AND"`: a finding is ignored only if it is in that file **and** its line
-contains one of the five fake values. A real secret added to the same file, or one of the fake values
-in any other file, is still reported. If you add another fake credential to that fixture, add its
-literal value to the list in `.gitleaks.toml`; do not widen the path or use a pattern.
+`.gitleaks.toml` contains two allowlists and nothing else.
 
-`.github/scripts/test-gitleaks.sh` runs in the `scan` job after the scan and keeps the allowlist
+1. **The redaction fixtures.** The tests of `@ytw/observability` need fake credentials
+   (`packages/observability/test/helpers.ts`, the `SECRET` fixtures: an API token, a JWT, a
+   password, a client secret and a database password, all invented). The tests prove that these
+   exact values never reach a log line, so they have to look like real credentials. The allowlist
+   uses `condition = "AND"`: a finding is ignored only if it is in that file **and** its line
+   contains one of the five fake values. A real secret added to the same file, or one of the fake
+   values in any other file, is still reported. If you add another fake credential to that fixture,
+   add its literal value to the list in `.gitleaks.toml`; do not widen the path or use a pattern.
+2. **Token row ids.** API token ids are UUIDs (a database primary key); a secret token is `ytw_`
+   followed by random characters, never a UUID. The generic rule reads `tokenId: "<uuid>"` in test
+   code (first seen in `packages/db/test/audit.test.ts`) as a credential. The allowlist applies to
+   the `generic-api-key` rule only, tests the matched text rather than the line (so another secret on
+   the same line is still reported) and requires a UUID after a key named `tokenId` or `token_id`
+   (so a real token assigned to that key is still reported).
+
+`.github/scripts/test-gitleaks.sh` runs in the `scan` job after the scan and keeps both allowlists
 honest: it builds throwaway repositories and requires that a planted token is reported in
-application code and inside the allowlisted file, that a fake value is reported in another file, and
-that the fake value is accepted at its one path. The fixtures are generated at run time, so nothing
-in the repository looks like a credential to the scanner.
+application code, inside the allowlisted file and under a `tokenId` key, that a fake value is
+reported in another file, and that the fake value and a UUID row id are accepted where the allowlists
+say. The fixtures are generated at run time, so nothing in the repository looks like a credential to
+the scanner. A secret that was committed is found by the history scan for as long as the commit is
+reachable, so a rule change is the only way to accept a false positive that is already in history.
 
 ## Extending CI
 

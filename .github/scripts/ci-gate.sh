@@ -12,9 +12,10 @@
 # Writes `heavy=true|false` to $GITHUB_OUTPUT.
 set -euo pipefail
 
-# Paths whose change can alter an image or a scan result: the Docker files and context rules,
-# the workflows and local actions themselves, and the dependency manifests.
-relevant='^(docker/|\.dockerignore$|\.github/(workflows|actions)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$)'
+# Paths whose change can alter an image or a scan result: the Docker files and context rules, the
+# secret scan configuration, the workflows, local actions and scripts themselves, and the
+# dependency manifests.
+relevant='^(docker/|\.dockerignore$|\.gitleaks\.toml$|\.github/(workflows|actions|scripts)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$)'
 optin='[ci full]'
 
 decide() {

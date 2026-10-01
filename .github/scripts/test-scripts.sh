@@ -59,6 +59,8 @@ docker/web.Dockerfile"
 gate "dockerignore" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.dockerignore
 gate "workflow" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.github/workflows/ci.yaml
 gate "local action" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.github/actions/setup/action.yaml
+gate "secret scan configuration" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.gitleaks.toml
+gate "CI script" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=.github/scripts/ci-gate.sh
 gate "lockfile" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=pnpm-lock.yaml
 gate "workspace file" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=pnpm-workspace.yaml
 gate "root package.json" true EVENT_NAME=push REF=refs/heads/claude/x FAKE_FILES=package.json

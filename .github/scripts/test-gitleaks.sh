@@ -20,6 +20,11 @@ planted="ghp_$(head -c 96 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 3
 fake_password="hunter2""-correct-horse-battery"
 fixture_line=$(printf '  %s: "%s",' password "$fake_password")
 
+# A UUID row id as the database tests use it, generated here so the script holds no literal.
+row_id=$(cat /proc/sys/kernel/random/uuid)
+row_id_line=$(printf '  %s: "%s",' tokenId "$row_id")
+planted_id_line=$(printf '  %s: "%s",' tokenId "$planted")
+
 failures=0
 
 # scan <label> <expected: leak|clean> <path> <file content>
@@ -54,6 +59,8 @@ scan "planted token in application code" leak "$other_path" "const token = \"${p
 scan "planted token in the allowlisted file" leak "$fixture_path" "const token = \"${planted}\";"
 scan "known fake password in another file" leak "$other_path" "$fixture_line"
 scan "known fake password in the allowlisted file" clean "$fixture_path" "$fixture_line"
+scan "UUID token row id in a test file" clean "packages/db/test/example.test.ts" "$row_id_line"
+scan "real token under a tokenId key" leak "$other_path" "$planted_id_line"
 
 if [ "$failures" -ne 0 ]; then
   echo "${failures} secret scan test(s) failed" >&2

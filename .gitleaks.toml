@@ -1,11 +1,24 @@
 # Configuration of the secret scan (the `scan` job in .github/workflows/ci.yaml). It extends the
-# default rule set and adds exactly one narrow allowlist. Everything else, including any other
-# secret in the same file, is still reported. The allowlist is documented in docs/ci-cd.md and
-# exercised by .github/scripts/test-gitleaks.sh.
+# default rule set and adds two narrow allowlists. Everything else is still reported, including any
+# other secret in the same file. The allowlists are documented in docs/ci-cd.md and exercised by
+# .github/scripts/test-gitleaks.sh.
 title = "youtube-workspace"
 
 [extend]
 useDefault = true
+
+# API token row ids are UUIDs (the database primary key), not secrets: a secret token is always
+# `ytw_` followed by random characters. The generic rule reads `tokenId: "<uuid>"` as a key
+# assignment. The pattern is tested against the matched text only (not the line), so another
+# secret on the same line is still reported, and it needs a UUID after a key named token id, so a
+# real token assigned to that key is still reported.
+[[allowlists]]
+description = "UUID values assigned to a key named tokenId or token_id"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''(?i)token_?id["']?\s*[:=]+\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}''',
+]
 
 [[allowlists]]
 description = "Deliberately fake credentials in the redaction tests of @ytw/observability"
