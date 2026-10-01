@@ -142,6 +142,89 @@ describe("secrets are absent from emitted log lines", () => {
     expect((first.err["cause"] as Record<string, unknown>)["message"]).toContain("refused");
   });
 
+  it("scrubs the message pino takes from an error, whichever way the error is logged", () => {
+    const { logger, sink } = memoryLogger();
+    const json = `{"refresh_token": "${SECRET.opaqueBearer}", "clientSecret": "${SECRET.clientSecret}"}`;
+    const error = new Error(json);
+    logger.error(error);
+    logger.error({ err: error });
+    logger.error({ err: error, requestId: "r1" });
+    logger.error(
+      new Error(`upstream said Bearer ${SECRET.opaqueBearer} and password=${SECRET.password}`),
+    );
+    expect(findLeaks(sink.text)).toEqual([]);
+    expect(sink.records).toHaveLength(4);
+    for (const record of sink.records.slice(0, 3)) {
+      expect(String(record["msg"])).toContain("refresh_token");
+    }
+  });
+
+  it("keeps an explicit message when an error is logged with one", () => {
+    const { logger, sink } = memoryLogger();
+    logger.error(new Error(`secret password=${SECRET.password}`), "could not save");
+    expect(sink.records[0]?.["msg"]).toBe("could not save");
+    expect(findLeaks(sink.text)).toEqual([]);
+  });
+
+  it("scrubs credentials in a JSON string that was escaped into the line, by value", () => {
+    const { logger, sink } = memoryLogger();
+    logger.info({
+      body: JSON.stringify({ accessToken: SECRET.jwt, nested: { api_key: SECRET.apiToken } }),
+    });
+    logger.info(`form ${JSON.stringify({ x: JSON.stringify({ password: SECRET.password }) })}`);
+    expect(findLeaks(sink.text)).toEqual([]);
+    expect(sink.records).toHaveLength(2);
+  });
+
+  it("redacts what a child logger's own serializers return", () => {
+    const { logger, sink } = memoryLogger();
+    const child = logger.child(
+      { component: "route" },
+      {
+        serializers: {
+          headers: (headers: unknown) => ({ seen: headers, cookie: SECRET.sessionCookie }),
+          req: () => ({ headers: { authorization: `Basic ${SECRET.opaqueBearer}` } }),
+        },
+      },
+    );
+    child.info({ headers: { cookie: SECRET.sessionCookie, host: "h" } }, "child");
+    child.info({ req: {} }, "child request");
+    expect(findLeaks(sink.text)).toEqual([]);
+    expect(sink.records[0]).toMatchObject({ component: "route", headers: { cookie: REDACTED } });
+  });
+
+  it("redacts what a child logger's own formatters return", () => {
+    const { logger, sink } = memoryLogger();
+    const child = logger.child(
+      { component: "route" },
+      {
+        formatters: {
+          log: (object) => ({ ...object, password: SECRET.password }),
+          bindings: (bindings) => ({ ...bindings, token: SECRET.apiToken }),
+        },
+      },
+    );
+    child.info({ ok: true }, "child");
+    expect(findLeaks(sink.text)).toEqual([]);
+    expect(sink.records[0]).toMatchObject({ ok: true, password: REDACTED });
+  });
+
+  it("redacts raw header lists passed as format arguments", () => {
+    const { logger, sink } = memoryLogger();
+    const rawHeaders = [
+      "Host",
+      "example.test",
+      "Cookie",
+      SECRET.sessionCookie,
+      "Authorization",
+      SECRET.opaqueBearer,
+    ];
+    logger.info("headers %j", rawHeaders);
+    logger.info("headers %j", { req: { rawHeaders } });
+    expect(findLeaks(sink.text)).toEqual([]);
+    expect(String(sink.records[0]?.["msg"])).toContain("example.test");
+  });
+
   it("removes credentials from request URLs, including OIDC callback parameters", () => {
     const { logger, sink } = memoryLogger();
     logger.info(

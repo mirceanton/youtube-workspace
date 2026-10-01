@@ -238,6 +238,38 @@ describe("redact", () => {
     });
   });
 
+  it("treats code and state as credentials under callback and OAuth style containers", () => {
+    const pair = { code: SECRET.oidcCode, state: SECRET.oidcState };
+    const output = redact({
+      callback: pair,
+      oidcResponse: { result: pair },
+      oauth: pair,
+      redirectParams: pair,
+      authFlow: { callbackQuery: pair },
+      format: { code: 7 },
+    });
+    expect(findLeaks(JSON.stringify(output))).toEqual([]);
+    expect(output).toMatchObject({ format: { code: 7 } });
+  });
+
+  it("treats encryption, signing and HMAC keys as sensitive", () => {
+    const keys = ["encryptionKey", "signing_key", "hmacKey", "masterKey", "ENCRYPTION-KEY"];
+    expect(keys.map((key) => isSensitiveKey(key))).toEqual(keys.map(() => true));
+    expect(isSensitiveKey("keyboard")).toBe(false);
+  });
+
+  it("recognises a header name/value list wherever it appears, not only under rawHeaders", () => {
+    const flat = ["Host", "example.test", "Cookie", SECRET.sessionCookie];
+    const output = redact({
+      anything: flat,
+      nested: [flat],
+      pairs: [["authorization", SECRET.opaqueBearer]],
+    });
+    expect(findLeaks(JSON.stringify(output))).toEqual([]);
+    expect(redact(flat)).toEqual(["Host", "example.test", "Cookie", REDACTED]);
+    expect(redact(["red", "green", "blue"])).toEqual(["red", "green", "blue"]);
+  });
+
   it("redacts the value after a sensitive name in Node's flat rawHeaders list", () => {
     const rawHeaders = [
       "Host",
@@ -312,7 +344,7 @@ describe("scrubString", () => {
     expect(scrubString(`grant refresh_token=${SECRET.jwt}&grant_type=refresh`)).toBe(
       `grant refresh_token=${REDACTED}&grant_type=refresh`,
     );
-    expect(scrubString(`DB_PASSWORD="${SECRET.dbPassword}"`)).toBe(`DB_PASSWORD=${REDACTED}`);
+    expect(scrubString(`DB_PASSWORD="${SECRET.dbPassword}"`)).toBe(`DB_PASSWORD="${REDACTED}"`);
     const dumped = JSON.stringify({
       user: "owner",
       password: SECRET.password,
@@ -324,9 +356,37 @@ describe("scrubString", () => {
     expect(cleaned).toContain('"user":"owner"');
   });
 
+  it("judges assigned names by the same rule as object keys, in any naming style", () => {
+    const dumped = JSON.stringify({
+      refreshToken: SECRET.opaqueBearer,
+      clientSecret: SECRET.clientSecret,
+      "x-api-key": SECRET.apiToken,
+      encryptionKey: SECRET.password,
+      hmacKey: SECRET.dbPassword,
+      signingKey: SECRET.oidcState,
+      name: "kept",
+    });
+    const cleaned = scrubString(
+      `payload ${dumped} and appSecret=${SECRET.literal} sessionToken=${SECRET.jwt}`,
+    );
+    expect(findLeaks(cleaned)).toEqual([]);
+    expect(cleaned).not.toContain(SECRET.literal);
+    expect(cleaned).toContain('"name":"kept"');
+  });
+
+  it("keeps scanning inside the value of a harmless name", () => {
+    expect(scrubString(`msg="retry password=${SECRET.dbPassword} now" attempt=2`)).toBe(
+      `msg="retry password=${REDACTED} now" attempt=2`,
+    );
+  });
+
+  it("redacts an unterminated quoted value to the end, to fail closed", () => {
+    expect(scrubString(`password="${SECRET.password} and more`)).toBe(`password="${REDACTED}`);
+  });
+
   it("leaves look-alike names and prose alone", () => {
     for (const text of [
-      "max_tokens=100 tokenizer=bpe secret_name=prod",
+      "max_tokens=100 tokenizer=bpe",
       "password: required",
       "tokenId=7a1c tokenName=analytics-agent",
       "state=ready code=ENOENT",

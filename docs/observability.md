@@ -50,6 +50,29 @@ await app.register(observabilityPlugin, {
 `fastifyLoggingOptions` has to be a constructor option (Fastify reads the logger and the request-id
 generator before any plugin runs). `observabilityPlugin` registers everything else.
 
+### Integration gotchas
+
+Things the T30 and T40 wiring has to handle; the package cannot do them for the app.
+
+- **Drop the scaffold's own `/healthz` route.** `apps/web-server/src/app.ts` and `apps/mcp/src/app.ts`
+  register one, and the plugin registers the same path, so Fastify fails at startup with a
+  duplicate-route error. Replace the scaffold's `Fastify({ logger: { level } })` with
+  `Fastify({ ...fastifyLoggingOptions(logger) })` and register `observabilityPlugin` before the
+  app's own routes and plugins, so its hooks (request id, HTTP metrics) cover them.
+- **Let the probes through authorization.** `/healthz` and `/readyz` carry no session and no bearer
+  token (orchestrators and load balancers call them), and `/metrics` does its own check with
+  `METRICS_TOKEN`. Add all three to the allowlist of the web server's session/CSRF guard and of the
+  MCP server's bearer authentication, otherwise every probe is a 401 and the container is killed.
+- **Fastify's default error handler echoes `err.message` to the client**, for 500s as well. A
+  handler that fails with `new Error("token rejected: ytw_...")` sends that text to the caller (the
+  log line is scrubbed; the HTTP response is not). Every service needs its own `setErrorHandler`:
+  log the error with `request.log.error({ err })`, and for status 500 and above reply with a fixed
+  message (plus the request id, so the caller can quote it), sending `err.message` only for errors
+  that are meant for the client (validation failures, typed domain errors). The package does not
+  ship one because what is safe to say depends on the service; T30 and T40 implement it.
+- **Call `bindActor(request, reply, actor)` right after authentication**, in the same hook, so the
+  request-completed line carries the actor even when the handler fails.
+
 ## Logging
 
 `createLogger` returns a pino logger that writes one JSON object per line to stdout:
@@ -88,31 +111,50 @@ by `[REDACTED]`):
    errors with their `cause` and attached properties). The value of every sensitive key is replaced.
    Keys are compared case-insensitively and ignoring `-` and `_`: `authorization`, `cookie`,
    `set-cookie`, anything containing `password`, `passwd`, `secret`, `credential`, `apikey`,
-   `privatekey`, `csrf`, `jwt`, `bearer`, `sessionid`, and anything containing `token` unless it only
-   describes a token (`tokenId`, `tokenName`, `tokenPrefix`, `tokenOwnerUsername`, ... stay, so the
-   audit trail remains readable). Log `tokenName`, never `token`. Inside objects named `query`,
-   `querystring`, `params`, `searchParams` or `form`, and inside `URLSearchParams`, the names
-   `code`, `state`, `nonce`, `key`, `sig` and `session` also count (an OIDC callback's query is
-   `{ code, state }`); elsewhere they are ordinary fields.
+   `privatekey`, `encryptionkey`, `signingkey`, `hmackey`, `csrf`, `jwt`, `bearer`, `sessionid`,
+   and anything containing `token` unless it only describes a token (`tokenId`, `tokenName`,
+   `tokenPrefix`, `tokenOwnerUsername`, ... stay, so the audit trail remains readable). Log
+   `tokenName`, never `token`. Inside a parameter container the names `code`, `state`, `nonce`,
+   `key`, `sig` and `session` also count (an OIDC callback's query is `{ code, state }`). A parameter
+   container is an object under a key that is `query`, `form`, `qs` or contains `query`, `param`,
+   `callback`, `oauth`, `oidc` or `redirect`, everything below such a key, and any
+   `URLSearchParams`; elsewhere `code` and `state` are ordinary fields (`err.code`, `idea.state`).
+   A flat list of strings with an even length is read as name/value pairs (Node's `rawHeaders`, or
+   `Headers` entries), and the value after a sensitive name is replaced, under any key or as a
+   format argument.
 2. **By value.** Every string (messages, format arguments, error text) and then the finished JSON
    line are scrubbed before anything reaches stdout, which catches a secret that was interpolated
    into a message or an error stack: `Bearer ...` credentials, `ytw_` API tokens, JWTs,
    `Cookie:`/`Authorization:` header text, passwords in connection strings
-   (`postgres://user:password@host`) and in `password=...` pairs, `"password": "..."` JSON dumped into
-   a message, credential query parameters (`code`, `state`, `access_token`, `id_token`,
-   `refresh_token`, `client_secret`, ...; Fastify logs request URLs, and OIDC callbacks carry `code`
-   and `state`), and the literal values passed as `secrets` (see `secretValuesFromEnv`; values
-   shorter than 8 characters are ignored). The last pass over the line (`createLineScrubber`) never
-   changes the structure of the JSON.
+   (`postgres://user:password@host`), credential query parameters (`code`, `state`, `access_token`,
+   `id_token`, `refresh_token`, `client_secret`, ...; Fastify logs request URLs, and OIDC callbacks
+   carry `code` and `state`), assignments such as `password=...` and JSON dumped into a message
+   (`{"refreshToken": "..."}`, also when that JSON is itself inside a JSON string, at any nesting
+   depth), where the name is judged by the same rule as object keys in any naming style (`refresh_token`,
+   `refreshToken`, `clientSecret`, `encryptionKey`; `max_tokens` and `tokenizer` are not credentials),
+   and the literal values passed as `secrets` (see `secretValuesFromEnv`; values shorter than 8
+   characters are ignored). The last pass over the line (`createLineScrubber`) never changes the
+   structure of the JSON, and the message pino derives from an error (`log.error(err)`) is scrubbed
+   like any other.
+
+Log arguments, request URLs and bodies are attacker controlled, so the value layer is built to be
+cheap on hostile input: every pattern is linear (a pattern that starts on a run of characters
+excludes that run's own characters in a lookbehind, with no nested quantifiers), and any single
+string longer than 16 KB (`MAX_SCRUB_LENGTH`) is cut to its first 12 KB and last 4 KB with
+`[truncated N characters]` in between, without leaving half of a token at the cut. Do not log request
+bodies wholesale; log identifiers. `test/scrub-performance.test.ts` holds a hostile 16 KB input for
+every pattern; a new pattern needs one there.
 
 Request lines use a serializer that picks `method`, `url`, `host` and the remote address explicitly,
-so headers are never part of them. Binary data is logged as `[Binary N bytes]`; cycles as
-`[Circular]`; nesting beyond 12 levels as `[Truncated]`.
+so headers are never part of them. Serializers passed to a child logger (Fastify route-level
+`logSerializers`) and the formatters of a child are wrapped, so their output is redacted too.
+Binary data is logged as `[Binary N bytes]`; cycles as `[Circular]`; nesting beyond 12 levels as
+`[Truncated]`.
 
 Limits to know about: redaction cannot recognise a secret that has no sensitive key, no known shape
-and is not registered (an opaque 20-character string in a field called `note`). Do not log request
-bodies wholesale; log identifiers. The same helpers are exported for other uses: `redact(value)`
-returns a safe copy, `scrubString(text)` cleans one string, `isSensitiveKey(name)` is the key rule.
+and is not registered (an opaque 20-character string in a field called `note`). The same helpers are
+exported for other uses: `redact(value)` returns a safe copy, `scrubString(text)` cleans one string,
+`isSensitiveKey(name)` is the key rule.
 
 To extend the rules, edit `packages/observability/src/redact.ts` (`SENSITIVE_FRAGMENTS`,
 `SENSITIVE_QUERY_PARAMS` or the value patterns) and add a case to `test/redact.test.ts`.
@@ -121,8 +163,10 @@ To extend the rules, edit `packages/observability/src/redact.ts` (`SENSITIVE_FRA
 
 `GET /metrics` returns the Prometheus text format from a per-app registry (not prom-client's global
 one). With `METRICS_TOKEN` set the endpoint requires `Authorization: Bearer <token>` (compared in
-constant time); without it the endpoint is open, so keep it on a private network, because the
-tool-call metrics contain API token names.
+constant time). **`METRICS_TOKEN` must be set whenever `/metrics` is reachable from outside a
+private network**: without it the endpoint is open to anyone, and the tool-call metrics contain API
+token names (not the tokens). Scrape with `authorization: Bearer <token>` in the Prometheus job's
+`authorization` block.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -181,7 +225,7 @@ variables are secrets.
 | `LOG_LEVEL` | no | `info` | one of fatal, error, warn, info, debug, trace, silent | Minimum level written to the log. |
 | `APP_VERSION` | no | `0.0.0-dev` | string | Release version shown on /healthz; container builds set it. |
 | `GIT_SHA` | no | `unknown` | string | Git commit shown on /healthz; container builds set it. |
-| `METRICS_TOKEN` | no |  | string, at least 16 characters | When set, GET /metrics requires `Authorization: Bearer <token>`; when unset the endpoint is open. |
+| `METRICS_TOKEN` | no |  | string, at least 16 characters | When set, GET /metrics requires `Authorization: Bearer <token>`. Set it whenever /metrics is reachable beyond a private network: unset, the endpoint is open. |
 
 The table above is generated by the package and a test checks that it is current. The default
 `PORT` is a parameter: the web server uses 3000 and the MCP server 3001.

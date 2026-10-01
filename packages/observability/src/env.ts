@@ -35,7 +35,7 @@ export function baseEnvShape(defaults: { port: number }) {
       .min(16)
       .optional()
       .describe(
-        "When set, GET /metrics requires `Authorization: Bearer <token>`; when unset the endpoint is open.",
+        "When set, GET /metrics requires `Authorization: Bearer <token>`. Set it whenever /metrics is reachable beyond a private network: unset, the endpoint is open.",
       ),
   };
 }

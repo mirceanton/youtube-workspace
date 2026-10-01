@@ -86,19 +86,32 @@ interface RequestLike {
 
 /**
  * Request serializer for Fastify's "incoming request" / "request completed" lines. It picks fields
- * explicitly, so headers (Authorization, Cookie) can never be part of it; the URL is scrubbed
- * because OIDC callbacks carry `code` and `state` in the query string.
+ * explicitly, so headers (Authorization, Cookie) can never be part of it. The caller redacts the
+ * result, which scrubs the URL (OIDC callbacks carry `code` and `state` in the query string).
  */
-function serializeRequest(request: unknown, scrub: (input: string) => string): unknown {
+function serializeRequest(request: unknown): unknown {
   if (!isRecord(request)) return request;
   const req = request as RequestLike;
   return {
     method: req.method,
-    url: typeof req.url === "string" ? scrub(req.url) : undefined,
+    url: req.url,
     host: req.host ?? req.hostname,
     remoteAddress: req.ip ?? req.socket?.remoteAddress,
     remotePort: req.socket?.remotePort,
   };
+}
+
+/** The error that pino would take the log message from, if the call has no message of its own. */
+function errorBehind(first: unknown): Error | undefined {
+  try {
+    if (first instanceof Error) return first;
+    if (isRecord(first) && first["msg"] === undefined && first["err"] instanceof Error) {
+      return first["err"];
+    }
+  } catch {
+    // A hostile getter: no message to protect.
+  }
+  return undefined;
 }
 
 function serializeResponse(response: unknown): unknown {
@@ -120,14 +133,20 @@ export function createLogger(options: CreateLoggerOptions): Logger {
 
   const safe = (value: unknown): unknown => redact(value, scrub);
 
-  // Every serializer's output is redacted, whatever the serializer returns.
-  const serializers: Record<string, (value: unknown) => unknown> = {
+  type Serializer = (value: unknown) => unknown;
+  /** A serializer whose output is redacted, whatever it returns. */
+  const redactedSerializer =
+    (serializer: Serializer): Serializer =>
+    (value) =>
+      safe(serializer(value));
+
+  const serializers: Record<string, Serializer> = {
     err: safe,
-    req: (request) => safe(serializeRequest(request, scrub)),
-    res: (response) => safe(serializeResponse(response)),
+    req: redactedSerializer(serializeRequest),
+    res: redactedSerializer(serializeResponse),
   };
   for (const [key, serializer] of Object.entries(options.serializers ?? {})) {
-    serializers[key] = (value) => safe(serializer(value));
+    serializers[key] = redactedSerializer(serializer);
   }
 
   /**
@@ -161,6 +180,33 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     }
   };
 
+  /**
+   * Child loggers can bring their own serializers and formatters (Fastify route-level
+   * `logSerializers`); those would replace ours for their keys, so they are wrapped like ours.
+   */
+  const guardChildOptions = (
+    childOptions: ChildLoggerOptions | undefined,
+  ): ChildLoggerOptions | undefined => {
+    if (!childOptions) return childOptions;
+    const guarded: ChildLoggerOptions = { ...childOptions };
+    if (childOptions.serializers) {
+      const wrapped: Record<string, Serializer> = {};
+      for (const [key, serializer] of Object.entries(childOptions.serializers)) {
+        wrapped[key] = redactedSerializer(serializer as Serializer);
+      }
+      guarded.serializers = wrapped as ChildLoggerOptions["serializers"];
+    }
+    if (childOptions.formatters) {
+      const { log: ownLog, bindings: ownBindings, ...others } = childOptions.formatters;
+      guarded.formatters = {
+        ...others,
+        log: (object) => redactFields(ownLog ? ownLog(object) : object),
+        bindings: (bound) => redactFields(ownBindings ? ownBindings(bound) : bound) as Bindings,
+      };
+    }
+    return guarded;
+  };
+
   const logger = pino(
     {
       level: options.level ?? "info",
@@ -190,6 +236,12 @@ export function createLogger(options: CreateLoggerOptions): Logger {
             if (index === 0) return arg;
             return typeof arg === "object" && arg !== null ? safe(arg) : arg;
           });
+          // `log.error(err)` and `log.error({ err })` take the message from the error, and pino
+          // copies it into `msg` as it is. Give it the scrubbed text instead.
+          if (cleaned.length < 2) {
+            const error = errorBehind(cleaned[0]);
+            if (error) cleaned[1] = scrub(error.message);
+          }
           method.apply(this, cleaned as Parameters<LogFn>);
         },
       },
@@ -203,7 +255,7 @@ export function createLogger(options: CreateLoggerOptions): Logger {
   type ChildFn = (this: unknown, bindings: Bindings, childOptions?: ChildLoggerOptions) => Logger;
   const child = logger.child as unknown as ChildFn;
   const redactingChild: ChildFn = function (this, bindings, childOptions) {
-    return child.call(this, redactFields(bindings) as Bindings, childOptions);
+    return child.call(this, redactFields(bindings) as Bindings, guardChildOptions(childOptions));
   };
   logger.child = redactingChild as unknown as Logger["child"];
 

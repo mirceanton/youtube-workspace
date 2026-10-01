@@ -36,6 +36,21 @@ async function build(): Promise<{ app: FastifyInstance; sink: MemorySink }> {
       return { ok: true };
     },
   });
+  // Route-level serializers replace the logger's for their keys; they must not bypass redaction.
+  // (`logSerializers` is accepted by Fastify at runtime but missing from its route option types.)
+  const routeWithSerializers = {
+    method: "GET" as const,
+    url: "/custom-serializers",
+    logSerializers: {
+      req: () => ({ headers: { authorization: `Basic ${SECRET.opaqueBearer}` }, note: "custom" }),
+      res: (reply: { statusCode: number }) => ({
+        statusCode: reply.statusCode,
+        headers: { "set-cookie": SECRET.sessionCookie, "x-api-key": SECRET.clientSecret },
+      }),
+    },
+    handler: async () => ({ ok: true }),
+  };
+  app.route(routeWithSerializers);
   app.get("/boom", async () => {
     throw new Error(`upstream said Bearer ${SECRET.opaqueBearer} and ${SECRET.literal}`);
   });
@@ -145,6 +160,24 @@ describe("secrets in request logs", () => {
       "x-request-id": "login-1",
     });
     expect(dump?.["body"]).toMatchObject({ username: "owner", password: REDACTED });
+  });
+
+  it("redacts the output of route-level log serializers", async () => {
+    const { app, sink } = await build();
+    const res = await app.inject({ method: "GET", url: "/custom-serializers" });
+    expect(res.statusCode).toBe(200);
+    expect(findLeaks(sink.text)).toEqual([]);
+    const incoming = sink.records.find((r) => r["msg"] === "incoming request");
+    const completed = sink.records.find((r) => r["msg"] === "request completed");
+    // The custom serializers did run, and their output was cleaned.
+    expect(incoming?.["req"]).toMatchObject({
+      note: "custom",
+      headers: { authorization: REDACTED },
+    });
+    expect(completed?.["res"]).toMatchObject({
+      statusCode: 200,
+      headers: { "set-cookie": REDACTED, "x-api-key": REDACTED },
+    });
   });
 
   it("scrubs secrets out of a logged handler error", async () => {
