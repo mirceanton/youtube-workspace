@@ -81,6 +81,15 @@ therefore never edits a shared file. API request/response zod schemas live in `p
 unauthenticated API call -> `401 {error}`; browser navigates to `/auth/login?return_to=` to start login, `/auth/logout` to end it;
 mutations require header `X-CSRF-Token` obtained from `/api/me` response header `X-CSRF-Token`; version conflicts return `409 {error, latest}`.
 
+**Web-server core contract (T40 implements it; feature route plugins, T41b and T42-T47, code against it so they do not wait on T40's internals).**
+T40 declares it as a Fastify module augmentation in `apps/web-server/src/core/types.ts`:
+`app.requireLevel(resource, 'read' | 'write')` returns a `preHandler` (401/403 using `@ytw/policy` `authorize` + `DENIAL_HTTP_STATUS`, current levels read from the DB on every request);
+`request.auth = { userId, username, isAdmin, levels }`; `app.db.withActor(request, (client) => ...)` runs a transaction as the `ytw_web` role with the audit actor set from the session (actor = `preferred_username`, type human);
+`app.db.pool` for plain reads. A feature plugin is `export default async function (app: FastifyInstance)` in `src/routes/<feature>/index.ts` and must put `requireLevel` on every route (T40's route-authz coverage test enforces it).
+Until T40 lands, feature workers test their plugin against a small fake core in `apps/web-server/test/helpers/fake-core.ts` that implements the same augmentation with real `@ytw/policy` and the real `@ytw/db` test harness.
+Oxlint's `oxc/no-async-endpoint-handlers` is a known false positive for Fastify; whoever first hits it may disable it in `.oxlintrc.json` with a one-line justification comment.
+Any service that starts requiring a new env var at boot must add a placeholder to `docker/smoke.env` (the image smoke test boots the container); a package with its own coverage threshold needs its own step in `.github/workflows/test.yaml`.
+
 **Testing**: vitest everywhere; integration tests hit real Postgres through the T10 harness; no mocks for the database.
 UI tests: vitest + testing-library; browser flows: Playwright (T48+).
 
@@ -221,10 +230,16 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Done when:* tests for gate pass/fail, no user row for outsiders, refresh with group removed ends the session, logout, idle/absolute expiry, CSRF reject, first-user race, level lowered takes effect on the next request.
 
 **T41 SPA shell, UI kit, notes widget** · P3 · sonnet · deps: T00 (contract only; integrate with T40 when merged) · Review tier B
-*Owns:* `apps/web-ui/**` except `src/features/<feature>/`; `apps/web-server/src/routes/notes/**`; `packages/shared/src/api/{session,notes}.ts`.
+*Owns:* `apps/web-ui/**` except `src/features/<feature>/`; `packages/shared/src/api/{session,notes}.ts`. (No server code: the `/api/notes` routes moved to T41b because they need T12's `add_note`.)
 *PRD:* 6 (Behavior requirements), 8 (Mobile UX), 7 (access states).
-*Do:* React 19 + react-router + Tailwind 4 + TanStack Query (15 s refetch default, pause when hidden); layout with bottom nav (phones) / sidebar (desktop), light/dark by system, WCAG AA tokens, >= 44 px targets; feature auto-discovery (nav item + required level from `routes.tsx`); auth bootstrap from `/api/me` per the contract (401 -> `/auth/login`), access-not-granted page; API client (CSRF header, error normalisation incl. 409 -> `ConflictError`); shared components: `EmptyState LoadingState ErrorState ConflictDialog (reload / merge) LastChangedBy MarkdownView (sanitized, no raw HTML, safe links) TimeSeriesChart/Sparkline (uPlot) NotesPanel (list + add; entity-typed) useOnlineStatus WriteGuard`; the `/api/notes` routes. Develop against a mock of the `/api/me` contract until T40 lands.
-*Done when:* component tests incl. markdown XSS payload corpus, conflict dialog, WriteGuard; app builds; works against T40 when merged.
+*Do:* React 19 + react-router + Tailwind 4 + TanStack Query (15 s refetch default, pause when hidden); layout with bottom nav (phones) / sidebar (desktop), light/dark by system, WCAG AA tokens, >= 44 px targets; feature auto-discovery (nav item + required level from `routes.tsx`); auth bootstrap from `/api/me` per the contract (401 -> `/auth/login`), access-not-granted page; API client (CSRF header, error normalisation incl. 409 -> `ConflictError`); shared components: `EmptyState LoadingState ErrorState ConflictDialog (reload / merge) LastChangedBy MarkdownView (sanitized, no raw HTML, safe links) TimeSeriesChart/Sparkline (uPlot) NotesPanel (list + add; entity-typed) useOnlineStatus WriteGuard`. You define the `/api/notes` contract as zod schemas in `packages/shared/src/api/notes.ts` (`GET /api/notes?entity_type=&entity_id=` -> notes with author, actor type and timestamps; `POST /api/notes {entity_type, entity_id, body_md}` -> created note) and build `NotesPanel` against it with a mocked fetch; T41b implements the server side. Develop against a mock of the `/api/me` contract until T40 lands. Use `@ytw/shared/constants` (zod-free) in the SPA shell and import zod schemas only from code-split feature code.
+*Done when:* component tests incl. markdown XSS payload corpus, conflict dialog, WriteGuard, NotesPanel against the mocked contract; app builds; works against T40 when merged.
+
+**T41b Notes API routes** · P3 · sonnet · deps: T40, T41, T12 · Review tier B
+*Owns:* `apps/web-server/src/routes/notes/**`, tests.
+*PRD:* 4 (notes), 6, 7.
+*Do:* implement the `/api/notes` contract T41 defined using the T12 `add_note` wrapper and a notes read query; `requireLevel('notes', 'read' | 'write')`; entity existence check; author = session actor; the body is stored as raw markdown and rendered sanitised client-side. Runs in parallel with T42-T47.
+*Done when:* route tests for authz (None/Read/Write), validation, audit actor, unknown entity.
 
 **T42 Settings: profile, API tokens, access matrix** · P3 · sonnet · deps: T40, T41, T21 · Review tier A (authz-sensitive)
 *Owns:* `apps/web-ui/src/features/settings/**`, `apps/web-server/src/routes/{settings,tokens,admin}/**`, `packages/shared/src/api/settings.ts`.
