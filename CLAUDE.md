@@ -112,7 +112,9 @@ that decides whether a stage move is allowed.
 
 - Plain SQL migrations in `packages/db/migrations/NNNN_name.sql`, applied in lexicographic order and
   checksum-immutable once merged: fix forward with a new file. Each task has its own number range
-  (PLAN.md section 3); never use a number outside yours.
+  and never uses a number outside it: T10 `0001-0009`, T11 `0010-0029`, T12 `0030-0039`,
+  T13 `0040-0049`, T14 `0050-0059`, T15 `0060-0069`, T16 `0070-0099`, T61 `0100-0119`,
+  T60 `0120-0139`, later work `0200+` (ask the orchestrator). PLAN.md section 3 is authoritative.
 - Applications never get table-level INSERT/UPDATE/DELETE. Every mutation is a `SECURITY DEFINER`
   function (pinned `search_path`, `EXECUTE` revoked from PUBLIC and granted per role, actor
   parameters first, calls `ytw_set_actor`). Details: `docs/database.md`.
