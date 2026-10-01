@@ -12,8 +12,8 @@ on:
   schedule: [{ cron: "23 4 * * 1" }]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   audit:
@@ -93,21 +93,24 @@ jobs:
     name: Secret scan (git history)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read
+    env:
+      # renovate: depName=gitleaks/gitleaks extractVersion=^v(?<version>.*)$
+      GITLEAKS_VERSION: "8.30.1"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Free for personal accounts; an organization would need a GITLEAKS_LICENSE secret.
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
+      # The gitleaks CLI instead of gitleaks-action: the action demands a license key for
+      # organization-owned repositories, the CLI is MIT licensed. mise verifies the download.
+      - name: Setup mise
+        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with:
+          install: false
+      # Scans every commit reachable from the checked-out ref; findings are redacted in the log.
+      - name: Scan the git history for secrets
+        run: mise exec "aqua:gitleaks/gitleaks@${GITLEAKS_VERSION}" -- gitleaks git --redact --verbose --no-banner .
 
   # Code scanning and dependency review are free for public repositories and need GitHub Code
   # Security on private ones. They run when the repository is public, or when the repository
