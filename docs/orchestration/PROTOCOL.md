@@ -34,6 +34,11 @@ own git worktrees, so **stay inside the paths your card owns**.
   to the integration branch. **Never push to any other branch. Never open a PR. Never force-push.**
 - First step: `git fetch origin claude/ecstatic-knuth-vfy8uh && git rebase origin/claude/ecstatic-knuth-vfy8uh`.
 - Commit early and often in Conventional Commit style (`feat(db): ...`, `test(mcp): ...`, `ci: ...`).
+  **Commit locally at every green checkpoint, not only at the end.** An account usage limit (HTTP 429) can interrupt any
+  worker at any moment; the orchestrator then resumes you from your transcript and worktree. Uncommitted work survives, but
+  committed work is cheaper to resume. If you are resumed, run `git status` and `git log` first and continue; do not redo
+  finished work. Before DB tests always run `scripts/pg-local.sh start` (idempotent): the shared cluster may have been
+  stopped by an environment restart.
   End every commit message with these two trailer lines:
   ```
   Co-Authored-By: Claude <noreply@anthropic.com>
