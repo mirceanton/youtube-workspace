@@ -13,6 +13,12 @@
   "scripts": {
     "build": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
-    "test": "vitest run"
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@ytw/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^5.0.3"
   }
 }
