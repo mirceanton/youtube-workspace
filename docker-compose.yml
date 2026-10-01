@@ -1,5 +1,5 @@
 # Local development services only: throwaway instances that never touch shared infrastructure.
-#   docker compose up -d          start everything in the background
+#   docker compose up -d          start everything in the background (Postgres and Keycloak)
 #   docker compose down -v        stop and delete all local data
 # Without Docker, scripts/pg-local.sh runs an equivalent Postgres on the same port and credentials.
 name: youtube-workspace
@@ -23,6 +23,43 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  keycloak:
+    # Dev identity provider with the realm from dev/keycloak imported on every fresh container; see
+    # docs/keycloak.md. The tag is a pinned 26.x release that Renovate keeps current. It was chosen
+    # without access to the registry (newest 26.7.x patch release according to the matching
+    # @keycloak/keycloak-admin-client versions on npm; 26.8.0 was published the day this was
+    # written), so the keycloak-smoke workflow is what proves that it pulls and runs.
+    image: quay.io/keycloak/keycloak:26.7.5
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Dev-only master-realm admin (http://localhost:8080/admin), not part of the youtube-workspace realm.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Fixes the issuer in every token and discovery document to the value in .env.example, whatever
+      # host name the request used (localhost, 127.0.0.1 or the compose service name).
+      KC_HOSTNAME: http://localhost:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # No data volume on purpose: the realm is re-imported from this file whenever the container is
+      # recreated (`docker compose down` then `up`), so every start is a known state.
+      - ./dev/keycloak/youtube-workspace-realm.json:/opt/keycloak/data/import/youtube-workspace-realm.json:ro
+    healthcheck:
+      # Healthy only once the realm is imported and its discovery document is served. The image has
+      # no curl, so the request goes through bash's /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf 'GET /realms/youtube-workspace/.well-known/openid-configuration HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
 volumes:
   postgres-data:

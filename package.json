@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" run dev",
+    "dev:stack": "docker compose up --detach --wait",
     "build": "pnpm -r run build",
     "typecheck": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
