@@ -26,11 +26,13 @@ pnpm dev
 | --- | --- | --- |
 | web server (`apps/web-server`) | http://localhost:3000 | `GET /healthz` |
 | MCP server (`apps/mcp`) | http://localhost:3001 | `GET /healthz` |
-| web UI (`apps/web-ui`) | http://localhost:5173 | Vite dev server; proxies `/api` and `/auth` to the web server |
+| web UI (`apps/web-ui`) | http://localhost:5173 | Vite dev server (`WEB_UI_PORT`); proxies `/api` and `/auth` to `WEB_SERVER_URL` (default http://127.0.0.1:3000) |
 
-Each server reads the root `.env` and then `apps/<app>/.env`, so settings that differ per process
-(`PORT`, `DATABASE_URL`) go in the app-level file. A missing or malformed variable stops the process
-at startup with a message naming it.
+The web server and the MCP server read the root `.env` and then `apps/<app>/.env`, so settings that
+differ per process (`PORT`, `DATABASE_URL`) go in the app-level file. A missing or malformed
+variable stops the process at startup with a message naming it. The Vite dev server reads only
+`WEB_UI_PORT` and `WEB_SERVER_URL`. `MIGRATION_DATABASE_URL` is a superuser credential: pass it to
+`pnpm migrate` on the command line, never through `.env` (the servers' dev scripts strip it anyway).
 
 ## Everyday commands
 
@@ -71,6 +73,9 @@ runs as the `postgres` OS user, because Postgres refuses to run as root. It also
   lets vitest, tsx and Vite load the TypeScript source directly, so you never need to build a
   dependency before testing or running in dev. Production (`node dist/src/index.js`) uses the
   compiled output.
+- Tests are `*.test.ts(x)` files in a package's `test/` directory or next to the code in `src/`.
+  Suites that span packages (security, performance) live in the root `tests/` project.
 - To add a package: copy an existing one under `packages/` (package.json with its `exports` block,
   tsconfig.json, vitest.config.ts, `src/index.ts`, `test/`), then add it to the root
-  `tsconfig.json` references. The root vitest config and pnpm workspace pick it up automatically.
+  `tsconfig.json` references. The root vitest config and pnpm workspace pick it up automatically;
+  `tests/workspace/workspace.test.ts` fails if the reference or the vitest config is missing.

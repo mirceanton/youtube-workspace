@@ -43,7 +43,7 @@ run the pnpm scripts directly, and never put logic in a mise task that the pnpm 
 
 | Path | Package | What it is |
 | --- | --- | --- |
-| `packages/shared` | `@ytw/shared` | Domain constants (resources, levels, idea stages and transitions, status enums, limits) as TS + zod; per-feature API schemas under `src/api/<feature>.ts` |
+| `packages/shared` | `@ytw/shared` | Domain constants (resources, levels, idea stages and transitions, status enums, limits) and their zod schemas; zod-free `@ytw/shared/constants`; per-feature API schemas under `src/api/<feature>.ts` |
 | `packages/db` | `@ytw/db` | SQL migrations and runner, test harness, typed wrappers around the database functions |
 | `packages/policy` | `@ytw/policy` | Pure permission logic shared by both services |
 | `packages/tokens` | `@ytw/tokens` | API token service and bearer authentication |
@@ -53,6 +53,7 @@ run the pnpm scripts directly, and never put logic in a mise task that the pnpm 
 | `apps/web-server` | `@ytw/web-server` | Fastify backend-for-frontend: OIDC, sessions, `/api/*`, serves the built SPA |
 | `apps/web-ui` | `@ytw/web-ui` | Vite + React + Tailwind 4 single-page app / PWA |
 | `e2e/` | `@ytw/e2e` | Playwright end-to-end tests |
+| `tests/` | `@ytw/tests` | Cross-cutting vitest suites (`tests/security/`, `tests/perf/`, `tests/workspace/`); depends on every library package |
 | `scripts/` | | `pg-local.sh` and other dev scripts |
 | `docs/` | | PRD, plan, ADRs, one `docs/<area>.md` per area |
 
@@ -85,7 +86,8 @@ Which task owns which path is in PLAN.md section 1. Stay inside the paths your t
 - Lockfile conflicts: take the incoming `pnpm-lock.yaml`, then run `pnpm install`. Never hand-merge it.
 - Style: prettier (print width 100, double quotes) for code, JSON, YAML and CSS; markdown is
   hand-formatted. oxlint runs the correctness and suspicious categories as errors, bans `any`,
-  `.only` and `.skip`. Run `pnpm format` and `pnpm lint` before committing.
+  `.only` and `.skip`, and accepts assertion helpers named `expect*` or `assert*` in tests. Run
+  `pnpm format` and `pnpm lint` before committing.
 
 ## Domain constants
 
@@ -96,17 +98,26 @@ database mirrors one of them in a CHECK constraint or function, a test must asse
 The transition helpers exist for menus and error messages; the database function is the only place
 that decides whether a stage move is allowed.
 
+Bundle size: the `@ytw/shared` barrel also exports the zod schemas, so importing it pulls zod into
+a bundle. The web UI shell (anything loaded before a feature route) imports values from
+`@ytw/shared/constants`, which has no zod. Import zod schemas (the barrel or
+`@ytw/shared/api/<feature>`) only from code-split feature code that needs them.
+
 ## Configuration
 
 - Every setting is an environment variable; the shared names are fixed in PLAN.md section 0. Each
   app validates its environment with zod at startup (`src/env.ts`) and exits with a message listing
   every bad variable. An empty value counts as unset.
-- Adding a variable: extend the app's schema and document it in `.env.example` under the right
-  group. Any task may append to `.env.example`; keep the grouping and comments.
-- `pnpm dev` loads the root `.env`, then `apps/<app>/.env` on top. Per-process values (`PORT`,
-  `DATABASE_URL`) belong in the app-level file.
-- Ports: web-server 3000, mcp 3001, web-ui dev server 5173 (proxies `/api` and `/auth` to 3000),
-  Postgres 5432, Keycloak 8080.
+- Adding a variable: extend the app's schema and document it in `.env.example`. Any task may do
+  this: append your variables at the END of the file under a `# --- <area> ---` header, without
+  touching other sections. If another task appended at the same time, the rebase conflicts at the
+  end of the file: keep both sides.
+- `pnpm dev` starts the web server and the MCP server with the root `.env` loaded, then
+  `apps/<app>/.env` on top; per-process values (`PORT`, `DATABASE_URL`) belong in the app-level
+  file. The servers' dev scripts strip `MIGRATION_DATABASE_URL`, and it must never be put in `.env`.
+  The Vite dev server reads only `WEB_UI_PORT` and `WEB_SERVER_URL` (from the shell or root `.env`).
+- Ports: web-server 3000, mcp 3001, web-ui dev server 5173 (`WEB_UI_PORT`; proxies `/api` and
+  `/auth` to `WEB_SERVER_URL`, default `http://127.0.0.1:3000`), Postgres 5432, Keycloak 8080.
 
 ## Database
 
@@ -136,9 +147,17 @@ The web contract between the web server and the SPA (`GET /api/me`, 401 handling
 
 ## Testing
 
-- Vitest everywhere. Tests live in `<package>/test/**/*.test.ts(x)`. Each package has a
-  `vitest.config.ts` that merges `vitest.shared.ts` (source condition, include pattern, 2 workers);
-  the root `vitest.config.ts` picks up every `packages/*`, `apps/*` and `e2e` project automatically.
+- Vitest everywhere. A test file is named `*.test.ts` or `*.test.tsx` and lives either in
+  `<package>/test/` or next to the code it covers under `<package>/src/` (for example
+  `apps/web-server/src/routes/ideas/ideas.test.ts`). Each package has a `vitest.config.ts` that
+  merges `vitest.shared.ts` (source condition, include pattern, 2 workers); the root
+  `vitest.config.ts` runs every `packages/*`, `apps/*`, `e2e` and `tests` project.
+- Cross-cutting suites go in the root `tests/` project (`tests/security/`, `tests/perf/`), where any
+  `*.test.ts` below `tests/` runs in `pnpm test`. It can import every library package
+  (`@ytw/shared`, `@ytw/db`, ...). Suites too slow for every run use another suffix (for example
+  `*.perf.ts`) plus their own script. Playwright specs in `e2e/` are `*.spec.ts`, which vitest ignores.
+- A new package needs its own `vitest.config.ts` (copy one) and a root `tsconfig.json` reference;
+  `tests/workspace/workspace.test.ts` fails when either is missing.
 - Integration tests use a real Postgres through the `@ytw/db` test harness: every test file creates
   its own uniquely named database and drops it afterwards. No database mocks.
 - UI tests: vitest + jsdom + Testing Library (no globals: import from `vitest`, call `cleanup` in

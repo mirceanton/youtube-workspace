@@ -9,10 +9,16 @@ coverage/
 .env
 .env.*
 !.env.example
+mise.local.toml
+.mise.local.toml
 
-# Playwright output (e2e/)
+# Playwright output and saved login state (e2e/)
 playwright-report/
 test-results/
+.auth/
+
+# Agent worktrees inside the main checkout (project settings in .claude/ stay tracked)
+.claude/worktrees/
 
 # Editors and OS
 .DS_Store

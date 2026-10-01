@@ -36,6 +36,18 @@ Names fixed for every worker: environment variables `DATABASE_URL` (the process'
 `/api/*` and the SPA fallback on the web server, `/mcp` and `/files/scripts/{idea_id}/{kind}` on the
 MCP server, and `/healthz`, `/readyz`, `/metrics` on both.
 
+## Shared domain decisions
+
+- **Note targets.** `NOTE_ENTITY_TYPES` in `@ytw/shared` is `idea, script, video, experiment`.
+  PRD 4 allows notes on "any entity"; these four are the entities that exist. A later task may
+  extend the list by editing `@ytw/shared` and the `notes.entity_type` CHECK constraint together,
+  with the test that asserts they match.
+- **Bundle size.** The `@ytw/shared` barrel exports the zod schemas next to the constants, so
+  importing it pulls zod (about 70 kB minified) into a bundle. `@ytw/shared/constants` exposes the
+  same values, types and helpers without zod, and a test keeps it zod-free. The web UI shell imports
+  only from that entry point; zod schemas are imported only by code-split feature code that
+  validates data. This took the hello page from 293 kB (89 kB gzip) to 221 kB (69 kB gzip).
+
 ## Repository mechanics
 
 - Each package compiles `src` and `test` with one `tsconfig.json` into `dist/`, and the root
@@ -49,7 +61,8 @@ MCP server, and `/healthz`, `/readyz`, `/metrics` on both.
   runs install scripts only for allow-listed packages (`minimumReleaseAge`, `allowBuilds`, as in
   `model-hub`).
 - Vitest runs every package as a project of one root run, capped at two workers, because several
-  agents share a 4-CPU machine and one Postgres cluster.
+  agents share a 4-CPU machine and one Postgres cluster. Tests may sit in `test/` or next to the
+  code in `src/`; cross-cutting suites live in the root `tests/` project.
 
 ## Consequences
 
