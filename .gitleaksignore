@@ -1,0 +1,8 @@
+# Individual gitleaks findings in git history that are known false positives, one fingerprint per
+# line (commit:file:rule:line, exactly as gitleaks prints it). History cannot be rewritten on the
+# integration branch, so a false positive in a pushed commit can only be acknowledged here. Never add
+# a real secret: rotate it instead. The allowlist for test fixtures lives in .gitleaks.toml.
+
+# A UUID used as a fixture API-token id in the @ytw/db audit tests (generic-api-key matched the
+# "tokenId" key). Not a credential; later commits generate the id at run time.
+e887a8abe21aeb00999e7e6e61e30de7ef13a6a4:packages/db/test/audit.test.ts:generic-api-key:94

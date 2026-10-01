@@ -2,6 +2,7 @@
 // ytw_set_actor, the ytw_audit() trigger, ytw_log_event, append-only enforcement and withActor.
 // The business tables arrive with T11, so a fixture table and fixture functions written exactly
 // like the convention in docs/database.md stand in for them here.
+import { randomUUID } from "node:crypto";
 import { ACTOR_TYPES } from "@ytw/shared/constants";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EVENT_PAYLOAD_MAX_BYTES, sql, withActor, type Actor } from "../src/client.js";
@@ -88,11 +89,8 @@ CREATE TRIGGER ledger_no_truncate BEFORE TRUNCATE ON public.ledger
 `;
 
 const alice: Actor = { name: "alice", type: "human" };
-const agent: Actor = {
-  name: "research agent",
-  type: "agent",
-  tokenId: "01890a5d-ac96-774b-bcce-b302099a8057",
-};
+// Generated at run time: a literal id next to a "token" key reads as a credential to the secret scan.
+const agent: Actor = { name: "research agent", type: "agent", tokenId: randomUUID() };
 
 interface EventRow {
   actor: string;
