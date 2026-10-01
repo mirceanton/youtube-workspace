@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "@ytw/source": "./src/index.ts",
@@ -14,5 +15,9 @@
     "build": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@ytw/shared": "workspace:*",
+    "yaml": "^2.9.1"
   }
 }
