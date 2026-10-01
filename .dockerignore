@@ -1,0 +1,36 @@
+# Build context for docker/web.Dockerfile and docker/mcp.Dockerfile (docs/ci-cd.md).
+# The images need the pnpm workspace sources and nothing else: keep secrets, history, build output
+# and tooling out of the context. Do not exclude a directory that is a pnpm workspace member
+# (see pnpm-workspace.yaml), because `pnpm install --frozen-lockfile` needs every member present.
+
+# Version control and CI
+.git
+.github
+
+# Dependencies and build output (the image installs and builds from scratch)
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+
+# Local configuration and secrets: only the documented example is ever tracked
+.env
+.env.*
+!.env.example
+
+# Test output and editor files
+**/playwright-report
+**/test-results
+.idea
+.vscode
+.DS_Store
+
+# Not needed to build the services
+docs
+dev
+scripts
+docker
+docker-compose.yml
+**/*.md
+LICENSE
