@@ -40,7 +40,7 @@ await app.register(observabilityPlugin, {
   readiness: {
     database: async () => { await pool.query("select 1"); },
     migrations: async () => {
-      const pending = await pendingMigrations(pool); // from @ytw/db
+      const pending = await pendingMigrations(pool); // use what @ytw/db exposes for this
       return pending.length === 0 ? undefined : { ok: false, detail: `${pending.length} pending` };
     },
   },
@@ -90,14 +90,20 @@ by `[REDACTED]`):
    `set-cookie`, anything containing `password`, `passwd`, `secret`, `credential`, `apikey`,
    `privatekey`, `csrf`, `jwt`, `bearer`, `sessionid`, and anything containing `token` unless it only
    describes a token (`tokenId`, `tokenName`, `tokenPrefix`, `tokenOwnerUsername`, ... stay, so the
-   audit trail remains readable). Log `tokenName`, never `token`.
-2. **By value.** The finished JSON line is scrubbed before it reaches stdout, which catches a secret
-   that was interpolated into a message or an error stack: `Bearer ...` credentials, `ytw_` API
-   tokens, JWTs, `Cookie:`/`Authorization:` header text, passwords in connection strings
-   (`postgres://user:password@host`), credential query parameters (`code`, `state`, `access_token`,
-   `id_token`, `refresh_token`, `client_secret`, ...; Fastify logs request URLs, and OIDC callbacks
-   carry `code` and `state`), and the literal values passed as `secrets` (see
-   `secretValuesFromEnv`; values shorter than 8 characters are ignored).
+   audit trail remains readable). Log `tokenName`, never `token`. Inside objects named `query`,
+   `querystring`, `params`, `searchParams` or `form`, and inside `URLSearchParams`, the names
+   `code`, `state`, `nonce`, `key`, `sig` and `session` also count (an OIDC callback's query is
+   `{ code, state }`); elsewhere they are ordinary fields.
+2. **By value.** Every string (messages, format arguments, error text) and then the finished JSON
+   line are scrubbed before anything reaches stdout, which catches a secret that was interpolated
+   into a message or an error stack: `Bearer ...` credentials, `ytw_` API tokens, JWTs,
+   `Cookie:`/`Authorization:` header text, passwords in connection strings
+   (`postgres://user:password@host`) and in `password=...` pairs, `"password": "..."` JSON dumped into
+   a message, credential query parameters (`code`, `state`, `access_token`, `id_token`,
+   `refresh_token`, `client_secret`, ...; Fastify logs request URLs, and OIDC callbacks carry `code`
+   and `state`), and the literal values passed as `secrets` (see `secretValuesFromEnv`; values
+   shorter than 8 characters are ignored). The last pass over the line (`createLineScrubber`) never
+   changes the structure of the JSON.
 
 Request lines use a serializer that picks `method`, `url`, `host` and the remote address explicitly,
 so headers are never part of them. Binary data is logged as `[Binary N bytes]`; cycles as

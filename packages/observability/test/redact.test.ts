@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_REDACT_DEPTH,
   REDACTED,
+  createLineScrubber,
   createStringScrubber,
   isSensitiveKey,
   redact,
@@ -304,6 +305,36 @@ describe("scrubString", () => {
     );
   });
 
+  it("removes credentials assigned in free text: key=value pairs and JSON dumped into a message", () => {
+    expect(scrubString(`host=db user=ytw_web password=${SECRET.dbPassword} dbname=ytw`)).toBe(
+      `host=db user=ytw_web password=${REDACTED} dbname=ytw`,
+    );
+    expect(scrubString(`grant refresh_token=${SECRET.jwt}&grant_type=refresh`)).toBe(
+      `grant refresh_token=${REDACTED}&grant_type=refresh`,
+    );
+    expect(scrubString(`DB_PASSWORD="${SECRET.dbPassword}"`)).toBe(`DB_PASSWORD=${REDACTED}`);
+    const dumped = JSON.stringify({
+      user: "owner",
+      password: SECRET.password,
+      client_secret: SECRET.clientSecret,
+    });
+    const cleaned = scrubString(`body was ${dumped}`);
+    expect(cleaned).not.toContain(SECRET.password);
+    expect(cleaned).not.toContain(SECRET.clientSecret);
+    expect(cleaned).toContain('"user":"owner"');
+  });
+
+  it("leaves look-alike names and prose alone", () => {
+    for (const text of [
+      "max_tokens=100 tokenizer=bpe secret_name=prod",
+      "password: required",
+      "tokenId=7a1c tokenName=analytics-agent",
+      "state=ready code=ENOENT",
+    ]) {
+      expect(scrubString(text)).toBe(text);
+    }
+  });
+
   it("is idempotent", () => {
     const once = scrubString(
       `Bearer ${SECRET.opaqueBearer} ${SECRET.apiToken} ?code=${SECRET.oidcCode}`,
@@ -321,6 +352,30 @@ describe("createStringScrubber", () => {
     const jsonLine = JSON.stringify({ msg: `leaked ${tricky}` });
     expect(scrub(jsonLine)).not.toContain("back");
     expect(JSON.parse(scrub(jsonLine))).toEqual({ msg: `leaked ${REDACTED}` });
+  });
+
+  it("removes a literal in full even when a pattern would only match part of it", () => {
+    const awkward = "Bearer-style secret with spaces!and-symbols-12345";
+    const scrub = createStringScrubber([awkward]);
+    const out = scrub(`header Bearer ${awkward} sent`);
+    expect(out).not.toContain("symbols");
+    expect(out).not.toContain("spaces");
+  });
+
+  it("has a line variant that never changes the structure of a JSON line", () => {
+    const line = JSON.stringify({
+      token: null,
+      password: "[REDACTED]",
+      n: 1,
+      msg: "password=abc12345",
+    });
+    const scrubbed = createLineScrubber([SECRET.literal])(line);
+    expect(JSON.parse(scrubbed)).toEqual({
+      token: null,
+      password: REDACTED,
+      n: 1,
+      msg: `password=${REDACTED}`,
+    });
   });
 
   it("ignores values too short to be real secrets", () => {

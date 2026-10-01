@@ -110,6 +110,40 @@ const SENSITIVE_QUERY_PARAMS = [
 ].join("|");
 
 const QUERY_PARAM = new RegExp(`([?&#])(${SENSITIVE_QUERY_PARAMS})=([^&#\\s"'\\\\]*)`, "gi");
+
+/**
+ * Names that are credentials wherever they are assigned in free text: `password=hunter2` (libpq
+ * connection strings, form bodies), `"client_secret": "..."` (JSON dumped into a message).
+ * Ambiguous names (`code`, `state`) are left out; they only count inside URLs.
+ */
+const ASSIGNED_NAMES = [
+  "password",
+  "passwd",
+  "pwd",
+  "secret",
+  "client_secret",
+  "client_assertion",
+  "access_token",
+  "id_token",
+  "refresh_token",
+  "code_verifier",
+  "api_key",
+  "apikey",
+  "private_key",
+  "csrf_token",
+  "session_id",
+  "sessionid",
+  "token",
+  "jwt",
+].join("|");
+const ASSIGNED_VALUE = `(?:"[^"\\\\]*"|'[^'\\\\]*'|[^\\s,;&}"'\\\\]+)`;
+/** `password=value`, `db_password = value`. */
+const KEY_VALUE = new RegExp(
+  `(?<![A-Za-z0-9])(${ASSIGNED_NAMES})(\\s*=\\s*)${ASSIGNED_VALUE}`,
+  "gi",
+);
+/** `"password": "value"`, as left by JSON.stringify. */
+const JSON_PAIR = new RegExp(`(["'])(${ASSIGNED_NAMES})\\1(\\s*:\\s*)${ASSIGNED_VALUE}`, "gi");
 /** `scheme://user:password@host`: connection strings and URLs with embedded credentials. */
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/?#@"'\\]+):([^\s/?#@"'\\]+)@/gi;
 const BEARER = /\b(Bearer)(\s+)([A-Za-z0-9._~+/=-]{6,})/gi;
@@ -139,10 +173,17 @@ const BEARER_PROSE = new Set([
   "value",
 ]);
 
-function scrubBuiltIn(input: string): string {
+/**
+ * `jsonLine` selects the variant for a finished JSON log line, which must stay parseable: it skips
+ * {@link JSON_PAIR}, whose replacement would also eat the structure of the line itself. Pairs inside
+ * strings are cleaned before the line is built, when the string is still a plain string.
+ */
+function scrubBuiltIn(input: string, jsonLine: boolean): string {
   let out = input;
   if (out.includes("://")) out = out.replace(URL_USERINFO, `$1:${REDACTED}@`);
   if (/[?&#]/.test(out)) out = out.replace(QUERY_PARAM, `$1$2=${REDACTED}`);
+  if (out.includes("=")) out = out.replace(KEY_VALUE, `$1$2${REDACTED}`);
+  if (!jsonLine && out.includes(":")) out = out.replace(JSON_PAIR, `$1$2$1$3${REDACTED}`);
   out = out.replace(BEARER, (match: string, scheme: string, space: string, token: string) =>
     BEARER_PROSE.has(token.toLowerCase()) ? match : `${scheme}${space}${REDACTED}`,
   );
@@ -159,10 +200,23 @@ function scrubBuiltIn(input: string): string {
 export const MIN_LITERAL_SECRET_LENGTH = 8;
 
 /**
- * Builds the string scrubber used on every log line. `secrets` are literal values (for example
- * `SESSION_SECRET`) that are removed wherever they appear, in plain and JSON-escaped form.
+ * Builds the scrubber for individual strings (field values, messages, error stacks). `secrets` are
+ * literal values (for example `SESSION_SECRET`) that are removed wherever they appear, in plain and
+ * JSON-escaped form.
  */
 export function createStringScrubber(secrets: readonly string[] = []): (input: string) => string {
+  return buildScrubber(secrets, false);
+}
+
+/**
+ * Builds the scrubber for a finished JSON log line. Same rules as {@link createStringScrubber}, but
+ * every replacement keeps the line valid JSON.
+ */
+export function createLineScrubber(secrets: readonly string[] = []): (line: string) => string {
+  return buildScrubber(secrets, true);
+}
+
+function buildScrubber(secrets: readonly string[], jsonLine: boolean): (input: string) => string {
   const literals = new Set<string>();
   for (const secret of secrets) {
     if (secret.length < MIN_LITERAL_SECRET_LENGTH) continue;
@@ -173,11 +227,13 @@ export function createStringScrubber(secrets: readonly string[] = []): (input: s
   // Longest first, so a secret that contains another secret is removed whole.
   const ordered = [...literals].toSorted((a, b) => b.length - a.length);
   return (input: string): string => {
-    let out = scrubBuiltIn(input);
+    // Literals first: a pattern could otherwise redact only the part of a secret that happens to
+    // match it and leave the rest behind.
+    let out = input;
     for (const literal of ordered) {
       if (out.includes(literal)) out = out.split(literal).join(REDACTED);
     }
-    return out;
+    return scrubBuiltIn(out, jsonLine);
   };
 }
 

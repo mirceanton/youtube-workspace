@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import type { Service } from "@ytw/shared/api/health";
 import pino, { type Bindings, type ChildLoggerOptions, type Logger, type LogFn } from "pino";
-import { createStringScrubber, redact } from "./redact.js";
+import { createLineScrubber, createStringScrubber, redact } from "./redact.js";
 
 export type { Logger } from "pino";
 
@@ -113,7 +113,10 @@ function serializeResponse(response: unknown): unknown {
  */
 export function createLogger(options: CreateLoggerOptions): Logger {
   const scrub = createStringScrubber(options.secrets);
-  const sink = scrubbingSink(options.destination ?? pino.destination(1), scrub);
+  const sink = scrubbingSink(
+    options.destination ?? pino.destination(1),
+    createLineScrubber(options.secrets),
+  );
 
   const safe = (value: unknown): unknown => redact(value, scrub);
 
@@ -134,15 +137,28 @@ export function createLogger(options: CreateLoggerOptions): Logger {
    */
   const redactFields = (value: unknown): Record<string, unknown> => {
     if (!isRecord(value)) return { value: safe(value) };
-    const own = Object.keys(value);
-    const plain: Record<string, unknown> = {};
-    for (const key of own) {
-      if (!Object.hasOwn(serializers, key)) plain[key] = value[key];
+    try {
+      const own = Object.keys(value);
+      const plain: Record<string, unknown> = {};
+      const reserved: Record<string, unknown> = {};
+      for (const key of own) {
+        // Logging must never throw: a getter that does is logged as a marker.
+        let field: unknown;
+        try {
+          field = value[key];
+        } catch {
+          field = "[Unserializable]";
+        }
+        if (Object.hasOwn(serializers, key)) reserved[key] = field;
+        else plain[key] = field;
+      }
+      const redacted = safe(plain) as Record<string, unknown>;
+      return Object.fromEntries(
+        own.map((key) => [key, Object.hasOwn(reserved, key) ? reserved[key] : redacted[key]]),
+      );
+    } catch {
+      return { logFields: "[Unserializable]" };
     }
-    const redacted = safe(plain) as Record<string, unknown>;
-    return Object.fromEntries(
-      own.map((key) => [key, Object.hasOwn(serializers, key) ? value[key] : redacted[key]]),
-    );
   };
 
   const logger = pino(
@@ -168,8 +184,10 @@ export function createLogger(options: CreateLoggerOptions): Logger {
         // merge object has been redacted, so they need the same treatment here.
         logMethod(args, method) {
           const cleaned = (args as unknown[]).map((arg, index) => {
-            if (index === 0 || arg instanceof Error) return arg;
+            if (arg instanceof Error) return arg;
             if (typeof arg === "string") return scrub(arg);
+            // The first argument may be the merge object; formatters.log redacts that one.
+            if (index === 0) return arg;
             return typeof arg === "object" && arg !== null ? safe(arg) : arg;
           });
           method.apply(this, cleaned as Parameters<LogFn>);

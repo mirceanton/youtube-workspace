@@ -50,6 +50,7 @@ export { observabilityPlugin, type Observability, type ObservabilityOptions } fr
 export {
   MAX_REDACT_DEPTH,
   REDACTED,
+  createLineScrubber,
   createStringScrubber,
   isSensitiveKey,
   redact,

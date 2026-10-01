@@ -100,8 +100,11 @@ describe("secrets are absent from emitted log lines", () => {
     const { logger, sink } = memoryLogger();
     logger.info(`calling upstream with Bearer ${SECRET.opaqueBearer}`);
     logger.warn({ ok: false }, `token ${SECRET.apiToken} rejected, jwt ${SECRET.jwt}`);
+    logger.info(`conninfo host=db password=${SECRET.dbPassword} dbname=ytw`);
+    logger.info(`login body ${JSON.stringify({ user: "owner", password: SECRET.password })}`);
     expect(findLeaks(sink.text)).toEqual([]);
-    expect(sink.records).toHaveLength(2);
+    expect(sink.records).toHaveLength(4);
+    expect(sink.records[3]?.["msg"]).toContain('"user":"owner"');
   });
 
   it("removes secrets passed as format arguments", () => {
@@ -190,6 +193,51 @@ describe("secrets are absent from emitted log lines", () => {
     logger.info(`Cookie: ${SECRET.sessionCookie}`);
     expect(sink.records).toHaveLength(2);
     expect(sink.text).not.toContain("secret-value");
+    expect(findLeaks(sink.text)).toEqual([]);
+  });
+
+  it("keeps lines parseable whatever shape the sensitive fields have", () => {
+    const { logger, sink } = memoryLogger();
+    logger.info(
+      {
+        token: null,
+        password: 12345,
+        cookie: { a: 1 },
+        secret: ["x", "y"],
+        authorization: undefined,
+        note: 'say "token=abc123xyz" or {"password":"hunter2"}',
+      },
+      'msg with "quotes", \\ backslash and password=hunter2',
+    );
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]).toMatchObject({
+      token: null,
+      password: REDACTED,
+      cookie: REDACTED,
+      secret: REDACTED,
+    });
+    expect(sink.text).not.toContain("hunter2");
+    expect(sink.text).not.toContain("abc123xyz");
+  });
+
+  it("never throws, even for hostile objects", () => {
+    const { logger, sink } = memoryLogger();
+    const cyclic: Record<string, unknown> = { password: SECRET.password };
+    cyclic["self"] = cyclic;
+    const hostile = {
+      ok: 1,
+      get boom(): string {
+        throw new Error("getter failed");
+      },
+    };
+    expect(() => {
+      logger.info(hostile, "hostile getter");
+      logger.info({ cyclic }, "cycle");
+      logger.info({ big: 10n, fn: () => 1, sym: Symbol("s") }, "odd values");
+      logger.info(new Proxy({}, { ownKeys: () => [] }), "proxy");
+    }).not.toThrow();
+    expect(sink.records).toHaveLength(4);
+    expect(sink.records[0]).toMatchObject({ ok: 1, boom: "[Unserializable]" });
     expect(findLeaks(sink.text)).toEqual([]);
   });
 
