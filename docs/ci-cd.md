@@ -62,6 +62,15 @@ matters.
 | Same, and the push changed `docker/**`, `.dockerignore`, `.github/workflows/**`, `.github/actions/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or the root `package.json` | the same full set |
 | Push to `main`, pull request, manual run, weekly schedule | the full set, always |
 
+Measured on the integration branch (GitHub bills every runner job rounded up to a whole minute):
+
+| Push | Runner jobs | Billed minutes | Wall time |
+| --- | --- | --- | --- |
+| Documentation only | 0 | 0 | none |
+| Normal (`check`, `test`) | 2 | 2 | about 1 minute |
+| Full (`[ci full]`, relevant path, `main`) | 5 | 6 to 7 | under 2 minutes with warm caches |
+| Before this restructuring (lint, test, build, security and docker workflows on every push) | 11 | 15 (17 with the arm64 build) | about 2 minutes |
+
 `.github/scripts/ci-gate.sh` makes the decision from the event, the commit message and the file list
 of the push (GitHub compare API, no checkout needed); if the files cannot be listed it runs the
 heavy jobs rather than skipping them. Only the **head** commit message counts, so put the token in
