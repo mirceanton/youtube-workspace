@@ -16,7 +16,8 @@ const sources = readdirSync(srcDir)
 
 describe("browser portability of the parse/serialize core", () => {
   it("imports only @ytw/shared, yaml and sibling modules", () => {
-    const allowed = /^(\.\/[\w-]+\.js|@ytw\/shared|yaml)$/;
+    // "@ytw/shared/constants" is the zod-free entry; the "@ytw/shared" barrel would pull zod in.
+    const allowed = /^(\.\/[\w-]+\.js|@ytw\/shared\/constants|yaml)$/;
     for (const { file, text } of sources) {
       for (const match of text.matchAll(/(?:from|import)\s+["']([^"']+)["']/g)) {
         expect(match[1], `${file} imports ${match[1]}`).toMatch(allowed);

@@ -1,4 +1,4 @@
-import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared";
+import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared/constants";
 import { describe, expect, it } from "vitest";
 import { parseCompleteScriptFile, prepareUpload, serializeScriptFile } from "../src/index.js";
 import { IDEA_ID, OTHER_IDEA_ID, catchScriptMdError, exportedFile } from "./helpers.js";
@@ -55,7 +55,8 @@ describe("prepareUpload", () => {
     );
     expect(error.httpStatus).toBe(400);
     expect(error.details).toEqual({ expected: 8, actual: 6 });
-    expect(error.message).toContain("Re-download the latest version");
+    expect(error.message).toContain('change the front matter line to "version: 8"');
+    expect(error.message).toContain("re-download the latest version");
   });
 
   it("can require a base version", () => {
@@ -129,6 +130,88 @@ describe("prepareUpload", () => {
         "front_matter_invalid",
       );
     });
+  });
+
+  describe("a leading block that is not our front matter", () => {
+    it("refuses to drop it silently (the block would otherwise be lost)", () => {
+      const text = "---\nUpdate: rewrote the cold open\n---\n\n# Cold open\n";
+      const error = catchScriptMdError(() => prepareUpload(text, target), "front_matter_invalid");
+      expect(error.httpStatus).toBe(400);
+      expect(error.message).toContain("Remove the block");
+      expect(error.message).toContain("add the keys");
+    });
+
+    it("refuses an empty or comment-only block as well", () => {
+      expect.hasAssertions();
+      catchScriptMdError(() => prepareUpload("---\n---\nbody", target), "front_matter_invalid");
+      catchScriptMdError(
+        () => prepareUpload("---\n# note\n---\nbody", target),
+        "front_matter_invalid",
+      );
+    });
+
+    it("still strips a block that has at least one of the four keys", () => {
+      const prepared = prepareUpload("---\nUpdate: note\nstatus: review\n---\nbody", target);
+      expect(prepared.body).toBe("body");
+      expect(prepared.frontMatter).toEqual({ status: "review" });
+    });
+  });
+
+  describe("base version precedence", () => {
+    const fileV3 = exportedFile({ version: 3 });
+    const noVersion = `---\nidea_id: ${IDEA_ID}\nkind: script\n---\nbody`;
+    const cases: Array<{
+      name: string;
+      input: string;
+      baseVersion?: number;
+      expected: number | undefined;
+    }> = [
+      { name: "file only", input: fileV3, expected: 3 },
+      { name: "option only", input: noVersion, baseVersion: 4, expected: 4 },
+      { name: "no front matter, option only", input: "body", baseVersion: 0, expected: 0 },
+      { name: "both and equal", input: fileV3, baseVersion: 3, expected: 3 },
+      { name: "neither", input: noVersion, expected: undefined },
+    ];
+
+    it.each(cases)("$name", ({ input, baseVersion, expected }) => {
+      const options = { ...target, ...(baseVersion === undefined ? {} : { baseVersion }) };
+      expect(prepareUpload(input, options).baseVersion).toBe(expected);
+    });
+
+    it("both and different: neither value wins, the call fails with a 400", () => {
+      const error = catchScriptMdError(
+        () => prepareUpload(fileV3, { ...target, baseVersion: 4 }),
+        "base_version_mismatch",
+      );
+      expect(error.httpStatus).toBe(400);
+      expect(error.message).toContain('"version: 3"');
+      expect(error.message).toContain('"version: 4"');
+    });
+
+    it("an agent that merged into an old copy fixes the mismatch by updating the version line", () => {
+      const merged = exportedFile({ version: 3, body: "merged\n" });
+      catchScriptMdError(
+        () => prepareUpload(merged, { ...target, baseVersion: 4 }),
+        "base_version_mismatch",
+      );
+      const updated = merged.replace("version: 3", "version: 4");
+      expect(prepareUpload(updated, { ...target, baseVersion: 4 })).toMatchObject({
+        body: "merged\n",
+        baseVersion: 4,
+      });
+      const stripped = merged.replace("version: 3\n", "");
+      expect(prepareUpload(stripped, { ...target, baseVersion: 4 })).toMatchObject({
+        body: "merged\n",
+        baseVersion: 4,
+      });
+    });
+  });
+
+  it("accepts a Node Buffer, the form a Fastify buffer body parser hands over", () => {
+    const text = `\uFEFF${exportedFile({ body: "caf\u00E9\r\n" })}`;
+    const prepared = prepareUpload(Buffer.from(text, "utf8"), target);
+    expect(prepared).toMatchObject({ body: "caf\u00E9\n", baseVersion: 3 });
+    catchScriptMdError(() => prepareUpload(Buffer.from([0xc3, 0x28]), target), "invalid_encoding");
   });
 
   describe("limits", () => {

@@ -1,4 +1,4 @@
-import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared";
+import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared/constants";
 
 /** Maximum size of the front matter block (between the fences), in UTF-8 bytes. */
 export const FRONT_MATTER_MAX_BYTES = 8192;

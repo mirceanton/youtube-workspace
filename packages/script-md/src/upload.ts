@@ -1,4 +1,4 @@
-import type { ScriptKind } from "@ytw/shared";
+import type { ScriptKind } from "@ytw/shared/constants";
 import { ScriptMdError, quoteForMessage } from "./errors.js";
 import {
   describeIdeaIdProblem,
@@ -7,9 +7,27 @@ import {
   isScriptKind,
   isValidVersion,
   normalizeIdeaId,
+  parseVersionText,
   type ScriptFrontMatter,
 } from "./fields.js";
 import { parseScriptFile, type ScriptFileInput } from "./parse.js";
+
+/**
+ * Parses the `base_version` value that arrives outside the file (query parameter, form field,
+ * tool argument given as text) with the same rules as the front matter `version`: canonical
+ * decimal digits from 0 to 2147483647, so `03`, `+3`, `-1`, `1e3`, `" 3"` and `""` are rejected.
+ * Throws `invalid_argument` (400); use {@link parseVersionText} to get null instead.
+ */
+export function parseBaseVersion(value: unknown): number {
+  const parsed = parseVersionText(value);
+  if (parsed === null) {
+    throw new ScriptMdError(
+      "invalid_argument",
+      `Invalid base_version: ${describeVersionProblem(value)}. Pass the version number from the exported file's front matter, or 0 when the script has no version yet.`,
+    );
+  }
+  return parsed;
+}
 
 /** What an uploaded file is being saved as. */
 export interface UploadTarget {
@@ -101,7 +119,7 @@ export function prepareUpload(input: ScriptFileInput, target: UploadTarget): Pre
     if (baseVersion !== undefined && baseVersion !== target.baseVersion) {
       throw new ScriptMdError(
         "base_version_mismatch",
-        `The front matter version is ${baseVersion} but the base version given with the upload is ${target.baseVersion}. They must match: the edit was made on version ${baseVersion}. Re-download the latest version, merge your changes into it and upload again, or remove the version line from the front matter.`,
+        `The front matter says "version: ${baseVersion}" but the base version given with the upload is ${target.baseVersion}, and they must match: the file was edited on version ${baseVersion}. If your changes are already merged into version ${target.baseVersion}, change the front matter line to "version: ${target.baseVersion}" (or delete that line) and upload again. Otherwise re-download the latest version, merge your changes into it and upload again.`,
         { expected: target.baseVersion, actual: baseVersion },
       );
     }

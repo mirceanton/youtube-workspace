@@ -24,7 +24,7 @@ export {
   type ScriptMdHttpStatus,
 } from "./errors.js";
 export { scriptFileName, slugify, type ScriptFileNameParts } from "./filename.js";
-export { normalizeIdeaId, type ScriptFrontMatter } from "./fields.js";
+export { normalizeIdeaId, parseVersionText, type ScriptFrontMatter } from "./fields.js";
 export {
   assertBodyWithinLimit,
   normalizeBody,
@@ -37,4 +37,9 @@ export {
 } from "./parse.js";
 export { serializeScriptFile } from "./serialize.js";
 export { normalizeNewlines, utf8ByteLength } from "./text.js";
-export { prepareUpload, type PreparedUpload, type UploadTarget } from "./upload.js";
+export {
+  parseBaseVersion,
+  prepareUpload,
+  type PreparedUpload,
+  type UploadTarget,
+} from "./upload.js";

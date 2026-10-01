@@ -1,4 +1,4 @@
-import { SCRIPT_KINDS, SCRIPT_STATUSES } from "@ytw/shared";
+import { SCRIPT_KINDS, SCRIPT_STATUSES } from "@ytw/shared/constants";
 import { describe, expect, it } from "vitest";
 import {
   parseCompleteScriptFile,
@@ -294,13 +294,25 @@ describe("front matter syntax accepted from hand-edited files", () => {
     expect(parsed.frontMatter.version).toBe(3);
   });
 
-  it("treats an empty block as front matter with no fields", () => {
-    expect(parseScriptFile("---\n---\nbody")).toEqual({
-      hasFrontMatter: true,
-      frontMatter: {},
-      body: "body",
-    });
-    expect(parseScriptFile("---\n# only a comment\n---\nbody").frontMatter).toEqual({});
+  it("refuses a block with none of the four keys instead of silently dropping it", () => {
+    const blocks = [
+      "---\n---\nbody",
+      "---\n# only a comment\n---\nbody",
+      "---\nUpdate: rewrote the cold open\n---\n\n# Cold open\n",
+      "---\ntitle: Notes\ntags: [a, b]\n---\nbody",
+    ];
+    for (const text of blocks) {
+      const error = catchScriptMdError(() => parseScriptFile(text), "front_matter_invalid");
+      expect(error.message).toContain("none of idea_id, kind, version or status");
+      expect(error.message).toContain("Remove the block");
+      expect(error.details).toEqual({ line: 1, reason: "no_known_keys" });
+    }
+  });
+
+  it("accepts a block with at least one known key next to unknown ones", () => {
+    const parsed = parseScriptFile("---\nUpdate: rewrote the cold open\nversion: 2\n---\nbody");
+    expect(parsed.frontMatter).toEqual({ version: 2 });
+    expect(parsed.body).toBe("body");
   });
 
   it("does not treat a fence that is not the first non-blank line as front matter", () => {

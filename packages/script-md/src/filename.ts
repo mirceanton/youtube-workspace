@@ -1,4 +1,4 @@
-import type { ScriptKind } from "@ytw/shared";
+import type { ScriptKind } from "@ytw/shared/constants";
 import { SCRIPT_FILE_EXTENSION } from "./constants.js";
 import { ScriptMdError } from "./errors.js";
 import {

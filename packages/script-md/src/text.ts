@@ -49,6 +49,31 @@ export function assertNoNul(text: string): void {
 }
 
 /**
+ * Throws `invalid_encoding` when a string holds a lone (unpaired) surrogate. Such a string cannot
+ * be written as UTF-8, so the string path rejects it exactly like the byte path rejects invalid
+ * UTF-8, and both paths accept the same set of texts.
+ */
+export function assertWellFormed(text: string): void {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1); // NaN past the end, which fails the range test
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i += 1;
+        continue;
+      }
+    } else if (unit < 0xdc00 || unit > 0xdfff) {
+      continue;
+    }
+    throw new ScriptMdError(
+      "invalid_encoding",
+      `The text is not valid Unicode: it contains an unpaired surrogate character at position ${i}. Script files must be UTF-8 text; remove or replace the broken character and try again.`,
+      { position: i },
+    );
+  }
+}
+
+/**
  * Decodes UTF-8 bytes strictly (invalid sequences throw instead of becoming U+FFFD). The byte
  * order mark is kept so the caller strips it in one place.
  */

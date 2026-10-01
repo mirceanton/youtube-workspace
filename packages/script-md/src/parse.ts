@@ -1,10 +1,11 @@
-import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared";
+import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared/constants";
 import { SCRIPT_FILE_MAX_INPUT_BYTES } from "./constants.js";
 import { ScriptMdError } from "./errors.js";
 import type { ScriptFrontMatter } from "./fields.js";
 import { parseFrontMatterYaml, splitFrontMatter } from "./front-matter.js";
 import {
   assertNoNul,
+  assertWellFormed,
   decodeUtf8Strict,
   normalizeNewlines,
   stripBom,
@@ -59,6 +60,7 @@ export function assertBodyWithinLimit(body: string): void {
  * Everything else, including leading and trailing blank lines, is preserved exactly.
  */
 export function normalizeBody(body: string): string {
+  assertWellFormed(body);
   assertNoNul(body);
   const normalized = normalizeNewlines(body);
   assertBodyWithinLimit(normalized);
@@ -74,6 +76,7 @@ export function readScriptText(input: ScriptFileInput): string {
   if (typeof input === "string") {
     // A UTF-16 unit is at least one UTF-8 byte, so this never rejects a file that fits.
     if (input.length > SCRIPT_FILE_MAX_INPUT_BYTES) throw tooLarge(undefined);
+    assertWellFormed(input); // the byte path is strict about UTF-8; the string path must be too
     text = input;
   } else if (input instanceof Uint8Array) {
     if (input.byteLength > SCRIPT_FILE_MAX_INPUT_BYTES) throw tooLarge(input.byteLength);
@@ -101,6 +104,15 @@ export function parseScriptFile(input: ScriptFileInput): ParsedScriptFile {
   const text = readScriptText(input);
   const { frontMatter, body } = splitFrontMatter(text);
   const fields = frontMatter === null ? {} : parseFrontMatterYaml(frontMatter);
+  if (frontMatter !== null && Object.keys(fields).length === 0) {
+    // Stripping a block that carries none of our keys would silently discard whatever it holds
+    // (an agent's note, a hand-written header, a horizontal-rule pair), so refuse instead.
+    throw new ScriptMdError(
+      "front_matter_invalid",
+      'The file starts with a "---" block that contains none of idea_id, kind, version or status, so it would be dropped as front matter and its content lost. Remove the block from the file, or add the keys it is meant to carry (for example "version: 3"). If it was meant as markdown, start the file with something else or use "***" for a horizontal rule.',
+      { line: frontMatter.fenceLine, reason: "no_known_keys" },
+    );
+  }
   assertBodyWithinLimit(body);
   return { hasFrontMatter: frontMatter !== null, frontMatter: fields, body };
 }

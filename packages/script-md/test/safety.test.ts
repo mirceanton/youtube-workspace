@@ -1,4 +1,4 @@
-import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared";
+import { SCRIPT_BODY_MAX_BYTES } from "@ytw/shared/constants";
 import { describe, expect, it } from "vitest";
 import {
   FRONT_MATTER_MAX_BYTES,
@@ -306,6 +306,8 @@ describe("unsafe YAML", () => {
       ["version", "1e3"],
       ["version", "-1"],
       ["version", "+3"],
+      ["version", "03"],
+      ["version", "00"],
       ["version", "3 4"],
       ["version", "99999999999"],
       ["version", "2147483648"],
@@ -441,6 +443,75 @@ describe("binary and hostile bytes", () => {
     for (let i = 0; i < text.length; i++) utf16le[2 + i * 2] = text.charCodeAt(i);
     catchScriptMdError(() => parseScriptFile(utf16le), "invalid_encoding");
     catchScriptMdError(() => parseScriptFile(utf16le.subarray(2)), "invalid_characters");
+  });
+
+  it("rejects lone surrogates in strings, like invalid UTF-8 in bytes (both paths agree)", () => {
+    expect.hasAssertions();
+    const loneHigh = "\uD83D";
+    const loneLow = "\uDE00";
+    for (const sample of [
+      loneHigh,
+      loneLow,
+      `a${loneHigh}b`,
+      `a${loneLow}b`,
+      `${loneLow}${loneHigh}`, // wrong order is two lone surrogates
+      `\u{1F600}${loneHigh}`,
+      exportedFile({ body: `text ${loneHigh} more` }),
+      `---\nversion: 1\nx: ${loneLow}\n---\nbody`,
+    ]) {
+      const error = catchScriptMdError(() => parseScriptFile(sample), "invalid_encoding");
+      expect(error.httpStatus).toBe(400);
+      expect(error.details["position"]).toBeTypeOf("number");
+    }
+    // Properly paired surrogates (emoji) are fine, including at both ends.
+    expect(parseScriptFile("\u{1F600}x\u{1F680}").body).toBe("\u{1F600}x\u{1F680}");
+    // The bytes that a lone surrogate would turn into are rejected too, by the byte path.
+    catchScriptMdError(
+      () => parseScriptFile(new Uint8Array([0xed, 0xa0, 0xbd])),
+      "invalid_encoding",
+    );
+  });
+
+  it("every string the string path accepts survives a UTF-8 round trip (no U+FFFD substitution)", () => {
+    const random = seededRandom(31337);
+    const failures: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      let sample = "";
+      for (let j = 0; j < 12; j++) {
+        // Mix BMP units (including surrogate halves) so some samples are well formed and some are not.
+        sample += String.fromCharCode(
+          random() < 0.3
+            ? 0xd800 + Math.floor(random() * 0x800)
+            : Math.floor(random() * 0xd800) + 1,
+        );
+      }
+      let accepted: string | null = null;
+      try {
+        accepted = parseScriptFile(sample).body;
+      } catch {
+        accepted = null;
+      }
+      if (accepted !== null) {
+        const roundTrip = new TextDecoder().decode(new TextEncoder().encode(accepted));
+        if (roundTrip !== accepted) failures.push(JSON.stringify(sample));
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("rejects a body with a lone surrogate when serializing", () => {
+    expect.hasAssertions();
+    catchScriptMdError(
+      () =>
+        serializeScriptFile({
+          ideaId: IDEA_ID,
+          kind: "script",
+          version: 1,
+          status: "draft",
+          body: "broken \uD83D end",
+        }),
+      "invalid_encoding",
+    );
   });
 
   it("rejects input that is neither a string nor bytes", () => {

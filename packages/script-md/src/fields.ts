@@ -1,4 +1,9 @@
-import { SCRIPT_KINDS, SCRIPT_STATUSES, type ScriptKind, type ScriptStatus } from "@ytw/shared";
+import {
+  SCRIPT_KINDS,
+  SCRIPT_STATUSES,
+  type ScriptKind,
+  type ScriptStatus,
+} from "@ytw/shared/constants";
 import { MAX_SCRIPT_VERSION } from "./constants.js";
 import { quoteForMessage } from "./errors.js";
 
@@ -13,7 +18,8 @@ export interface ScriptFrontMatter {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const VERSION_PATTERN = /^\d{1,10}$/;
+// Canonical decimal digits: no sign, spaces, exponent or hex, and no leading zeros ("03" is out).
+const VERSION_PATTERN = /^(?:0|[1-9]\d{0,9})$/;
 
 /** A field problem as a message fragment (no sentence end), or null when the value is valid. */
 export type FieldProblem = string;
@@ -53,13 +59,18 @@ export function isValidVersion(value: unknown): value is number {
   );
 }
 
-/** Parses a version written as text (`3`, `"3"`); returns null when it is not a valid version. */
-export function parseVersionText(value: string): number | null {
-  if (!VERSION_PATTERN.test(value)) return null;
+/**
+ * Parses a version written as text, such as the `?base_version=` query parameter or a front
+ * matter `version` value. Only canonical decimal digits from `0` to 2147483647 are accepted:
+ * `03`, `+3`, `-1`, `1e3`, `0x3`, `3.0`, `" 3"`, `""` and anything that is not a string give
+ * null. `0` is valid (the base version of a script's first revision).
+ */
+export function parseVersionText(value: unknown): number | null {
+  if (typeof value !== "string" || !VERSION_PATTERN.test(value)) return null;
   const parsed = Number(value);
   return isValidVersion(parsed) ? parsed : null;
 }
 
 export function describeVersionProblem(value: unknown): FieldProblem {
-  return `version must be a whole number from 0 to ${MAX_SCRIPT_VERSION}, got ${quoteForMessage(value)}`;
+  return `version must be a whole number from 0 to ${MAX_SCRIPT_VERSION}, written in digits only (no sign, spaces or leading zeros), got ${quoteForMessage(value)}`;
 }
