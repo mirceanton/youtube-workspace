@@ -5,7 +5,7 @@ import {
   type Level,
   type Resource,
   type ResourceLevels,
-} from "@ytw/shared";
+} from "@ytw/shared/constants";
 
 /** A level a route or tool can require. Requiring `none` would allow everyone, so it is not a requirement. */
 export type RequiredLevel = Exclude<Level, "none">;
@@ -138,7 +138,45 @@ export function levelsFromRows(rows: Iterable<LevelRow>): ResourceLevels {
   return levels;
 }
 
-/** `levelsFromRows` for an object such as `{ ideas: "write", scripts: "read" }` (e.g. a jsonb column). */
+/**
+ * `levelsFromRows` for an object such as `{ ideas: "write", scripts: "read" }` (e.g. a jsonb column).
+ * Only own properties count; anything but a plain object throws (see `assertLevelMap`).
+ */
 export function levelsFromRecord(record: Readonly<Record<string, unknown>>): ResourceLevels {
+  assertLevelMap(record, "Stored levels");
   return levelsFromRows(Object.entries(record).map(([resource, level]) => ({ resource, level })));
+}
+
+/** An object literal, `JSON.parse` output or `Object.create(null)`: its prototype is `Object.prototype` or null. */
+export function isPlainObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Throws a `PolicyError` unless `value` is a plain object. Level maps are read through own
+ * properties only, so a `Map`, an array, a class instance or an object that inherits levels from
+ * another object (`Object.create(FULL_ACCESS)`) would otherwise read as something it is not.
+ */
+export function assertLevelMap(
+  value: unknown,
+  what: string,
+): asserts value is Readonly<Record<string, unknown>> {
+  if (!isPlainObject(value)) {
+    throw new PolicyError(
+      `${what} must be a plain object with one own level per object, not ${Object.prototype.toString.call(value)}`,
+    );
+  }
+}
+
+/**
+ * The level `map` holds for `resource` as an own property. A missing entry throws a `PolicyError`
+ * naming the object; an unknown value throws when it is compared (`levelRank`).
+ */
+export function ownLevel(map: Readonly<ResourceLevels>, resource: Resource, what: string): Level {
+  if (!Object.hasOwn(map, resource)) {
+    throw new PolicyError(`${what} have no level for ${resource}`);
+  }
+  return map[resource];
 }

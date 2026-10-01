@@ -5,7 +5,7 @@
  * The objects and levels come from `@ytw/shared` (`RESOURCES`, `LEVELS`, `GRANTABLE_LEVELS`); this
  * package never lists them itself. See docs/policy.md for the API and for adding an object type.
  */
-export type { Level, Resource, ResourceLevels } from "@ytw/shared";
+export type { Level, Resource, ResourceLevels } from "@ytw/shared/constants";
 export * from "./access.js";
 export * from "./grants.js";
 export * from "./levels.js";

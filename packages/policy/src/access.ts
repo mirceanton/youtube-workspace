@@ -1,15 +1,17 @@
-import { RESOURCES, type Level, type Resource } from "@ytw/shared";
+import { RESOURCES, type Level, type Resource } from "@ytw/shared/constants";
 import {
   PolicyError,
   assertResource,
   capLevel,
   maxLevelFor,
+  ownLevel,
   satisfies,
   type RequiredLevel,
 } from "./levels.js";
 import {
   assertPrincipal,
   describePrincipal,
+  hasAdminFlag,
   levelOn,
   principalLevels,
   userLevels,
@@ -123,7 +125,7 @@ export function hasAnyAccess(principal: Principal): boolean {
 /** A user with the admin flag. A token is never an admin, even when its owner is. */
 export function isAdmin(principal: Principal): boolean {
   assertPrincipal(principal);
-  return principal.kind === "user" && principal.isAdmin === true;
+  return principal.kind === "user" && hasAdminFlag(principal);
 }
 
 /**
@@ -149,7 +151,7 @@ function levelDenialMessage(
   if (principal.kind === "user") {
     return `${head} An admin can change user levels in settings.`;
   }
-  const tokenLevel = capLevel(resource, principal.levels[resource]);
+  const tokenLevel = capLevel(resource, ownLevel(principal.levels, resource, "Token levels"));
   const ownerLevel = userLevels(principal.owner)[resource];
   const detail = `The token's own level is ${tokenLevel} and its owner's current level is ${ownerLevel}; a token never exceeds its owner.`;
   if (satisfies(ownerLevel, level)) {

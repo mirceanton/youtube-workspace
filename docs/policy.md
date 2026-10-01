@@ -8,7 +8,8 @@ level changed in settings applies to the next request.
 
 The objects and levels are not listed in this package. `RESOURCES`, `LEVELS`, `GRANTABLE_LEVELS`
 and `RESOURCE_LABELS` come from `@ytw/shared` (`packages/shared/src/resources.ts`); every function
-and every generated test iterates them.
+and every generated test iterates them. The package imports the zod-free `@ytw/shared/constants`
+entry point, so the web UI can use it without adding zod to its bundle.
 
 ## The rules and where they live
 
@@ -70,10 +71,10 @@ if (!decision.allowed) {
 `GET /api/me` returns `levels: principalLevels(user)`. A user for whom `hasAnyAccess` is false gets
 the "access not granted" page.
 
-**MCP server.** `defineTool({ requires })` takes a `Requirement`; call `validateRequirement` when the
-tool is registered and `authorize(principal, tool.requires)` on every call. A denial's `message` is
-written for an LLM: what was needed, what the token has, the token's own level and its owner's, and
-who can fix it, for example:
+**MCP server.** `defineTool({ requires })` takes a `Requirement`; call `validateRequirement` when
+the tool is registered and `authorize(principal, tool.requires)` on every call. A denial's
+`message` is written for an LLM: what was needed, what the token has, the token's own level and its
+owner's, and who can fix it, for example:
 
 > Permission denied: this needs write access on scripts, but token "editor-bot" (owner "alice") has
 > read. The token's own level is write and its owner's current level is read; a token never exceeds
@@ -82,13 +83,22 @@ who can fix it, for example:
 `query_sql` is offered only when `hasReadOnEverything(principal)` holds. `search` passes
 `readableResources(principal)` to the database.
 
-**Settings.** The token form offers `grantOptions(userLevels(owner))` per object. The server
-rejects a request when `grantViolations(userLevels(owner), requested)` is not empty and returns the
-messages, which name the valid values (for example `write on scripts is above the owner's own level
-(read); a token never exceeds its owner; choose one of: none, read`). Requests may be partial; an
-unknown object or level is reported, not thrown. The token list shows
+**Settings.** Give the grant functions (`canGrant`, `grantViolations`, `grantOptions`,
+`grantCeiling`) the owner's **user record**: the signed-in `UserPrincipal`, or `{ isAdmin, levels }`
+with the stored levels. They apply the admin rule themselves. The token form offers
+`grantOptions(owner)` per object. The server rejects a request when
+`grantViolations(owner, requested)` is not empty and returns the messages, which name the valid
+values (for example `write on scripts is above the owner's own level (read); a token never exceeds
+its owner; choose one of: none, read`). Requests may be partial; an unknown object or level is
+reported, not thrown. The token list shows
 `describeLevels(effectiveLevels(userLevels(owner), token.levels))`, so a lowered owner shows
 lowered tokens. Only principals for which `isAdmin` holds may use the access matrix.
+
+**Do not pass an admin's stored `levels` map on its own.** The grant functions still accept a bare
+level map, but they take it to be the owner's *effective* levels (what `userLevels(owner)`
+returns). An admin's stored map skips the admin rule, so the ceiling becomes whatever rows happen to
+be stored: stricter than intended, never looser, but wrong. A user record is recognised as a plain
+object with its own `isAdmin` and `levels` properties.
 
 **SPA.** Feature routes declare a `Requirement` for their nav item. Anything the browser decides is
 cosmetic; the servers decide.
@@ -102,7 +112,14 @@ cosmetic; the servers decide.
 - When a token map is given, every object must be in it; a missing entry throws instead of falling
   back to the owner's level. `effectiveLevel(owner)` means "no token" only when the argument is
   omitted, not when `undefined` is passed.
-- Only a literal `true` admin flag counts.
+- Level maps (user, owner, token and requested levels) must be plain objects: an object literal,
+  `JSON.parse` output or `Object.create(null)`. They are read through own properties only. A `Map`,
+  an array, a class instance, or an object that inherits levels (`Object.create(FULL_ACCESS)`, or a
+  literal whose `__proto__` sets the prototype) throws `PolicyError`; it never reads as levels it
+  does not own, and a `Map` of requests is never mistaken for an empty request. An own `__proto__`
+  or `constructor` key, which is what `JSON.parse` produces, is just an unknown object: ignored in
+  stored levels, reported as `unknown_resource` in a grant request.
+- Only an own admin flag that is literally `true` counts.
 - `can(principal, resource, "none")` throws: requiring None would allow everyone.
 - `can(principal, "activity", "write")` is `false`; declaring that as a route or tool requirement
   throws, because no one can ever satisfy it.
@@ -126,7 +143,8 @@ for a token owned by an admin, and for a token whose owner was lowered after the
 `can` and `authorize` for both Read and Write. Expected values come from a small oracle in
 `test/fixtures.ts` (`READ_ONLY`, `oracleMax`) and literal tables in the matrix test (`LOWER`,
 `MEETS`), written from the PRD text rather than from the implementation. The cases are generated
-from `RESOURCES`, so a new object is covered automatically.
+from `RESOURCES`, so a new object is covered automatically. `test/hardening.test.ts` holds the
+regression tests for the plain-object and own-property rules above.
 
 ## How to add a new object type to the permission matrix
 
@@ -143,17 +161,26 @@ what the object is.
    Run `pnpm lint`. TypeScript reports every other `Record<Resource, ...>` that now lacks an entry
    (for example the `allRead` fixture in `packages/shared/test/resources.test.ts`); add the missing
    entries, and add the object to the literal list that test pins. Zod schemas built on
-   `resourceLevelsSchema` now require the new key, which is intended: a level map is always
-   complete.
+   `resourceLevelsSchema` now require the new key and reject keys they do not know, which is
+   intended (a level map is always complete) but matters for clients on an older build: see the
+   cached-PWA note in step 6.
 
 2. **Write a migration** `packages/db/migrations/NNNN_resource_sponsors.sql`, using the next free
    number in your task's range (`0200+` for later work, from the orchestrator). Applied migrations
-   are immutable, so everything below goes in the new file:
-   - **Accept the value.** Replace the `resource` CHECK constraint on `user_permissions` and on
-     `api_token_permissions` with one that also lists `'sponsors'` (`\d user_permissions` in psql
-     shows the constraint names). If the column uses an enum type instead, run
-     `ALTER TYPE ... ADD VALUE 'sponsors'` in a migration of its own: a new enum value cannot be
-     used in the transaction that adds it, and each migration file is one transaction.
+   are immutable, so everything below goes in the new file.
+
+   > **Status: planned, not yet built.** The permission tables and their constraints (T11), the
+   > database functions named below (T14), `docs/database.md` (T10) and the database test that
+   > compares the object list with `RESOURCES` (T11/T14, as CLAUDE.md requires) are to be
+   > implemented by those tasks. T16 and T62 verify this step against what they ship and correct the
+   > names. Until then, read the table, constraint and function names below as the plan, not as
+   > existing code.
+
+   - **Accept the value.** Replace the `resource` CHECK constraint that T11 is to define on
+     `user_permissions` and on `api_token_permissions` with one that also lists `'sponsors'`
+     (`\d user_permissions` in psql shows the constraint names). If T11 uses an enum type
+     instead, run `ALTER TYPE ... ADD VALUE 'sponsors'` in a migration of its own: a new enum value
+     cannot be used in the transaction that adds it, and each migration file is one transaction.
    - **Read-only object?** Extend the CHECK that forbids `write` on the activity log so it also
      covers `'sponsors'`.
    - **Backfill a row for every existing user and token.** Admins get the maximum (`write`, or
@@ -171,20 +198,23 @@ what the object is.
      ON CONFLICT (token_id, resource) DO NOTHING;
      ```
 
-     Fill any other required columns those tables define, and set the audit actor for data
-     changes the way `docs/database.md` prescribes for migrations.
+     Fill any other required columns those tables will define (T11), and set the audit actor for
+     data changes the way `docs/database.md` (to be written by T10) prescribes for migrations.
    - **Update the functions that spell out the object list.** Find them with
-     `grep -rn "'activity'" packages/db/migrations` (every list contains the activity log). Expect
-     at least `upsert_user_on_login` (rows for new users, Write everywhere for the first admin), the
-     permission and token functions (`set_user_permission`, `create_api_token`,
-     `update_token_permissions`, `lookup_token_by_hash`) and, if the object is searchable,
-     `search_all`. Redefine each with `CREATE OR REPLACE FUNCTION` in the new migration, keeping
-     the conventions in `docs/database.md` (SECURITY DEFINER, pinned `search_path`, grants).
-   - **New tables** for the object follow `docs/database.md` too: mutations only through SECURITY
+     `grep -rn "'activity'" packages/db/migrations` (every list contains the activity log). Once
+     T14 has built them, expect at least `upsert_user_on_login` (rows for new users, Write
+     everywhere for the first admin), the permission and token functions (`set_user_permission`,
+     `create_api_token`, `update_token_permissions`, `lookup_token_by_hash`) and, if the object is
+     searchable, `search_all` (T15). Redefine each with `CREATE OR REPLACE FUNCTION` in the new
+     migration, keeping the conventions `docs/database.md` will set (SECURITY DEFINER, pinned
+     `search_path`, grants).
+   - **New tables** for the object follow the same conventions: mutations only through SECURITY
      DEFINER functions, no table-level DML for app roles, the `ytw_audit()` trigger, and `SELECT`
      for `ytw_readonly` unless the table holds secrets.
    - Run `pnpm migrate` twice (the second run must be a no-op) and `pnpm --filter @ytw/db test`.
-     The test that compares the database's object list with `RESOURCES` must pass.
+     Once T11/T14 add the test that compares the database's object list with `RESOURCES`, it must
+     pass; until then, check by hand that every list found by the grep above includes the new
+     object.
 
 3. **Policy** (`packages/policy`): no source change. Run `pnpm --filter @ytw/policy test`; the
    matrix, grant and summary tests now include the new object and coverage stays at 100 %. If the
@@ -216,6 +246,14 @@ what the object is.
    process that knows it treats a missing row as None. At no point does anyone gain access by
    accident. Afterwards admins already have the new object; grant it to other users in the access
    matrix, and owners widen their tokens in settings.
+
+   **Cached PWA.** The web server serves the SPA, so the two ship together; the one client that can
+   run an older build is a PWA shell cached by the service worker. If that build validates the
+   `levels` in `GET /api/me` with `resourceLevelsSchema`, it rejects the new server's response
+   (unknown key `sponsors`) and fails closed: it shows an error, never wrong access. Make sure the
+   new build's service worker takes over promptly (a new precache revision with an update prompt or
+   reload), and have the SPA treat a schema failure on `/api/me` as "a new version is available,
+   reload" rather than a generic error. Agents using MCP are not affected.
 
 Renaming or removing an object is not covered by this guide: it needs a data migration of existing
 rows and a check of every token that referenced it.

@@ -1,4 +1,9 @@
-import { RESOURCE_LABELS, RESOURCES, type Resource, type ResourceLevels } from "@ytw/shared";
+import {
+  RESOURCE_LABELS,
+  RESOURCES,
+  type Resource,
+  type ResourceLevels,
+} from "@ytw/shared/constants";
 import { maxLevelFor } from "./levels.js";
 import { effectiveLevels } from "./principal.js";
 

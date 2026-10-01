@@ -1,11 +1,13 @@
-import type { Level, Resource, ResourceLevels } from "@ytw/shared";
+import type { Level, Resource, ResourceLevels } from "@ytw/shared/constants";
 import {
   FULL_ACCESS,
   PolicyError,
+  assertLevelMap,
   assertResource,
   capLevel,
   mapResources,
   minLevel,
+  ownLevel,
 } from "./levels.js";
 
 /** The levels a user holds, as stored, plus the admin flag. */
@@ -65,29 +67,40 @@ export function effectiveLevel(owner: Level, ...token: [token?: Level]): Level {
 
 /**
  * `effectiveLevel` for every object, capped at what each object allows (the activity log is Read
- * at most). `owner` must already be the owner's effective user levels, see `userLevels`. When a
- * token map is given, every object must be in it: a missing entry throws a `PolicyError` rather
- * than falling back to the owner's level.
+ * at most). `owner` must already be the owner's effective user levels, see `userLevels`.
+ *
+ * Both maps must be plain objects and are read through own properties only (`assertLevelMap`,
+ * `ownLevel`): a missing entry throws a `PolicyError` rather than falling back to the owner's level
+ * or to an inherited value.
  */
 export function effectiveLevels(
   owner: Readonly<ResourceLevels>,
   token?: Readonly<ResourceLevels>,
 ): ResourceLevels {
-  return mapResources((resource) =>
-    capLevel(
+  assertLevelMap(owner, "Owner levels");
+  if (token !== undefined) assertLevelMap(token, "Token levels");
+  return mapResources((resource) => {
+    const ownerLevel = ownLevel(owner, resource, "Owner levels");
+    return capLevel(
       resource,
-      token === undefined ? owner[resource] : minLevel(owner[resource], token[resource]),
-    ),
-  );
+      token === undefined
+        ? ownerLevel
+        : minLevel(ownerLevel, ownLevel(token, resource, "Token levels")),
+    );
+  });
+}
+
+/** Whether a user record carries the admin flag: only an own property that is literally `true` counts. */
+export function hasAdminFlag(user: UserLevelsSource): boolean {
+  return Object.hasOwn(user, "isAdmin") && user.isAdmin === true;
 }
 
 /**
  * A user's effective levels. Admins have the maximum on every object (PRD 7: "Admins have Write on
  * everything"), whatever rows are stored; everyone else has their stored levels, capped per object.
- * Only a literal `true` admin flag counts.
  */
 export function userLevels(user: UserLevelsSource): ResourceLevels {
-  return user.isAdmin === true ? { ...FULL_ACCESS } : effectiveLevels(user.levels);
+  return hasAdminFlag(user) ? { ...FULL_ACCESS } : effectiveLevels(user.levels);
 }
 
 /**
