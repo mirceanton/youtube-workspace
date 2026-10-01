@@ -181,6 +181,18 @@ refresh() { # refresh <refresh token>
   token_request "${CLIENT_SECRET}" --data-urlencode "grant_type=refresh_token" --data-urlencode "refresh_token=$1"
 }
 
+# is_token_refusal <status>: the last token request was refused (400 or 401) and issued no tokens.
+is_token_refusal() {
+  [ "$1" = 400 ] || [ "$1" = 401 ] || return 1
+  [ -z "$(jq -r '.access_token // empty' "${tmp}/token.json")" ]
+}
+
+# is_invalid_grant <status>: the last token request failed with 400 invalid_grant.
+is_invalid_grant() {
+  [ "$1" = 400 ] || return 1
+  [ "$(jq -r '.error // empty' "${tmp}/token.json")" = invalid_grant ]
+}
+
 # in_group <claims json> prints true when the groups claim lists the required group.
 in_group() {
   jq -r --arg claim "${GROUPS_CLAIM}" --arg group "${REQUIRED_GROUP}" \
@@ -258,8 +270,9 @@ check_login() { # check_login <username> <password> <expect member: true|false>
     fail "code exchange for ${username} failed: $(jq -r '.error + ": " + (.error_description // "")' "${tmp}/token.json" 2>/dev/null)"
   id_token=$(jq -r '.id_token // empty' "${tmp}/token.json")
   access_token=$(jq -r '.access_token // empty' "${tmp}/token.json")
-  [ -n "${id_token}" ] && [ -n "${access_token}" ] && [ -n "$(jq -r '.refresh_token // empty' "${tmp}/token.json")" ] ||
+  if [ -z "${id_token}" ] || [ -z "${access_token}" ] || [ -z "$(jq -r '.refresh_token // empty' "${tmp}/token.json")" ]; then
     fail "token response for ${username} lacks id_token, access_token or refresh_token"
+  fi
   pass "code exchange returned id, access and refresh tokens"
 
   claims=$(jwt_claims "${id_token}")
@@ -316,21 +329,18 @@ pass "unregistered redirect URI is refused (HTTP ${status})"
 verifier=$(random_urlsafe)
 login owner "${OWNER_PASSWORD}" "${verifier}"
 status=$(exchange_code "${LOGIN_CODE}" "${verifier}" "not-the-client-secret")
-{ [ "${status}" = 401 ] || [ "${status}" = 400 ]; } && [ "$(jq -r '.access_token // empty' "${tmp}/token.json")" = "" ] ||
-  fail "code exchange with a wrong client secret returned HTTP ${status}, expected 401 and no tokens"
+is_token_refusal "${status}" || fail "code exchange with a wrong client secret returned HTTP ${status}, expected 401 and no tokens"
 pass "wrong client secret is refused (HTTP ${status})"
 
 verifier=$(random_urlsafe)
 login owner "${OWNER_PASSWORD}" "${verifier}"
 status=$(exchange_code "${LOGIN_CODE}" "$(random_urlsafe)")
-{ [ "${status}" = 400 ] && [ "$(jq -r .error "${tmp}/token.json")" = invalid_grant ]; } ||
-  fail "code exchange with a wrong PKCE verifier returned HTTP ${status}, expected 400 invalid_grant"
+is_invalid_grant "${status}" || fail "code exchange with a wrong PKCE verifier returned HTTP ${status}, expected 400 invalid_grant"
 pass "wrong PKCE code verifier is refused (HTTP 400 invalid_grant)"
 
 status=$(token_request "${CLIENT_SECRET}" --data-urlencode "grant_type=password" \
   --data-urlencode "username=owner" --data-urlencode "password=${OWNER_PASSWORD}")
-{ [ "${status}" = 400 ] || [ "${status}" = 401 ]; } && [ "$(jq -r '.access_token // empty' "${tmp}/token.json")" = "" ] ||
-  fail "the password grant returned HTTP ${status}, expected a refusal"
+is_token_refusal "${status}" || fail "the password grant returned HTTP ${status}, expected a refusal"
 pass "password grant is disabled for the client (HTTP ${status}, $(jq -r .error "${tmp}/token.json"))"
 
 jar="${tmp}/jar-badpass"
@@ -360,7 +370,9 @@ else
   user_id=$(admin_call GET "/admin/realms/${REALM}/users?username=owner&exact=true" | jq -r '.[0].id // empty')
   group_id=$(admin_call GET "/admin/realms/${REALM}/groups?search=${REQUIRED_GROUP}" |
     jq -r --arg group "${REQUIRED_GROUP}" '[.[] | select(.name == $group)][0].id // empty')
-  [ -n "${user_id}" ] && [ -n "${group_id}" ] || fail "could not find user owner or group ${REQUIRED_GROUP} through the admin API"
+  if [ -z "${user_id}" ] || [ -z "${group_id}" ]; then
+    fail "could not find user owner or group ${REQUIRED_GROUP} through the admin API"
+  fi
   admin_call DELETE "/admin/realms/${REALM}/users/${user_id}/groups/${group_id}" >/dev/null
   removed_uid=${user_id}
   removed_gid=${group_id}
@@ -397,12 +409,12 @@ owner_refresh_token=$(jq -r .refresh_token "${tmp}/token.json")
 owner_id_token=$(jq -r .id_token "${tmp}/token.json")
 
 status=$(logout "${POST_LOGOUT_URI}")
-[ "${status}" = 302 ] && [[ "$(header_value location)" == "${POST_LOGOUT_URI}"* ]] ||
+if [ "${status}" != 302 ] || [[ "$(header_value location)" != "${POST_LOGOUT_URI}"* ]]; then
   fail "logout returned HTTP ${status} (Location: $(header_value location)), expected a redirect to ${POST_LOGOUT_URI}"
+fi
 pass "logout redirects to the registered post-logout URI ${POST_LOGOUT_URI}"
 status=$(refresh "${owner_refresh_token}")
-{ [ "${status}" = 400 ] && [ "$(jq -r .error "${tmp}/token.json")" = invalid_grant ]; } ||
-  fail "the refresh token still works after logout (HTTP ${status})"
+is_invalid_grant "${status}" || fail "the refresh token still works after logout (HTTP ${status})"
 pass "the provider session is gone: the refresh token is rejected after logout"
 
 echo "keycloak-smoke: all checks passed"
