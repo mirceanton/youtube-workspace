@@ -1,0 +1,28 @@
+# Local development services only: throwaway instances that never touch shared infrastructure.
+#   docker compose up -d          start everything in the background
+#   docker compose down -v        stop and delete all local data
+# Without Docker, scripts/pg-local.sh runs an equivalent Postgres on the same port and credentials.
+name: youtube-workspace
+
+services:
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      # Dev-only credentials, also used by scripts/pg-local.sh and .env.example.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: youtube_workspace
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d youtube_workspace"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  postgres-data:
