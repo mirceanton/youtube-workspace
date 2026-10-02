@@ -284,10 +284,12 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- What the object can ever hold, and what this owner may hand out on it (never more than that).
     v_max := public.ytw_max_level(v_resource);
+    v_ceiling := public.ytw_cap_level(v_resource, p_owner_levels ->> v_resource);
     v_allowed := ARRAY(
       SELECT l FROM unnest(ARRAY['none', 'read', 'write']::text[]) AS l
-      WHERE public.ytw_level_rank(l) <= public.ytw_level_rank(v_max));
+      WHERE public.ytw_level_rank(l) <= public.ytw_level_rank(v_ceiling));
     v_level := CASE WHEN jsonb_typeof(v_value) = 'string' THEN v_value #>> '{}' END;
     v_choose := 'choose one of: ' || array_to_string(v_allowed, ', ');
 
@@ -301,23 +303,22 @@ BEGIN
       v_invalid := v_invalid || jsonb_build_object(
         'resource', v_resource, 'requested', v_level, 'reason', 'not_grantable',
         'allowed', to_jsonb(v_allowed));
-      v_messages := v_messages || format('%s is never allowed on %s (it allows %s); %s',
-                                         v_level, v_resource, array_to_string(v_allowed, ', '), v_choose);
-    ELSE
-      v_ceiling := public.ytw_cap_level(v_resource, p_owner_levels ->> v_resource);
-      IF public.ytw_level_rank(v_level) > public.ytw_level_rank(v_ceiling) THEN
-        v_allowed := ARRAY(
+      v_messages := v_messages || format(
+        '%s is never allowed on %s (it allows %s); %s',
+        v_level, v_resource,
+        array_to_string(ARRAY(
           SELECT l FROM unnest(ARRAY['none', 'read', 'write']::text[]) AS l
-          WHERE public.ytw_level_rank(l) <= public.ytw_level_rank(v_ceiling));
-        v_exceeds := v_exceeds || jsonb_build_object(
-          'resource', v_resource, 'requested', v_level, 'reason', 'exceeds_owner',
-          'owner_level', v_ceiling, 'allowed', to_jsonb(v_allowed));
-        v_messages := v_messages || format(
-          '%s on %s is above the owner''s own level (%s); a token never exceeds its owner; choose one of: %s',
-          v_level, v_resource, v_ceiling, array_to_string(v_allowed, ', '));
-      ELSE
-        v_normalised := v_normalised || jsonb_build_object(v_resource, v_level);
-      END IF;
+          WHERE public.ytw_level_rank(l) <= public.ytw_level_rank(v_max)), ', '),
+        v_choose);
+    ELSIF public.ytw_level_rank(v_level) > public.ytw_level_rank(v_ceiling) THEN
+      v_exceeds := v_exceeds || jsonb_build_object(
+        'resource', v_resource, 'requested', v_level, 'reason', 'exceeds_owner',
+        'owner_level', v_ceiling, 'allowed', to_jsonb(v_allowed));
+      v_messages := v_messages || format(
+        '%s on %s is above the owner''s own level (%s); a token never exceeds its owner; %s',
+        v_level, v_resource, v_ceiling, v_choose);
+    ELSE
+      v_normalised := v_normalised || jsonb_build_object(v_resource, v_level);
     END IF;
   END LOOP;
 
