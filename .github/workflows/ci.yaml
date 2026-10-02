@@ -5,12 +5,15 @@ permissions: { contents: read }
 
 # One workflow, so the cost of a push is the cost of the jobs that have a reason to run.
 #   - Pushes that only change documentation (docs/, *.md, LICENSE) start nothing.
-#   - `check` (lint, typecheck, format, build, workflow lint) and `test` run on every other push.
+#   - `check` (lint, typecheck, format, build, workflow lint, a secret scan of the pushed commits)
+#     and `test` run on every other push.
 #   - `images`, `scan` and `codeql` are heavy. They always run for pull requests, pushes to main,
 #     manual runs and the weekly schedule. On other pushes (the shared integration branch has no
 #     pull request flow yet) they run only if a path that can change them was touched or the head
 #     commit message contains the token [ci full]; .github/scripts/ci-gate.sh decides.
 # Pull requests are not path filtered, so their required checks always report.
+# GitHub skips every workflow for a push whose head commit message contains [skip ci], [ci skip],
+# [no ci], [skip actions] or [actions skip]; main still needs a green run before a release.
 on:
   workflow_dispatch: {}
   pull_request: { branches: ["main"] }
@@ -26,6 +29,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # renovate: depName=gitleaks/gitleaks extractVersion=^v(?<version>.*)$
+  GITLEAKS_VERSION: "8.30.1"
+
 jobs:
   check:
     name: Lint, typecheck and build
@@ -37,6 +44,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The history, for the secret scan of the commits this push added (a few seconds).
+          fetch-depth: 0
           persist-credentials: false
       - name: Decide whether the heavy jobs run
         id: gate
@@ -55,6 +64,14 @@ jobs:
         run: mise exec -- actionlint
       - name: Test the CI helper scripts
         run: .github/scripts/test-scripts.sh
+      # Only the commits this push added, so a secret committed in ordinary source is found on the
+      # push that adds it, not only by the next full run; the `scan` job rescans the whole history.
+      - name: Scan the commits of this push for secrets (gitleaks)
+        if: ${{ github.event_name == 'push' }}
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: mise exec "aqua:gitleaks/gitleaks@${GITLEAKS_VERSION}" -- .github/scripts/scan-new-commits.sh
       - name: Typecheck and lint (tsc -b and oxlint)
         run: mise exec -- pnpm lint
       - name: Check formatting
@@ -208,9 +225,6 @@ jobs:
     if: ${{ needs.check.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      # renovate: depName=gitleaks/gitleaks extractVersion=^v(?<version>.*)$
-      GITLEAKS_VERSION: "8.30.1"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -220,9 +234,13 @@ jobs:
       - name: Setup mise
         uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
       # The steps below are independent, so one finding does not hide the others.
+      # Dependencies are covered by this audit and by the Trivy image scans in the `images` job
+      # (their node-pkg targets), not by the filesystem scan below.
       - name: Audit dependencies (fails on high or critical advisories)
         run: mise exec -- pnpm audit --audit-level=high
-      # Vulnerabilities in the lockfile, secrets in the tree, and misconfigurations (Dockerfiles).
+      # Secrets in the tree and misconfigurations (the Dockerfiles). Trivy does not parse pnpm 12's
+      # two-document pnpm-lock.yaml, so this scan lists no lockfile and reports no dependency
+      # vulnerability; `vuln` stays on so it starts to once Trivy does.
       - name: Scan the repository (Trivy)
         if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

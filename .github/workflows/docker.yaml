@@ -24,6 +24,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +41,14 @@ jobs:
         with:
           ref: "${{ github.event.release.tag_name }}"
           persist-credentials: false
+      # Whoever created the release, even by hand on an arbitrary commit, only a commit whose CI
+      # run on main is green is published.
+      - name: Require a green CI run for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: .github/scripts/verify-ci.sh
       - name: Compute build metadata
         id: build-meta
         env:

@@ -63,6 +63,10 @@ jobs:
         with:
           app-id: "${{ secrets.BOT_APP_ID }}"
           private-key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
+          # The token is limited to this repository (the default) and to what a release does: read
+          # the releases and commits, push the tag and create the release. Without this line it
+          # would carry every permission the installed App has.
+          permission-contents: write
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
