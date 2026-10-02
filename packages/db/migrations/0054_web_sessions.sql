@@ -42,8 +42,10 @@ AS $$
   END
 $$;
 
--- Timeouts, blob and hint must fit what the table accepts, and the timeouts must be sane: at least a
--- minute (0 or negative would create a dead session) and at most 366 days.
+-- Checks the arguments the session functions share. Every check applies only to a value that is
+-- given (NULL is skipped; the functions that need a value say so themselves): timeouts between a
+-- minute (0 or negative would create a dead session) and 366 days, a refresh token blob and an ID
+-- token hint of a size the table accepts.
 CREATE FUNCTION public.ytw_check_session_args(
   p_idle_timeout_seconds integer,
   p_absolute_timeout_seconds integer,
@@ -56,7 +58,7 @@ STABLE
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
-  IF p_idle_timeout_seconds IS NULL OR p_idle_timeout_seconds NOT BETWEEN 60 AND 31622400 THEN
+  IF p_idle_timeout_seconds IS NOT NULL AND p_idle_timeout_seconds NOT BETWEEN 60 AND 31622400 THEN
     PERFORM public.ytw_raise(
       'validation',
       'the idle timeout must be between 60 and 31622400 seconds (1 minute to 366 days)',
@@ -106,6 +108,12 @@ DECLARE
   v_absolute timestamptz;
   v_id uuid;
 BEGIN
+  IF p_idle_timeout_seconds IS NULL THEN
+    PERFORM public.ytw_raise(
+      'validation',
+      'the idle timeout must be between 60 and 31622400 seconds (1 minute to 366 days)',
+      jsonb_build_object('field', 'idle_timeout_seconds'));
+  END IF;
   IF p_absolute_timeout_seconds IS NULL THEN
     PERFORM public.ytw_raise(
       'validation',
@@ -152,6 +160,12 @@ AS $$
 DECLARE
   v_now timestamptz := statement_timestamp();
 BEGIN
+  IF p_idle_timeout_seconds IS NULL THEN
+    PERFORM public.ytw_raise(
+      'validation',
+      'the idle timeout must be between 60 and 31622400 seconds (1 minute to 366 days)',
+      jsonb_build_object('field', 'idle_timeout_seconds'));
+  END IF;
   PERFORM public.ytw_check_session_args(p_idle_timeout_seconds, NULL, NULL, NULL);
   RETURN QUERY
   WITH touched AS (
@@ -222,7 +236,7 @@ DECLARE
   v_now timestamptz := statement_timestamp();
   v_rows integer;
 BEGIN
-  PERFORM public.ytw_check_session_args(60, NULL, p_refresh_token_encrypted, p_id_token_hint);
+  PERFORM public.ytw_check_session_args(NULL, NULL, p_refresh_token_encrypted, p_id_token_hint);
   UPDATE ytw_private.web_sessions s
      SET refresh_token_encrypted = coalesce(p_refresh_token_encrypted, s.refresh_token_encrypted),
          id_token_hint = coalesce(p_id_token_hint, s.id_token_hint)
