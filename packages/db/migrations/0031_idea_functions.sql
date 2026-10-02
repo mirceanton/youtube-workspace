@@ -292,6 +292,7 @@ DECLARE
   v_source text;
   v_tags text[];
   v_score integer;
+  v_latest integer;
 BEGIN
   PERFORM public.ytw_set_actor(p_actor, p_actor_type, p_token_id);
 
@@ -359,10 +360,16 @@ BEGIN
     RETURN v_idea;
   END IF;
 
+  -- The update names the version that was read: if the row lock were ever bypassed, a concurrent
+  -- change finds no row here and is reported as the conflict it is, never overwritten.
   UPDATE public.ideas
      SET title = v_title, pitch = v_pitch, source = v_source, tags = v_tags, score = v_score
-   WHERE id = p_id
+   WHERE id = p_id AND version = v_idea.version
   RETURNING * INTO v_idea;
+  IF NOT FOUND THEN
+    SELECT i.version INTO v_latest FROM public.ideas AS i WHERE i.id = p_id;
+    PERFORM public.ytw_raise_version_conflict('idea', p_id, p_expected_version, v_latest);
+  END IF;
   RETURN v_idea;
 END
 $$;
@@ -389,6 +396,7 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
   v_idea public.ideas;
+  v_latest integer;
 BEGIN
   PERFORM public.ytw_set_actor(p_actor, p_actor_type, p_token_id);
 
@@ -413,7 +421,13 @@ BEGIN
     RETURN v_idea;
   END IF;
 
-  UPDATE public.ideas SET archived_at = now() WHERE id = p_id RETURNING * INTO v_idea;
+  UPDATE public.ideas SET archived_at = now()
+   WHERE id = p_id AND version = v_idea.version
+  RETURNING * INTO v_idea;
+  IF NOT FOUND THEN
+    SELECT i.version INTO v_latest FROM public.ideas AS i WHERE i.id = p_id;
+    PERFORM public.ytw_raise_version_conflict('idea', p_id, p_expected_version, v_latest);
+  END IF;
   RETURN v_idea;
 END
 $$;
@@ -449,6 +463,7 @@ DECLARE
   v_allowed_text text;
   v_has_note boolean := p_note IS NOT NULL AND p_note !~ '^[[:space:]]*$';
   v_note public.notes;
+  v_latest integer;
 BEGIN
   PERFORM public.ytw_set_actor(p_actor, p_actor_type, p_token_id);
 
@@ -517,7 +532,13 @@ BEGIN
                          'kind', v_rule.kind, 'requires_note', true));
   END IF;
 
-  UPDATE public.ideas SET status = p_new_status WHERE id = p_id RETURNING * INTO v_idea;
+  UPDATE public.ideas SET status = p_new_status
+   WHERE id = p_id AND version = v_idea.version
+  RETURNING * INTO v_idea;
+  IF NOT FOUND THEN
+    SELECT i.version INTO v_latest FROM public.ideas AS i WHERE i.id = p_id;
+    PERFORM public.ytw_raise_version_conflict('idea', p_id, p_expected_version, v_latest);
+  END IF;
   IF v_has_note THEN
     v_note := public.ytw_insert_note('idea', p_id, p_note, 'note');
   END IF;

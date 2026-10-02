@@ -43,6 +43,7 @@ import {
   partition,
   tick,
   waitForLockWait,
+  withoutRowLock,
 } from "./content-helpers.js";
 import { failure, sqlstate } from "./helpers.js";
 
@@ -628,6 +629,26 @@ describe("save_script_version", () => {
       const { ok, failed } = partition(results);
       expect(failed).toEqual([]);
       expect(ok.map((row) => row.version)).toEqual([1, 1, 1, 1]);
+    });
+
+    it("still produce one winner if the idea row lock is taken away: the unique key decides", async () => {
+      const idea = await newIdea(db);
+      const agent = newAgent("unlocked");
+      const results = await withoutRowLock(db, ["save_script_version"], () =>
+        Promise.allSettled(
+          Array.from({ length: 8 }, (_, i) =>
+            save(i % 2 === 0 ? alice : agent, idea.id, 0, `attempt ${i}`),
+          ),
+        ),
+      );
+      const { ok, failed } = partition(results);
+      expect(ok).toHaveLength(1);
+      expect(failed).toHaveLength(7);
+      for (const reason of failed) {
+        expect(reason).toBeInstanceOf(VersionConflictError);
+        expect((reason as VersionConflictError).latestVersion).toBe(1);
+      }
+      expect(await scriptRows(idea.id)).toHaveLength(1);
     });
 
     it("turn a duplicate version written behind the function's back into the same conflict", async () => {

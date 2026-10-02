@@ -198,3 +198,42 @@ export async function waitForLockWait(db: TestDb, text: string, timeoutMs = 10_0
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
+
+/**
+ * Runs `run` with the named functions replaced by copies that do not lock the idea row, then puts
+ * the originals back. It proves the second line of defence of the write functions (the version
+ * predicate of the UPDATE, the unique key of the script versions) on its own. The superuser
+ * replaces them in place, so owner and grants stay as they were.
+ */
+export async function withoutRowLock<T>(
+  db: TestDb,
+  names: readonly string[],
+  run: () => Promise<T>,
+): Promise<T> {
+  const originals: string[] = [];
+  const copies: string[] = [];
+  for (const name of names) {
+    const { rows } = await db.admin.query<{ def: string }>(
+      `SELECT pg_get_functiondef(p.oid) AS def FROM pg_proc p
+        WHERE p.pronamespace = 'public'::regnamespace AND p.proname = $1`,
+      [name],
+    );
+    const def = rows[0]?.def ?? "";
+    const copy = def.replaceAll(" FOR NO KEY UPDATE;", ";");
+    if (def === "" || copy === def || copy.includes("FOR NO KEY UPDATE")) {
+      throw new Error(`could not build a lock-free copy of ${name}`);
+    }
+    originals.push(def);
+    copies.push(copy);
+  }
+  try {
+    for (const copy of copies) {
+      await db.admin.query(copy);
+    }
+    return await run();
+  } finally {
+    for (const original of originals) {
+      await db.admin.query(original);
+    }
+  }
+}

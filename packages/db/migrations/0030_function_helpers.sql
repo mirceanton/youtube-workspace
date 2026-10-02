@@ -65,7 +65,9 @@ COMMENT ON FUNCTION public.ytw_raise_not_found(text, uuid) IS
   'Internal: raise not_found for an entity id.';
 
 -- version_conflict on a row that carries a version column (ideas): says what the caller sent, what
--- is current, and what to do. The latest version is also in DETAIL for programs.
+-- is current, and what to do. The latest version is also in DETAIL for programs. `p_expected` is
+-- NULL when the caller named no version (advance_idea and archive_idea take it as optional) and the
+-- idea was changed by somebody else while the call was running.
 CREATE FUNCTION public.ytw_raise_version_conflict(
   p_entity text, p_id uuid, p_expected integer, p_latest integer
 )
@@ -76,8 +78,14 @@ AS $$
 BEGIN
   PERFORM public.ytw_raise(
     'version_conflict',
-    format('%s %s has changed since you read it: you sent expected_version %s but the latest version is %s; reload it, apply your change again and retry with expected_version %s',
-           p_entity, p_id, p_expected, p_latest, p_latest),
+    CASE
+      WHEN p_expected IS NULL THEN
+        format('%s %s was changed by someone else while this call was running: the latest version is %s; reload it and try again',
+               p_entity, p_id, p_latest)
+      ELSE
+        format('%s %s has changed since you read it: you sent expected_version %s but the latest version is %s; reload it, apply your change again and retry with expected_version %s',
+               p_entity, p_id, p_expected, p_latest, p_latest)
+    END,
     jsonb_build_object('entity', p_entity, 'id', p_id,
                        'expected_version', p_expected, 'latest_version', p_latest));
 END

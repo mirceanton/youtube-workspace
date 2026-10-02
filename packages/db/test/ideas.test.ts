@@ -46,6 +46,7 @@ import {
   partition,
   setStageDirectly,
   tick,
+  withoutRowLock,
 } from "./content-helpers.js";
 import { failure, sqlstate } from "./helpers.js";
 
@@ -1171,6 +1172,107 @@ describe("advance_idea: the stage machine", () => {
       ValidationError,
     );
     expect(err.field).toBe("note");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("optimistic concurrency without the row lock", () => {
+  // The write functions lock the idea row, then check the version they read. The UPDATE names that
+  // version too, so the guarantee does not rest on the lock alone: these tests take the lock away
+  // (superuser copies of the functions) and expect the same outcome.
+  const names = ["update_idea", "advance_idea", "archive_idea"];
+
+  it("update_idea: exactly one of several racing edits wins", async () => {
+    const idea = await newIdea(db, { title: "Unlocked race" });
+    const results = await withoutRowLock(db, names, () =>
+      Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) =>
+          edit(i % 2 === 0 ? alice : newAgent(), idea.id, 1, { title: `Edit ${i}` }),
+        ),
+      ),
+    );
+    const { ok, failed } = partition(results);
+    expect(ok).toHaveLength(1);
+    expect(failed).toHaveLength(7);
+    for (const reason of failed) {
+      expect(reason).toBeInstanceOf(VersionConflictError);
+      expect((reason as VersionConflictError).latestVersion).toBe(2);
+    }
+    expect(await getIdea(db.admin, idea.id)).toMatchObject({ version: 2, title: ok[0]?.title });
+  });
+
+  it("advance_idea with a version: exactly one of several racing moves wins", async () => {
+    const idea = await newIdea(db);
+    const results = await withoutRowLock(db, names, () =>
+      Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) =>
+          act(db, i % 2 === 0 ? alice : newAgent(), (tx) =>
+            advanceIdea(tx, { id: idea.id, newStatus: "shortlisted", expectedVersion: 1 }),
+          ),
+        ),
+      ),
+    );
+    const { ok, failed } = partition(results);
+    expect(ok).toHaveLength(1);
+    for (const reason of failed) {
+      expect(reason).toBeInstanceOf(VersionConflictError);
+      expect((reason as VersionConflictError).latestVersion).toBe(2);
+    }
+    expect(await getIdea(db.admin, idea.id)).toMatchObject({ status: "shortlisted", version: 2 });
+  });
+
+  it("advance_idea without a version: the stage is moved once, the others are told", async () => {
+    const idea = await newIdea(db);
+    const results = await withoutRowLock(db, names, () =>
+      Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) =>
+          act(db, i % 2 === 0 ? alice : newAgent(), (tx) =>
+            advanceIdea(tx, { id: idea.id, newStatus: "shortlisted", note: `move ${i}` }),
+          ),
+        ),
+      ),
+    );
+    const { ok, failed } = partition(results);
+    expect(ok).toHaveLength(1);
+    for (const reason of failed) {
+      // A late caller sees the new stage (invalid move); an early one finds the idea changed.
+      expect(
+        [VersionConflictError, InvalidTransitionError].some((type) => reason instanceof type),
+      ).toBe(true);
+    }
+    expect(await getIdea(db.admin, idea.id)).toMatchObject({ status: "shortlisted", version: 2 });
+    // Only the winner's note was written.
+    expect(await listNotes(db.admin, { entityType: "idea", entityId: idea.id })).toHaveLength(1);
+  });
+
+  it("archive_idea: exactly one of several racing archivals wins", async () => {
+    const idea = await newIdea(db);
+    const results = await withoutRowLock(db, names, () =>
+      Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          act(db, alice, (tx) => archiveIdea(tx, { id: idea.id, expectedVersion: 1 })),
+        ),
+      ),
+    );
+    const { ok, failed } = partition(results);
+    expect(ok).toHaveLength(1);
+    for (const reason of failed) {
+      expect(reason).toBeInstanceOf(VersionConflictError);
+      expect((reason as VersionConflictError).latestVersion).toBe(2);
+    }
+    expect(await getIdea(db.admin, idea.id)).toMatchObject({ version: 2 });
+  });
+
+  it("puts the original functions back", async () => {
+    const { rows } = await db.admin.query<{ locks: boolean }>(
+      `SELECT pg_get_functiondef(p.oid) LIKE '%FOR NO KEY UPDATE%' AS locks FROM pg_proc p
+        WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY ($1)`,
+      [["update_idea", "advance_idea", "archive_idea", "save_script_version"]],
+    );
+    expect(rows).toHaveLength(4);
+    expect(rows.every((row) => row.locks)).toBe(true);
+    expect((await db.admin.query("SELECT * FROM ytw_catalog_violations()")).rows).toEqual([]);
   });
 });
 
