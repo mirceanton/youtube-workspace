@@ -19,7 +19,8 @@ T10 owns migrations `0001-0009`: `0001_roles` (roles, database and schema privil
 privileges, schema `ytw_private`), `0002_catalog_guard` (`ytw_catalog_violations()`),
 `0003_core_functions` (`uuid_generate_v7()`, `ytw_error_codes()`, `ytw_raise()`) and `0004_audit`
 (`events`, `ytw_set_actor()`, `ytw_current_actor()`, `ytw_audit()`, `ytw_log_event()`,
-`ytw_append_only()`).
+`ytw_append_only()`). T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see
+"Schema").
 
 ## Running migrations
 
@@ -90,8 +91,9 @@ changing anything (`upToDate`, `pending`, `changed`, `unknown`). `ytw_web` and `
 - Secret-bearing tables (`api_tokens` and `web_sessions`, plus anything holding a hash, secret
   or encrypted blob) go in schema **`ytw_private`** (**enforced** for those two names). No
   application role has `USAGE` on it, so only `SECURITY DEFINER` functions reach those tables;
-  even a stray `GRANT SELECT` does not open them. `api_token_permissions` holds no secret and can
-  live in `public`.
+  even a stray `GRANT SELECT` does not open them. `api_token_permissions` holds no secret, but it
+  lives there too: no application role needs to read it directly (T14's functions return a token
+  together with its levels), and `query_sql` should not reveal which agent holds which access.
 - Primary keys: `id uuid PRIMARY KEY DEFAULT public.uuid_generate_v7()`. Audit columns:
   `created_by text NOT NULL DEFAULT public.ytw_current_actor()` (fails loudly when no actor is set).
 
@@ -182,6 +184,105 @@ GRANT EXECUTE ON FUNCTION public.create_idea(text, text, uuid, text, text, text,
   services call may be `SECURITY DEFINER` readers too (for `ytw_private` data).
 - Do not reuse a name that another wrapper module already exports in TypeScript (see below).
 
+## Schema
+
+Migrations `0010-0018` (T11); `test/schema.test.ts` covers every rule below.
+
+| Table | Schema | Rows | Key rules |
+| --- | --- | --- | --- |
+| `ideas` | public | mutable, `version`, archived (`archived_at`) | stage in `status` (`IDEA_STAGES`, default `inbox`), `status_changed_at`, `score` 0-100, `source`, `tags` |
+| `scripts` | public | **append-only** except `status` | unique `(idea_id, kind, version)`; `body_md` at most `SCRIPT_BODY_MAX_BYTES` bytes; `status` default `draft` |
+| `videos` | public | mutable, `version`, archived | `youtube_id` unique, 11 characters; `idea_id` optional |
+| `video_metrics` | public | **append-only** | unique `(video_id, captured_at)`; at least one metric per row |
+| `experiments` | public | mutable, `version` | `status` default `planned`; winner must be its own variant |
+| `experiment_variants` | public | mutable | unique `(experiment_id, label)`; at most one `is_control` per experiment |
+| `notes` | public | body editable; target and author fixed | `entity_type` in `NOTE_ENTITY_TYPES`; the entity must exist |
+| `users` | public | mutable | unique `(oidc_issuer, oidc_sub)` |
+| `user_permissions` | public | mutable | unique `(user_id, resource)`; `activity` never `write` |
+| `api_tokens` | ytw_private | mutable, never deleted (`revoked_at`) | `token_hash` = SHA-256 as 64 lower-case hex digits, unique |
+| `api_token_permissions` | ytw_private | mutable | unique `(token_id, resource)`; `activity` never `write` |
+| `web_sessions` | ytw_private | mutable, **not audited** | `id` is the random session handle; `expires_at <= absolute_expires_at` |
+| `events` | public | **append-only** | T10 |
+
+**Grants.** `SELECT` on the seven content tables (`ideas` to `notes` above) for all three
+roles; `users` and `user_permissions` for `ytw_web` only (identities and the access matrix are not
+an object a Read level covers, and the matrix is admin-only); nothing in `ytw_private`. No other
+privilege, as everywhere.
+
+**Bookkeeping belongs to the database.** `ytw_touch()` runs `BEFORE UPDATE` on every table with
+`updated_at` and overwrites whatever an UPDATE writes into these columns:
+
+- `updated_at := now()`, `updated_by :=` the current actor;
+- `version := OLD.version + 1` on `ideas`, `videos`, `experiments` (so `UPDATE ... WHERE id = $1
+  AND version = $2 RETURNING version` returns the new version; `SET version = version + 1` is
+  harmless but unnecessary);
+- `ideas.status_changed_at := now()` when `status` changes, otherwise kept (age in stage);
+- an UPDATE that changes nothing else (or only `api_tokens.last_used_at`) keeps all of them, the
+  version included, so a no-op save does not invalidate other clients' versions;
+- `id`, `created_at` and `created_by` cannot change (`immutable`).
+
+INSERTs are left to the column defaults (`created_by`/`updated_by` = the actor, timestamps =
+`now()`, `version` = 1, `status_changed_at` = `now()`), so test fixtures may insert backdated rows.
+Every write needs an actor (`ytw_set_actor`), or the defaults and triggers raise `missing_actor`.
+Data changes inside a migration (a backfill) set one first:
+`SELECT public.ytw_set_actor('migration 0200_example', 'human', NULL);`.
+
+**Append-only.** `scripts`: an UPDATE that changes anything but `status` raises `immutable` and
+names the columns; DELETE and TRUNCATE raise `immutable`. `video_metrics`: UPDATE, DELETE and
+TRUNCATE raise `immutable`. Nothing is deleted anywhere else either (every foreign key is `ON
+DELETE RESTRICT`): archive ideas and videos, revoke tokens.
+
+**Constraint names** (for error mapping and for `docs/policy.md` "add an object type"). CHECKs are
+named `<table>_<column>_check` (`ideas_status_check`, `scripts_kind_check`,
+`scripts_status_check`, `experiments_type_check`, `experiments_status_check`,
+`notes_entity_type_check`, `user_permissions_resource_check`, `user_permissions_level_check`,
+`api_token_permissions_resource_check`, ...), plus `user_permissions_read_only_check` and
+`api_token_permissions_read_only_check` (objects that are never `write`),
+`scripts_body_md_size_check`, `notes_body_md_size_check`, `video_metrics_any_metric_check`,
+`experiments_period_check`, `experiments_winner_concluded_check`, `web_sessions_expiry_check`.
+Uniques: `scripts_idea_kind_version_key`, `video_metrics_video_captured_key`,
+`videos_youtube_id_key`, `users_oidc_identity_key`, `user_permissions_user_resource_key`,
+`api_token_permissions_token_resource_key`, `api_tokens_token_hash_key`,
+`experiment_variants_label_key`, index `experiment_variants_one_control_idx`. The test compares
+the enum CHECKs with `@ytw/shared` (and the permission tables with `RESOURCES` and
+`GRANTABLE_LEVELS`, by catalog and by inserting every pair), so a new object or status fails it
+until a migration replaces the constraint.
+
+**Rules the functions must know.** A violated CHECK is a bare SQLSTATE `23514`, so functions
+validate first and raise catalogue errors; the limits are:
+
+| Column | Accepted |
+| --- | --- |
+| `ideas.title`, `videos.title` | 1-500 characters, not blank |
+| `ideas.pitch`, `experiments.hypothesis`, `experiments.conclusion`, `experiment_variants.content` | at most 20 000 characters |
+| `ideas.source` | 1-200 characters, not blank; `NULL` allowed |
+| `ideas.score` | integer 0-100 (higher is better); `NULL` = not scored |
+| `ideas.tags` | at most 50 distinct tags of 1-64 characters, trimmed, no control characters |
+| `scripts.body_md`, `notes.body_md` | at most `SCRIPT_BODY_MAX_BYTES` bytes of UTF-8; a note is not blank |
+| `videos.youtube_id` | `^[A-Za-z0-9_-]{11}$` (the id, not a URL) |
+| `videos.thumbnail_url` | at most 2048 characters, no whitespace, an `http(s)://` URL or a path without a scheme |
+| `video_metrics` | `views`, `impressions`, `avg_view_duration_s` (seconds), `watch_time_min` (minutes) >= 0; `ctr` percent 0-100; `avg_view_pct` percent >= 0 (can exceed 100); `subs_gained` net (may be negative); `retention` a JSON array <= 64 KiB; exact `numeric`, returned as strings |
+| `experiment_variants` | `label` 1-200 characters; `impressions` >= 0; `ctr` percent 0-100 |
+| `api_tokens.name` | 1-100 characters, trimmed, no control characters (it is the audit actor) |
+| `api_tokens.token_prefix` | `^[A-Za-z0-9_-]{4,16}$` |
+| `users.username` | 1-200 characters, trimmed, no control characters (the audit actor) |
+
+- `experiments_winner_variant_fkey` is `(id, winner_variant_id) -> experiment_variants
+  (experiment_id, id)`, `DEFERRABLE INITIALLY DEFERRED`: a variant of another experiment fails
+  only at COMMIT (23503), so `conclude_experiment` checks ownership first. A winner requires
+  `status = 'concluded'` in the same UPDATE.
+- `notes`: a trigger raises `validation` (with `allowed`) for an unknown `entity_type` and
+  `not_found` (`entity`, `id`) for a missing target; `add_note` may rely on it. `author` is
+  generated from `created_by`; `author_type` defaults to the actor type.
+- Full-text: `ideas.search_vector` (title weight A, pitch B) and `scripts.search_vector` use the
+  `english` configuration; query them with `websearch_to_tsquery('english', $1)`. A `tsvector` is
+  limited to 1 MB, which a 1 MiB body of unrelated words (or pasted base64) exceeds; for such a
+  body `ytw_body_tsvector()` indexes the first 100 000 characters instead of failing the insert.
+  Ordinary prose is always indexed in full.
+- `web_sessions.id` is a random (v4) UUID because it is the session handle; the table has no
+  `created_by` and no audit trigger, so the handle never reaches `events`. Logins and logouts are
+  logged with `ytw_log_event`.
+
 ## Audit log
 
 `events` (PRD 4) is append-only: no role holds UPDATE/DELETE/TRUNCATE, and triggers raise
@@ -192,7 +293,7 @@ ever enter it.
 | --- | --- |
 | `id`, `created_at` | UUIDv7; transaction time |
 | `actor`, `actor_type` | username (human) or API token name (agent); `human` or `agent` (equals `ACTOR_TYPES`, tested) |
-| `token_id` | the API token for agent actions, NULL for humans. The token's owner is reached through `api_tokens.user_id`; tokens are never deleted, so the link is permanent (T11 may add the foreign key) |
+| `token_id` | the API token for agent actions, NULL for humans. The token's owner is reached through `api_tokens.user_id`; tokens are never deleted, so the link is permanent (no foreign key yet: `test/audit.test.ts` logs events for token ids that do not exist) |
 | `action` | row changes: `insert`, `update`, `delete`; other events: dotted names such as `tool.call` |
 | `entity_type`, `entity_id` | e.g. `idea` and the row's `id` |
 | `payload` | JSON object (shapes below) |
@@ -330,9 +431,10 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
 
 ## Notes for specific tasks
 
-- **T11**: create `api_tokens` and `web_sessions` in `ytw_private`; attach `ytw_audit()` to every
-  business table (with `-tsvector` columns omitted and secrets redacted); `ytw_append_only()` for
-  `video_metrics`; grant `SELECT` per table (never on `ytw_private`).
+- **T11** (done, see "Schema"): every business table carries `ytw_audit('<entity>', ...)` with
+  `-search_vector`, `-updated_by` (and `-author` on notes) omitted, `token_hash`, `users.email` and
+  `users.oidc_sub` redacted. Entity types: `idea`, `script`, `video`, `video_metric`, `experiment`,
+  `experiment_variant`, `note`, `user`, `user_permission`, `api_token`, `api_token_permission`.
 - **T14**: `touch_token_last_used` should update only `last_used_at` (and `updated_at`), so the
   trigger skips it. Functions reading `ytw_private` are `SECURITY DEFINER`, granted to `ytw_web`
   and/or `ytw_mcp` only.
@@ -357,3 +459,10 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   application role calls it directly); it touches no table.
 - `@ytw/db` uses `pg` with the `sql` template instead of Drizzle (reason above).
 - `events` has no `updated_at`/`created_by` (rows never change; `actor` is the creator).
+- `video_metrics` has no `updated_at`/`updated_by` either (append-only, like `events`), and
+  `web_sessions` has exactly the columns PLAN.md lists (`last_seen_at` instead of `updated_at`, no
+  `created_by`; the user is in `user_id`).
+- `web_sessions.id` defaults to `gen_random_uuid()` (v4), not `uuid_generate_v7()`: it is a bearer
+  handle, so it should carry 122 random bits and not reveal when the session started.
+- `ytw_touch()` maintains `updated_at`, `updated_by`, `version` and `ideas.status_changed_at` in the
+  database instead of leaving them to each function (PLAN.md lists only the columns).
