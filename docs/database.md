@@ -172,7 +172,7 @@ Created by `0001_roles`, never superuser, never members of another role, owning 
 | --- | --- | --- |
 | `ytw_web` | web server (`DATABASE_URL`) | connect; `SELECT` on what it reads; `EXECUTE` on the functions it calls |
 | `ytw_mcp` | MCP server (`DATABASE_URL`) | the same, for the MCP tools |
-| `ytw_readonly` | MCP `query_sql` only (`READONLY_DATABASE_URL`) | connect; `SELECT` on readable tables and views; `EXECUTE` only on allowlisted functions and never on a `SECURITY DEFINER` one (**enforced**) |
+| `ytw_readonly` | MCP `query_sql` only (`READONLY_DATABASE_URL`) | connect; `SELECT` on readable tables and views; `EXECUTE` on the application's own functions only when allowlisted, never on a `SECURITY DEFINER` one (**enforced**); built-in functions as usual, except large objects and advisory locks |
 
 No application role can create objects or temporary tables, and none holds `INSERT`, `UPDATE`,
 `DELETE`, `TRUNCATE`, `REFERENCES` or `TRIGGER` on anything, or `USAGE`/`UPDATE` on a sequence:
@@ -230,7 +230,7 @@ must return no rows.
 | `function_public_execute` | a function (outside extensions) is executable by `PUBLIC` |
 | `definer_search_path` | a `SECURITY DEFINER` function does not `SET search_path = pg_catalog, public, pg_temp` |
 | `definer_owner` | a `SECURITY DEFINER` function is not owned by the migration owner (the owner of `schema_migrations`) |
-| `readonly_function_execute` | `ytw_readonly` may execute a `SECURITY DEFINER` function, or any function the allowlist does not name |
+| `readonly_function_execute` | `ytw_readonly` may execute a `SECURITY DEFINER` function, or any other function outside the system schemas and extensions that the allowlist does not name |
 | `builtin_function_access` | an application role may execute a large-object or advisory-lock built-in |
 
 **Allowlist.** Two rules accept reviewed exceptions. Only migrations add them (no application
@@ -295,7 +295,7 @@ GRANT EXECUTE ON FUNCTION public.create_idea(text, text, uuid, text, text, text,
   characters, no control characters; type `human` or `agent`; humans never carry a token id) and
   stores it in transaction-local settings that the audit trigger reads. Call it before any write.
 - Qualify `ytw_private` tables; `search_path` deliberately does not include that schema.
-- Validate arguments first and raise catalogue errors with readable messages (next section);
+- Validate arguments first and raise catalogue errors with readable messages (see "Errors");
   never let a CHECK violation be the user-facing error.
 - Optimistic concurrency: `UPDATE ... WHERE id = p_id AND version = p_expected_version`, and when
   no row matched, raise `not_found` or `version_conflict` with `latest_version`. Serialize racing
