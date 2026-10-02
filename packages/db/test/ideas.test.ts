@@ -620,6 +620,21 @@ describe("update_idea", () => {
     expect(err.message).toContain('"idea-1"');
   });
 
+  it("refuses numbers that JSON cannot carry instead of quietly turning them into null", async () => {
+    const idea = await newIdea(db, { score: 50 });
+    for (const score of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const err = await rejectedWith(edit(alice, idea.id, 1, { score }), ValidationError);
+      expect(err.field).toBe("score");
+    }
+    const version = await rejectedWith(
+      edit(alice, idea.id, 2 ** 31, { title: "x" }),
+      ValidationError,
+    );
+    expect(version.field).toBe("expected_version");
+    // Nothing was cleared or changed on the way.
+    expect(await getIdea(db.admin, idea.id)).toEqual(idea);
+  });
+
   it("refuses to edit an archived idea", async () => {
     const idea = await newIdea(db);
     await act(db, alice, (tx) => archiveIdea(tx, { id: idea.id }));
