@@ -523,6 +523,90 @@ layer to `{ error, message, status, retryable, hint?, details? }`; log the origi
 
 Outside the catalogue the `message` is a fixed sentence that names nothing.
 
+## Ideas, scripts and notes (T12)
+
+Migrations `0030-0033`; `test/ideas.test.ts`, `test/scripts.test.ts` and `test/notes.test.ts` cover
+every rule below. The seven functions follow the convention above, are executable by exactly
+`ytw_web` and `ytw_mcp` (tested: no `ytw_readonly`, no `PUBLIC`), and need no `ytw_log_event`: the
+audit triggers of T11 write one `events` row per inserted or changed row, with the actor, actor
+type and token id passed as the first three arguments.
+
+| Function (wrapper) | Arguments after the actor | Returns | Audit rows |
+| --- | --- | --- | --- |
+| `create_idea` (`createIdea`) | `title`, `pitch`, `source`, `tags`, `score` (all but `title` optional) | the idea, in `inbox` at version 1 | `idea` insert |
+| `update_idea` (`updateIdea`) | `id`, `expected_version`, `fields jsonb` | the idea | `idea` update (none when nothing changes) |
+| `archive_idea` (`archiveIdea`) | `id`, `expected_version` (optional) | the idea | `idea` update (none when already archived) |
+| `advance_idea` (`advanceIdea`) | `id`, `new_status`, `note` (optional), `expected_version` (optional) | `(idea, note_id)` | `idea` update, and `note` insert when a note was given |
+| `save_script_version` (`saveScriptVersion`) | `idea_id`, `kind`, `base_version`, `body_md` | the new revision (a `draft`) | `script` insert |
+| `set_script_status` (`setScriptStatus`) | `script_id`, `status` | the revision | `script` update (none when unchanged) |
+| `add_note` (`addNote`) | `entity_type`, `entity_id`, `body_md` | the note | `note` insert |
+
+**Ideas.**
+
+- Fields follow the limits of "Schema". Every limit is validated first, so the error is a
+  `ValidationError` whose `field` names the argument and whose message says what is allowed; a CHECK
+  violation never reaches the caller. `update_idea` takes `fields` as a JSON object: a key that is
+  present is set (`null` clears `pitch`, `source` or `score`; `tags` replaces the whole list), an
+  absent key is left alone, `status` is refused with a pointer to `advance_idea`, and any other key
+  is refused with the list of editable fields. An update that changes nothing returns the stored
+  row: no new version, no audit row.
+- **Concurrency.** The functions lock the idea row (`FOR NO KEY UPDATE`), check the version they
+  read, and name that version in the `UPDATE` itself, so a stale `expected_version` fails with
+  `version_conflict` (`latest_version` in DETAIL, `err.latestVersion` in TypeScript) and two racing
+  callers cannot both win, even if the lock were bypassed (tested with lock-free copies of the
+  functions). `expected_version` is required by `update_idea` and optional for `advance_idea` and
+  `archive_idea` (PRD 5 gives agents no version for `advance_idea`).
+- **Archived ideas are frozen.** `update_idea`, `advance_idea` and `save_script_version` raise
+  `invalid_transition` with `reason: "archived"`. Archiving twice is a no-op. `set_script_status`
+  and `add_note` still work on an archived idea's scripts and on the idea. There is no unarchive
+  function yet.
+- **Stage machine.** The rules are `IDEA_STAGE_TRANSITIONS` of `@ytw/shared`: forward one stage,
+  back one stage with a note, any stage to `dropped`, `dropped` to `inbox`. SQL cannot import the
+  TypeScript table, so `ytw_idea_stage_transitions()` repeats it row by row, and the test drives
+  `advance_idea` through all 49 (from, to) pairs and compares the function with the shared table
+  (note requirement included). A rejected move raises `invalid_transition` with the valid next
+  stages in the message and in `details.allowed` (`err.allowed`); moving to the stage the idea is in
+  is such a move too. A move back without a note (empty and blank notes count as none) raises
+  `validation` with `field: "note"`. A note given with any move is saved as a note on the idea in
+  the same call, so the move and its note commit or roll back together; `note_id` returns it.
+  A stale `expected_version` is reported before an invalid move.
+
+**Scripts.**
+
+- `save_script_version` appends version `latest + 1` of `(idea_id, kind)` when `base_version`
+  equals the latest (0 when none exists), always as `draft`, with the body stored exactly as given
+  (`@ytw/script-md` has normalised it). Otherwise it raises `version_conflict` carrying the latest
+  version (0 when nothing is saved yet): *"base_version 1 is not the latest script version of idea
+  ...: the latest is version 2; fetch version 2, merge your changes into it and save again with
+  base_version 2"*. Writers of one idea queue on its row lock, so of two racing saves with the same
+  base exactly one wins and the other reads the winner's version; the unique key
+  `(idea_id, kind, version)` is mapped to the same error as a last line of defence. The idea must
+  exist (`not_found`) and not be archived (`invalid_transition`); `kind` is `script` or
+  `packaging`; `body_md` may be empty and at most `SCRIPT_BODY_MAX_BYTES` bytes of UTF-8
+  (`validation`, with `bytes` and `max_bytes`; the body is never echoed).
+- `set_script_status` sets `draft`, `review` or `approved` on one revision (its own id, not the
+  idea's), in any order; the append-only guard of T11 allows nothing else to change.
+
+**Notes.** `add_note` relies on the notes trigger of T11 for the target (`not_found` for a missing
+idea, script revision, video or experiment) and validates the body: not blank, at most
+`NOTE_BODY_MAX_BYTES` bytes (`validation`, `field: "body_md"`; `"note"` when `advance_idea` writes
+it). `entity_type` is also pre-checked so that a hostile value is not echoed back in full. A note
+on a script belongs to the revision (`scripts.id`).
+
+**Internal helpers** (`ytw_fmt_value`, `ytw_fmt_list`, `ytw_raise_*`, `ytw_idea_stages`,
+`ytw_idea_stage_transitions`, `ytw_check_idea_field`, `ytw_insert_note`) are not executable by any
+application role (tested), so only the functions above reach them. Messages echo caller values
+JSON-quoted and cut after 60 characters.
+
+**TypeScript** (`src/ideas.ts`, `src/scripts.ts`, `src/notes.ts`): `createIdea`, `updateIdea`,
+`archiveIdea`, `advanceIdea` (returns `{ idea, noteId }`), `saveScriptVersion`, `setScriptStatus`
+and `addNote` take the `ActorTx` of `withActor`; `getIdea`, `getScriptVersion` (latest unless
+`version` is given; includes the body) and `listNotes` (oldest first) take any `Queryable`. Results
+are camelCase records (`IdeaRecord`, `ScriptRecord`, `NoteRecord`) with real `Date`s; a saved
+revision comes back without its body but with `sizeBytes`. Arguments that could not reach the
+database at all (a malformed UUID, a fractional version, a NUL character) are refused in
+TypeScript with a `ValidationError` naming the field instead of a bare driver error.
+
 ## TypeScript API
 
 ```ts
