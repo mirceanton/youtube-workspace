@@ -21,9 +21,11 @@ privileges, default privileges, schema `ytw_private`, restricted built-in functi
 `0002_catalog_guard` (`ytw_catalog_violations()` and its allowlist), `0003_core_functions`
 (`uuid_generate_v7()`, `ytw_error_codes()`, `ytw_raise()`) and `0004_audit` (`events`,
 `ytw_set_actor()`, `ytw_current_actor()`, `ytw_audit()`, `ytw_log_event()`, `ytw_append_only()`).
-T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see "Schema"). T14 owns `0050-0059`:
-`0050_identity_helpers`, `0051_identity`, `0052_permissions`, `0053_api_tokens`, `0054_web_sessions`
-(see "Identity, permissions, tokens, sessions").
+T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see "Schema"). T12 owns `0030-0039`
+(ideas, scripts, notes; see "Ideas, scripts and notes") and T13 `0040-0049` (videos, metrics,
+experiments; see "Videos, metrics and experiments"). T14 owns `0050-0059`: `0050_identity_helpers`,
+`0051_identity`, `0052_permissions`, `0053_api_tokens`, `0054_web_sessions` (see "Identity,
+permissions, tokens, sessions").
 
 ## Running migrations
 
@@ -611,6 +613,153 @@ are camelCase records (`IdeaRecord`, `ScriptRecord`, `NoteRecord`) with real `Da
 revision comes back without its body but with `sizeBytes`. Arguments that could not reach the
 database at all (a malformed UUID, a fractional version, a NUL character) are refused in
 TypeScript with a `ValidationError` naming the field instead of a bare driver error.
+
+## Videos, metrics and experiments (T13)
+
+Migrations `0040-0043`; `test/videos.test.ts`, `test/metrics.test.ts` and `test/experiments.test.ts`
+cover every rule below. The eight functions follow the convention above, are executable by exactly
+`ytw_web` and `ytw_mcp` (tested: no `ytw_readonly`, no `PUBLIC`), and need no `ytw_log_event`: the
+audit triggers of T11 write one `events` row per inserted or changed row, with the actor, actor type
+and token id passed as the first three arguments. A call that changes nothing (a repeat, a no-op
+save) writes no row; the tool-call event of the service (T30) records that the call happened.
+
+| Function (wrapper) | Arguments after the actor | Returns | Audit rows |
+| --- | --- | --- | --- |
+| `register_video` (`registerVideo`) | `idea_id` (nullable), `youtube_id`, `title`, `published_at`, `thumbnail_url` (both optional) | the video at version 1 | `video` insert |
+| `update_video` (`updateVideo`) | `id`, `expected_version`, `fields jsonb` | the video | `video` update (none when nothing changes) |
+| `archive_video` (`archiveVideo`) | `id`, `expected_version` (optional) | the video | `video` update (none when already archived) |
+| `log_metrics` (`logMetrics`) | `video_id`, `captured_at`, `metrics jsonb` | `(snapshot, created)` | `video_metric` insert (none for a repeat) |
+| `create_experiment` (`createExperiment`) | `video_id`, `type`, `hypothesis`, `variants jsonb` | the experiment, `planned`, version 1 (the wrapper adds its variants) | `experiment` insert, one `experiment_variant` insert per variant |
+| `update_experiment_status` (`updateExperimentStatus`) | `id`, `expected_version`, `new_status` | the experiment | `experiment` update |
+| `record_variant_stats` (`recordVariantStats`) | `variant_id`, `impressions`, `ctr` (both optional, one needed) | the variant | `experiment_variant` update (none when unchanged) |
+| `conclude_experiment` (`concludeExperiment`) | `id`, `expected_version`, `winner_variant_id` (nullable), `conclusion` | the experiment | `experiment` update |
+
+**Videos.**
+
+- `youtube_id` is the 11-character id, not a URL (a URL gets an error that says so). Registering one
+  that exists raises `duplicate` with `existing_id` (`err.existingId`) and a message that names the
+  existing video and says when it is archived; two racing registrations of one id give exactly one
+  winner and the same error to the others, never a bare 23505. `idea_id` is optional; when given the
+  idea must exist (`not_found`) and may be archived. **Registering a video never moves its idea**:
+  `advance_idea` is the only way to change a stage.
+- `published_at` is a time with a zone, NULL while the video is not scheduled; `captured_at` of a
+  snapshot likewise. A time must be finite and from 2005 on, so one mistyped year cannot sort a video or a
+  snapshot above every real one in the "latest" views; `published_at` may lie up to 2 years ahead
+  (scheduled videos), `captured_at` at most 1 day (clock and time zone differences). The wrappers
+  refuse a string without a zone (`2026-10-01T12:00:00`), which the server would read in its own zone.
+- `thumbnail_url`: an `http(s)` URL or a path without a scheme, at most 2048 characters, no spaces or
+  control characters (`javascript:`, `data:` and `ftp:` are refused with the scheme named).
+- `update_video` takes `fields` as in `update_idea` (a present key is set, `null` clears
+  `published_at`, `thumbnail_url` and `idea_id`, an absent key is left alone). Editable: `title`,
+  `published_at`, `thumbnail_url`, `idea_id` (link or unlink the originating idea). **`youtube_id`
+  cannot be changed** (metrics and experiments belong to that real video): archive the video and
+  register the right id. Stale `expected_version`: `version_conflict` with `latest_version`.
+- **Archived videos are frozen**, as archived ideas are: `update_video`, `log_metrics` (a *new*
+  snapshot) and `create_experiment` raise `invalid_transition` with `reason: "archived"`. Archiving
+  twice is a no-op. Still allowed: `add_note` on the video, a *repeat* of a stored snapshot (it
+  creates nothing), and every function on the video's **existing experiments**, so that none is left
+  running for good. There is no unarchive function yet; the `youtube_id` of an archived video stays
+  taken.
+
+**Metrics.**
+
+- A snapshot is the row `(video_id, captured_at)`. `log_metrics` is **idempotent on that key**: the
+  same numbers again return the stored row with `created = false` and write nothing; other numbers
+  for the key raise `duplicate` (HTTP 422, `err.existingId` is the stored snapshot) with both sets
+  in the message and in DETAIL (`stored`, `submitted`, `differing`), for example: *"video ... already
+  has a snapshot captured at 2026-09-29T08:30:00Z with different numbers, so nothing was saved
+  (stored: views=1000, ctr=5; submitted: views=1200, ctr=5): a snapshot never changes; log the new
+  numbers with a later captured_at, or resend exactly the stored numbers to repeat the earlier
+  call"*. "The same numbers" compares by value (`4.5` equals `"4.50"`, key order and the spelling of
+  the instant do not matter), treats `null` like an absent metric, and counts a metric that one side
+  sets and the other leaves out as different. Concurrent callers for one video queue on the video's
+  row lock: of N identical calls one is `created`, the others read its row (no errors); of N different
+  payloads one wins and the others get the `duplicate` error. Without the lock `ON CONFLICT DO
+  NOTHING` still holds (tested with a lock-free copy).
+- `metrics` is a JSON object with at least one of the keys below (anything else is refused with the
+  list); `null` means "not measured". A value is a JSON number or a decimal string (`"9007199254740993"`
+  keeps what a double cannot; the database returns `bigint` and `numeric` as strings). NaN, infinity,
+  more than 20 decimal places and the ranges below are refused with the field named (`metrics.ctr`),
+  so no CHECK violation (23514) reaches a caller:
+
+  | Key | Accepted |
+  | --- | --- |
+  | `views`, `impressions` | whole number 0 to 9223372036854775807 |
+  | `ctr` | 0 to 100 (percent: 4.5 means 4.5 %) |
+  | `avg_view_duration_s`, `watch_time_min` | 0 to 10^15 |
+  | `avg_view_pct` | 0 to 10 000 (percent of the video; **above 100 is normal** when viewers rewatch, the schema allows it) |
+  | `subs_gained` | whole number, -2147483648 to 2147483647 (negative when more were lost) |
+  | `retention` | 1 to 1000 points `{"t": seconds from the start, "pct": percent still watching}`, strictly increasing `t` (0 to 10^7), `pct` 0 to 10 000, at most 64 KiB as `jsonb` text |
+
+  The whole `metrics` object may not exceed 100 000 bytes. The retention shape is this task's
+  definition (T11 left it open): chart code can plot the points as they are.
+
+**Experiments.**
+
+- `create_experiment`: `type` in `EXPERIMENT_TYPES`; `hypothesis` optional, not blank, at most 20 000
+  characters; `variants` is a list of **2 to 10** objects `{label, content, is_control?}`: **exactly
+  one control**, labels unique (compared ignoring case and surrounding spaces, at most 200
+  characters), `content` not blank (title or description text, or the thumbnail's URL or path, at most
+  20 000 characters). The experiment and its variants are written in one call, so none exists
+  without the other; variants cannot be added or removed later. The video must exist and not be
+  archived. Variants read back control first, then by label.
+- **Status machine** (`ytw_experiment_status_transitions()`, repeated row by row in the test, which
+  drives `update_experiment_status` through all 16 pairs):
+
+  | From | To | Through |
+  | --- | --- | --- |
+  | `planned` | `running` | `update_experiment_status` (sets `starts_at`) |
+  | `planned` | `cancelled` | `update_experiment_status` (no period: it never ran) |
+  | `running` | `concluded` | `conclude_experiment` (sets `ends_at`) |
+  | `running` | `cancelled` | `update_experiment_status` (sets `ends_at`) |
+
+  `concluded` and `cancelled` are final. Any other move, including to the current status, raises
+  `invalid_transition` with the valid next statuses in the message and in `err.allowed` (empty for a
+  final status, with `reason: "terminal"`). Asking `update_experiment_status` for `concluded` is a
+  `validation` error that points to `conclude_experiment`. `expected_version` is required, and a
+  stale one is reported before an invalid move. `starts_at` and `ends_at` bound the period in which the
+  test ran (the CTR chart of T45 marks them).
+- `record_variant_stats` sets `impressions` and/or `ctr` (percent) of one variant; a value left out
+  keeps the stored one, at least one is needed. Allowed while the experiment is `planned` or
+  `running`; on a concluded or cancelled one it raises `invalid_transition` (`reason: "terminal"`):
+  the numbers a conclusion rests on do not change afterwards. Variants carry no version, so the last
+  writer wins; the experiment row is locked first, so a stats call cannot slip in between a
+  conclusion's status check and its commit (tested with a held-open transaction). It does not change
+  the experiment's `version`.
+- `conclude_experiment`: `running` only (`planned`: start it first; `cancelled` and already
+  `concluded`: `invalid_transition`, a conclusion is final). `conclusion` is required (not blank, at
+  most 20 000 characters). **The winner is one of the experiment's own variants, or NULL when no
+  variant won** (YouTube's tests often end without a clear winner). A variant of another experiment
+  or an unknown id raises `validation` (`field: "winner_variant_id"`, `err.allowed` the valid ids,
+  the message lists them with their labels) **before anything is written**: the foreign key
+  `experiments_winner_variant_fkey` is `DEFERRABLE INITIALLY DEFERRED` and would only fail at COMMIT
+  with a bare 23503 (the test shows that this is what an unchecked foreign winner does).
+- The PRD signature of `conclude_experiment` has no version; the function requires
+  `expected_version` like every other write on a versioned row. A service that only knows the id
+  reads the experiment first (`getExperiment`) and passes its version, which turns a concurrent
+  change into a `version_conflict` instead of an overwrite.
+
+**Internal helpers** are not executable by any application role (tested), so only the functions
+above reach them (taken names: do not define functions with them): `ytw_metric_fmt_ts`,
+`ytw_raise_video_archived`, `ytw_check_video_time`, `ytw_check_video_field`, `ytw_metric_number`,
+`ytw_check_retention` (0040); `ytw_metric_keys`, `ytw_metric_summary`, `ytw_metric_summary_text`,
+`ytw_raise_metric_conflict` (0042); `ytw_experiment_types`, `ytw_experiment_statuses`,
+`ytw_experiment_status_transitions`, `ytw_experiment_next_text`, `ytw_raise_experiment_move`,
+`ytw_raise_experiment_final`, `ytw_check_variants` (0043). `ytw_raise_not_found` and
+`ytw_raise_version_conflict` of 0030 are reused.
+
+**TypeScript** (`src/videos.ts`, `src/metrics.ts`, `src/experiments.ts`): `registerVideo`,
+`updateVideo`, `archiveVideo`, `logMetrics` (returns `{ snapshot, created }`), `createExperiment`
+(returns the experiment with its `variants`), `updateExperimentStatus`, `recordVariantStats` and
+`concludeExperiment` take the `ActorTx` of `withActor`; `getVideo`, `listMetricSnapshots` (newest
+first) and `getExperiment` (with variants) take any `Queryable`. Results are camelCase records
+(`VideoRecord`, `MetricSnapshot`, `ExperimentRecord`, `VariantRecord`) with real `Date`s; `bigint`
+and `numeric` columns (`views`, `impressions`, `ctr`, `avgViewDurationS`, `avgViewPct`,
+`watchTimeMin`, variant `impressions` and `ctr`) are **strings**, `subsGained` a number. Inputs take
+numbers or decimal strings (`DecimalInput`) and times as `Date` or ISO text with a zone. Arguments
+that could not reach the database intact (a malformed UUID, NaN or infinity, a time without a zone, a
+NUL character, a decimal that is not a decimal) are refused in TypeScript with a `ValidationError`
+naming the field (`src/value-args.ts` next to `src/args.ts`); every domain rule stays in the function.
 
 ## TypeScript API
 
