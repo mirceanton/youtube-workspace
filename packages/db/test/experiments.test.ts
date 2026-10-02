@@ -315,6 +315,29 @@ describe("create_experiment", () => {
       expect(await experimentCount(video.id)).toBe(1);
     });
 
+    it("loses a race against archiving that started first", async () => {
+      const video = await newVideo(db);
+      const archiver = await db.pool("ytw_web").connect();
+      try {
+        await archiver.query("BEGIN");
+        await archiver.query(sql`SELECT archive_video('alice', 'human', NULL, ${video.id}::uuid)`);
+        const racing = act(db, newAgent(), (tx) =>
+          createExperiment(tx, { videoId: video.id, type: "title", variants: TWO_VARIANTS }),
+        );
+        const outcome = racing.then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+        await waitForLockWait(db, "create_experiment");
+        await archiver.query("COMMIT");
+        expect(await outcome).toBeInstanceOf(InvalidTransitionError);
+        expect(await experimentCount(video.id)).toBe(0);
+      } finally {
+        await archiver.query("ROLLBACK").catch(() => undefined);
+        archiver.release();
+      }
+    });
+
     it("needs an existing video that is not archived", async () => {
       const missing = randomUUID();
       expect(
