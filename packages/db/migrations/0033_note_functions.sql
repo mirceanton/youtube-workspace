@@ -1,11 +1,12 @@
 -- 0033_note_functions: the only write path for notes (PRD 4 "notes"; PRD 5 add_note). Conventions:
 -- docs/database.md.
 --
--- Notes are append-only comments on an idea, script revision, video or experiment. The trigger of
--- 0018 validates the target (an unknown entity_type is a validation error listing the valid
--- ones, a missing record is not_found), so add_note does not repeat that. What the trigger cannot do
--- is explain a violated CHECK: the body rules (not blank, at most NOTE_BODY_MAX_BYTES of UTF-8) are
--- validated here first.
+-- Notes are append-only comments on an idea, script revision, video or experiment. Whether the
+-- target exists is decided by the trigger of 0018 (a missing record is not_found), which also
+-- rejects an unknown entity_type; add_note relies on it for both. What the trigger cannot do is
+-- explain a violated CHECK or bound what it echoes: the entity_type is pre-checked here only so
+-- that a hostile 1 MB value is not repeated in the error, and the body rules (not blank, at most
+-- NOTE_BODY_MAX_BYTES of UTF-8) are validated here first.
 
 -- The one place a note is written, shared by add_note and advance_idea (a note that explains a move
 -- back). `p_field` names the argument in error messages ("note" for advance_idea).
@@ -18,8 +19,16 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
   c_max_bytes CONSTANT integer := 65536;
+  c_types CONSTANT text[] := ARRAY['idea', 'script', 'video', 'experiment'];
   v_note public.notes;
 BEGIN
+  IF p_entity_type IS NULL OR NOT p_entity_type = ANY (c_types) THEN
+    PERFORM public.ytw_raise('validation',
+      format('entity_type %s is not valid; valid values: %s',
+             public.ytw_fmt_value(p_entity_type), public.ytw_fmt_list(c_types)),
+      jsonb_build_object('field', 'entity_type', 'value', left(p_entity_type, 60),
+                         'allowed', to_jsonb(c_types)));
+  END IF;
   IF p_entity_id IS NULL THEN
     PERFORM public.ytw_raise('validation',
       'entity_id is required: pass the id of the idea, script revision, video or experiment to comment on',
