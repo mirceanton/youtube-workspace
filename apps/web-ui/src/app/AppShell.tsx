@@ -65,10 +65,10 @@ function BottomLink({ entry }: { entry: NavEntry }) {
   );
 }
 
-function AccountBlock() {
+function AccountBlock({ bordered = true }: { bordered?: boolean }) {
   const { user } = useSession();
   return (
-    <div className="grid gap-3 border-t border-line p-3">
+    <div className={cx("grid gap-3 p-3", bordered && "border-t border-line")}>
       <div className="min-w-0 px-1">
         <p className="truncate font-medium">{user.displayName || user.username}</p>
         <p className="truncate text-sm text-ink-muted">{user.email || user.username}</p>
@@ -152,7 +152,7 @@ function BottomBar({ entries }: { entries: NavEntry[] }) {
             </ul>
           </nav>
         ) : null}
-        <AccountBlock />
+        <AccountBlock bordered={rest.length > 0} />
       </Dialog>
     </>
   );

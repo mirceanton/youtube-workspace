@@ -88,6 +88,16 @@ function toPlotData(
   return [xs.map((x) => x * scale), ...columns.map((column) => [...column])];
 }
 
+/** Points.filter for sparklines: only the index of the last non-null value gets a dot. */
+function lastValueIndex(u: uPlot, seriesIdx: number): number[] | null {
+  const ys = u.data[seriesIdx];
+  if (!ys) return null;
+  for (let index = ys.length - 1; index >= 0; index--) {
+    if (ys[index] != null) return [index];
+  }
+  return null;
+}
+
 interface Live {
   markers: readonly PlotMarker[];
   valueFormat: (value: number) => string;
@@ -145,7 +155,8 @@ function buildOptions(params: BuildParams): uPlot.Options {
   return {
     width,
     height,
-    padding: compact ? [2, 2, 2, 2] : [8, 8, 0, 0],
+    // Room for the 8 px end dot of a sparkline so the canvas edge does not clip it.
+    padding: compact ? [6, 6, 6, 6] : [8, 8, 0, 0],
     legend: { show: !compact, live: true },
     cursor: compact ? { show: false } : { points: { size: 8 }, drag: { x: false, y: false } },
     select: { show: false, left: 0, top: 0, width: 0, height: 0 },
@@ -174,8 +185,10 @@ function buildOptions(params: BuildParams): uPlot.Options {
         width: 2,
         spanGaps: false,
         points: {
-          // Dots on sparse series (a single snapshot must be visible), none on dense ones.
-          show: (u) => (u.data[0]?.length ?? 0) <= 60,
+          // Charts: a dot per point while there are few (a single snapshot must be visible), none
+          // on dense series. Sparklines: one end dot on the latest value.
+          show: compact ? true : (u) => (u.data[0]?.length ?? 0) <= 60,
+          ...(compact ? { filter: lastValueIndex } : {}),
           size: 8,
           width: 2,
           fill: colors.series[i] ?? FALLBACKS.light.series,

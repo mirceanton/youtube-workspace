@@ -383,6 +383,25 @@ describe("Sparkline", () => {
     ]);
   });
 
+  it("puts one dot on the latest value only", async () => {
+    render(<Sparkline values={[4, 6, null, 22, null]} label="Views" />);
+    await waitFor(() => expect(fake.instances).toHaveLength(1));
+    const points = last().opts.series?.[1]?.points as {
+      show: boolean;
+      filter: (u: uPlot, seriesIdx: number) => number[] | null;
+    };
+    expect(points.show).toBe(true);
+    const plot = {
+      data: [
+        [0, 1, 2, 3, 4],
+        [4, 6, null, 22, null],
+      ],
+    } as unknown as uPlot;
+    expect(points.filter(plot, 1)).toEqual([3]);
+    expect(points.filter({ data: [[0], [null]] } as unknown as uPlot, 1)).toBeNull();
+    expect(points.filter({ data: [[0]] } as unknown as uPlot, 1)).toBeNull();
+  });
+
   it("falls back to a dash with a text alternative when there is nothing to draw", () => {
     render(<Sparkline values={[null, null]} label="CTR" />);
     expect(screen.getByRole("img", { name: "CTR: no data" })).toHaveTextContent("—");

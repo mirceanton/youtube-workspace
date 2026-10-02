@@ -317,6 +317,17 @@ describe("Dialog", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
+  it("stacks its footer buttons full width on phones", () => {
+    render(
+      <Dialog open onClose={() => undefined} title="T" footer={<Button>Go</Button>}>
+        x
+      </Dialog>,
+    );
+    const footer = screen.getByRole("button", { name: "Go" }).parentElement as HTMLElement;
+    expect(footer.className).toContain("max-sm:flex-col");
+    expect(footer.className).toContain("max-sm:*:w-full");
+  });
+
   it("a non-dismissible dialog ignores Escape, backdrop clicks and has no close button", () => {
     const onClose = vi.fn<() => void>();
     render(

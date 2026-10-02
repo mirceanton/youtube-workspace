@@ -113,7 +113,7 @@ export function Dialog({
           </div>
           {children ? <div className="overflow-y-auto px-5 py-4">{children}</div> : null}
           {footer ? (
-            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-5 py-4">
+            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-5 py-4 max-sm:flex-col max-sm:*:w-full">
               {footer}
             </div>
           ) : null}
