@@ -1,20 +1,30 @@
-import { mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "pg";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   MIGRATION_LOCK_KEY,
   MigrationError,
+  defaultMigrationsDir,
   loadMigrations,
   migrate,
   migrationStatus,
+  rolePasswordStatus,
   scramSha256Verifier,
 } from "../src/migrate.js";
 import { createTestDb, testRolePasswords, testServerUrl, type TestDb } from "../src/testing.js";
 import { copyMigrations, failure } from "./helpers.js";
 
 const cleanups: (() => Promise<void>)[] = [];
+
+beforeAll(async () => {
+  // The harness checks that the roles' passwords are the test passwords (setting them only on a
+  // fresh cluster), so the runner calls below that pass the same passwords change nothing.
+  await (await createTestDb()).drop();
+});
 
 afterAll(async () => {
   await Promise.allSettled(cleanups.map((cleanup) => cleanup()));
@@ -75,7 +85,15 @@ describe("migrate", () => {
 
     expect(result.applied).toEqual(files.map((file) => file.filename));
     expect(result.alreadyApplied).toBe(0);
-    expect(result.passwordsSet).toEqual(["ytw_web", "ytw_mcp", "ytw_readonly"]);
+    // The passwords already match (beforeAll), so the runner leaves them alone.
+    expect(result.passwordsSet).toEqual([]);
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        "ytw_web: password already current",
+        "ytw_mcp: password already current",
+        "ytw_readonly: password already current",
+      ]),
+    );
     const rows = await appliedRows(db);
     expect(
       rows.map(({ version, filename, checksum }) => ({ version, filename, checksum })),
@@ -216,12 +234,224 @@ describe("migrate", () => {
     }
     expect(await appliedRows(db).catch(() => [])).toEqual([]);
   });
+
+  it("restores role settings that drifted before it applies anything", async () => {
+    const { db, dir } = await scenario();
+    await run(db, dir);
+    // A setting stored for this database only, so no other database of the cluster sees it.
+    await db.admin.query(
+      `ALTER ROLE ytw_readonly IN DATABASE ${db.name} SET default_transaction_read_only = off`,
+    );
+    const drift = await db.admin.query("SELECT rule FROM ytw_catalog_violations()");
+    expect(drift.rows).toEqual([{ rule: "app_role_settings" }]);
+
+    const result = await run(db, dir);
+
+    expect(result.roleSettingsRestored).toEqual([
+      `ytw_readonly: settings for database ${db.name} removed`,
+    ]);
+    const left = await db.admin.query(
+      "SELECT 1 FROM pg_db_role_setting WHERE setdatabase = (SELECT oid FROM pg_database WHERE datname = $1)",
+      [db.name],
+    );
+    expect(left.rowCount).toBe(0);
+  });
+
+  it("refuses to run on a database that already breaks the privilege rules", async () => {
+    const { db, dir } = await scenario();
+    await run(db, dir);
+    await writeFile(join(dir, "9001_next.sql"), "CREATE TABLE next_feature (id int);");
+    await db.admin.query("GRANT INSERT ON events TO ytw_web");
+    try {
+      const err = await failure(run(db, dir));
+      expect(err.message).toMatch(/already breaks the privilege rules .*nothing was applied/);
+      expect(err.message).toMatch(/table_write_privilege: public\.events ytw_web has INSERT/);
+      expect((await appliedRows(db)).map((row) => row.version)).not.toContain("9001");
+    } finally {
+      await db.admin.query("REVOKE INSERT ON events FROM ytw_web");
+    }
+  });
+});
+
+describe("the catalog guard during migrations", () => {
+  let db: TestDb;
+  let dir: string;
+
+  beforeAll(async () => {
+    ({ db, dir } = await scenario());
+    await run(db, dir);
+  });
+
+  const vault = "CREATE TABLE ytw_private.vault (owner text, secret text);\n";
+  // Each file tries one way around the privilege rules; the runner must roll it back.
+  const evasions: [string, string, RegExp][] = [
+    [
+      "a view over a ytw_private table",
+      `${vault}CREATE VIEW public.token_view AS SELECT * FROM ytw_private.vault;
+       GRANT SELECT ON public.token_view TO ytw_readonly;`,
+      /private_data_exposure: public\.token_view ytw_readonly can read ytw_private data/,
+    ],
+    [
+      "a view over such a view",
+      `${vault}CREATE VIEW public.inner_view AS SELECT * FROM ytw_private.vault;
+       CREATE VIEW public.outer_view AS SELECT owner, secret FROM public.inner_view;
+       GRANT SELECT ON public.outer_view TO ytw_mcp;`,
+      /private_data_exposure: public\.outer_view ytw_mcp can read/,
+    ],
+    [
+      "a materialized view over a ytw_private table",
+      `${vault}CREATE MATERIALIZED VIEW public.vault_copy AS SELECT * FROM ytw_private.vault;
+       GRANT SELECT ON public.vault_copy TO ytw_readonly;`,
+      /private_data_exposure: public\.vault_copy ytw_readonly can read/,
+    ],
+    [
+      "a STABLE SECURITY DEFINER function that reads ytw_private",
+      `${vault}CREATE FUNCTION public.peek() RETURNS SETOF text LANGUAGE sql STABLE SECURITY DEFINER
+         SET search_path = pg_catalog, public, pg_temp AS 'SELECT secret FROM ytw_private.vault';
+       GRANT EXECUTE ON FUNCTION public.peek() TO ytw_readonly;`,
+      /readonly_function_execute: public\.peek\(\) ytw_readonly must not execute SECURITY DEFINER/,
+    ],
+    [
+      "a STABLE SECURITY DEFINER function that writes events",
+      `CREATE FUNCTION public.sneaky_log() RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER
+         SET search_path = pg_catalog, public, pg_temp
+         AS $$ SELECT ytw_log_event('x', 'agent', NULL, 'tool.call', NULL, NULL, '{}') $$;
+       GRANT EXECUTE ON FUNCTION public.sneaky_log() TO ytw_readonly;`,
+      /readonly_function_execute: public\.sneaky_log\(\)/,
+    ],
+    [
+      "an invoker function for ytw_readonly that is not allowlisted",
+      `CREATE FUNCTION public.helper() RETURNS integer LANGUAGE sql STABLE AS 'SELECT 1';
+       GRANT EXECUTE ON FUNCTION public.helper() TO ytw_readonly;`,
+      /readonly_function_execute: public\.helper\(\) ytw_readonly may execute only functions listed/,
+    ],
+    [
+      "a SECURITY DEFINER function owned by another role",
+      `CREATE FUNCTION public.borrowed() RETURNS integer LANGUAGE sql SECURITY DEFINER
+         SET search_path = pg_catalog, public, pg_temp AS 'SELECT 1';
+       ALTER FUNCTION public.borrowed() OWNER TO pg_database_owner;`,
+      /definer_owner: public\.borrowed\(\) SECURITY DEFINER function owned by pg_database_owner/,
+    ],
+    [
+      "a grant on a large-object function",
+      "GRANT EXECUTE ON FUNCTION lo_create(oid) TO ytw_web;",
+      /builtin_function_access: lo_create\(oid\) ytw_web can execute it/,
+    ],
+    [
+      "giving advisory locks back to PUBLIC",
+      "GRANT EXECUTE ON FUNCTION pg_advisory_lock(bigint) TO PUBLIC;",
+      /builtin_function_access: pg_advisory_lock\(bigint\) ytw_readonly can execute it/,
+    ],
+    [
+      "a role setting that turns read-only off",
+      "ALTER ROLE ytw_readonly SET default_transaction_read_only = off;",
+      /app_role_settings: ytw_readonly has an unexpected setting: default_transaction_read_only=off/,
+    ],
+    [
+      "a guard replaced by one that reports nothing",
+      `CREATE OR REPLACE FUNCTION public.ytw_catalog_violations()
+         RETURNS TABLE (rule text, object text, detail text) LANGUAGE sql STABLE
+         SET search_path = pg_catalog, public, pg_temp
+         AS $$ SELECT NULL::text, NULL::text, NULL::text WHERE false $$;`,
+      /no longer reports table_write_privilege, private_data_exposure, readonly_function_execute/,
+    ],
+    [
+      "a dropped guard",
+      "DROP FUNCTION public.ytw_catalog_violations();",
+      /ytw_catalog_violations\(\) no longer exists/,
+    ],
+  ];
+
+  it.each(evasions)("rolls back %s", async (_label, statements, expected) => {
+    await writeFile(join(dir, "9001_evasion.sql"), statements);
+
+    const err = await failure(run(db, dir));
+
+    expect(err).toBeInstanceOf(MigrationError);
+    expect(err.message).toMatch(/^9001_evasion\.sql/);
+    expect(err.message).toMatch(expected);
+    // Nothing of the file survived, and the guard is intact and clean.
+    expect(await migrationStatus(db.admin, dir)).toMatchObject({ pending: ["9001_evasion.sql"] });
+    const leftovers = await db.admin.query<{ vault: string | null }>(
+      "SELECT to_regclass('ytw_private.vault')::text AS vault",
+    );
+    expect(leftovers.rows[0]?.vault).toBeNull();
+    const guard = await db.admin.query("SELECT * FROM ytw_catalog_violations()");
+    expect(guard.rows).toEqual([]);
+  });
+
+  it("accepts reviewed exceptions listed in ytw_private.catalog_allowlist", async () => {
+    const own = await scenario();
+    await run(own.db, own.dir);
+    await writeFile(
+      join(own.dir, "9001_reviewed.sql"),
+      `${vault}CREATE VIEW public.vault_owners AS SELECT owner FROM ytw_private.vault;
+       GRANT SELECT ON public.vault_owners TO ytw_web;
+       CREATE FUNCTION public.helper() RETURNS integer LANGUAGE sql STABLE AS 'SELECT 1';
+       GRANT EXECUTE ON FUNCTION public.helper() TO ytw_readonly;
+       INSERT INTO ytw_private.catalog_allowlist (rule, object, reason) VALUES
+         ('private_data_exposure', 'public.vault_owners', 'exposes only the owner column'),
+         ('readonly_function_execute', 'public.helper()', 'pure helper used by a view');`,
+    );
+
+    const result = await run(own.db, own.dir);
+
+    expect(result.applied).toEqual(["9001_reviewed.sql"]);
+  });
+});
+
+describe("transaction control in migration files", () => {
+  it.each([
+    [
+      "COMMIT",
+      "CREATE TABLE partly (id int);\nCOMMIT;\nCREATE TABLE later (id int);\nSELECT 1/0;\n",
+      /9001_tx\.sql: line 2: COMMIT is not allowed/,
+    ],
+    ["ROLLBACK", "CREATE TABLE ghost (id int);\n  ROLLBACK;\n", /line 2: ROLLBACK is not allowed/],
+    [
+      "BEGIN ATOMIC bodies",
+      "CREATE FUNCTION public.answer() RETURNS integer LANGUAGE sql\nBEGIN ATOMIC SELECT 42;\nEND;",
+      /line 3: END is not allowed/,
+    ],
+  ])("rejects %s before running anything", async (_label, statements, expected) => {
+    const { db, dir } = await scenario();
+    await run(db, dir);
+    await writeFile(join(dir, "9001_tx.sql"), statements);
+
+    const err = await failure(run(db, dir));
+
+    expect(err).toBeInstanceOf(MigrationError);
+    expect(err.message).toMatch(expected);
+    for (const table of ["partly", "later", "ghost"]) {
+      const exists = await db.admin.query<{ t: string | null }>(
+        "SELECT to_regclass($1)::text AS t",
+        [`public.${table}`],
+      );
+      expect(exists.rows[0]?.t).toBeNull();
+    }
+    expect((await appliedRows(db)).map((row) => row.version)).not.toContain("9001");
+  });
 });
 
 describe("role passwords", () => {
-  it("are set so each application role can log in, stored as SCRAM verifiers", async () => {
+  it("are left alone when the stored verifier already matches", async () => {
     const { db, dir } = await scenario();
-    await run(db, dir);
+    const lines: string[] = [];
+
+    const result = await migrate({
+      databaseUrl: db.url("admin"),
+      lockDatabaseUrl: testServerUrl(),
+      rolePasswords: testRolePasswords(),
+      migrationsDir: dir,
+      log: (line) => lines.push(line),
+    });
+
+    expect(result.passwordsSet).toEqual([]);
+    expect(lines.filter((line) => line.includes("password"))).toEqual([
+      "ytw_web: password already current",
+      "ytw_mcp: password already current",
+      "ytw_readonly: password already current",
+    ]);
     for (const role of ["ytw_web", "ytw_mcp", "ytw_readonly"] as const) {
       const client = new Client({ connectionString: db.url(role) });
       await client.connect();
@@ -229,10 +459,39 @@ describe("role passwords", () => {
       await client.end();
       expect(rows[0]?.user).toBe(role);
     }
-    const stored = await db.admin.query<{ rolpassword: string }>(
-      "SELECT rolpassword FROM pg_authid WHERE rolname = 'ytw_web'",
-    );
-    expect(stored.rows[0]?.rolpassword).toMatch(/^SCRAM-SHA-256\$4096:/);
+  });
+
+  it("are compared through SCRAM verifiers that Postgres accepts", async () => {
+    const role = `ytw_test_pw_${randomBytes(4).toString("hex")}`;
+    const password = "scratch-role-password-0123";
+    const admin = new Client({ connectionString: testServerUrl() });
+    await admin.connect();
+    try {
+      await admin.query(
+        `CREATE ROLE ${role} LOGIN PASSWORD ${admin.escapeLiteral(scramSha256Verifier(password))}`,
+      );
+      expect(await rolePasswordStatus(admin, role, password)).toBe("matches");
+      expect(await rolePasswordStatus(admin, role, `${password}-other`)).toBe("differs");
+      expect(await rolePasswordStatus(admin, "ytw_no_such_role", password)).toBe("unknown");
+
+      // Postgres logs the role in with the verifier the runner computed.
+      const url = new URL(testServerUrl());
+      url.username = role;
+      url.password = password;
+      const login = new Client({ connectionString: url.toString() });
+      await login.connect();
+      const { rows } = await login.query<{ user: string }>('SELECT current_user AS "user"');
+      // A non-superuser cannot read pg_authid, so it cannot tell.
+      expect(await rolePasswordStatus(login, role, password)).toBe("unknown");
+      await login.end();
+      expect(rows[0]?.user).toBe(role);
+
+      await admin.query(`ALTER ROLE ${role} PASSWORD NULL`);
+      expect(await rolePasswordStatus(admin, role, password)).toBe("unset");
+    } finally {
+      await admin.query(`DROP ROLE IF EXISTS ${role}`);
+      await admin.end();
+    }
   });
 
   it("are validated before anything is touched, without echoing the value", async () => {
@@ -272,15 +531,40 @@ describe("migration files", () => {
     );
   });
 
-  it("are sorted by number, ignore non-SQL files and hash CRLF like LF", async () => {
+  it("are sorted by number, ignore non-SQL files and hash CRLF and a BOM like plain LF", async () => {
+    const bom = String.fromCharCode(0xfeff);
     const dir = await dirWith({
       "0010_b.sql": "SELECT 1;\r\nSELECT 2;\r\n",
-      "0002_a.sql": "﻿SELECT 1;\nSELECT 2;\n",
+      "0002_a.sql": `${bom}SELECT 1;\nSELECT 2;\n`,
+      "0003_c.sql": "SELECT 1;\nSELECT 2;\n",
       "README.md": "not a migration",
     });
     const files = await loadMigrations(dir);
-    expect(files.map((file) => file.filename)).toEqual(["0002_a.sql", "0010_b.sql"]);
-    expect(files[0]?.checksum).toBe(files[1]?.checksum);
+    expect(files.map((file) => file.filename)).toEqual(["0002_a.sql", "0003_c.sql", "0010_b.sql"]);
+    const checksums = new Set(files.map((file) => file.checksum));
+    expect(checksums.size).toBe(1);
     expect(files[0]?.checksum).toMatch(/^[0-9a-f]{64}$/);
+    expect(files[0]?.sql.charCodeAt(0)).toBe("S".charCodeAt(0));
+  });
+
+  it("keep their sources plain ASCII, so no invisible character hides in code or SQL", async () => {
+    const roots = [
+      fileURLToPath(new URL("../src", import.meta.url)),
+      fileURLToPath(new URL("../sql", import.meta.url)),
+      defaultMigrationsDir(),
+    ];
+    const offenders: string[] = [];
+    for (const root of roots) {
+      for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
+        if (entry.isFile() && /\.(ts|sql)$/.test(entry.name)) {
+          const path = join(entry.parentPath, entry.name);
+          const text = await readFile(path, "utf8");
+          if (/\P{ASCII}/u.test(text)) {
+            offenders.push(path);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

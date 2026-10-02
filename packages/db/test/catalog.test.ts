@@ -89,9 +89,64 @@ describe("catalog guard", () => {
       "almost()",
     ],
     [
-      "readonly_volatile_definer",
+      "readonly_function_execute",
       "GRANT EXECUTE ON FUNCTION ytw_log_event(text, text, uuid, text, text, uuid, jsonb) TO ytw_readonly",
-      "ytw_log_event",
+      "public.ytw_log_event(text, text, uuid, text, text, uuid, jsonb)",
+    ],
+    [
+      "readonly_function_execute",
+      "CREATE FUNCTION peek() RETURNS int LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT 1'; GRANT EXECUTE ON FUNCTION peek() TO ytw_readonly",
+      "public.peek() ytw_readonly must not execute SECURITY DEFINER",
+    ],
+    [
+      "readonly_function_execute",
+      "CREATE FUNCTION helper() RETURNS int LANGUAGE sql STABLE AS 'SELECT 1'; GRANT EXECUTE ON FUNCTION helper() TO ytw_readonly",
+      "public.helper() ytw_readonly may execute only functions listed",
+    ],
+    [
+      "private_data_exposure",
+      "CREATE TABLE ytw_private.vault (secret text); CREATE VIEW vault_view AS SELECT * FROM ytw_private.vault; GRANT SELECT ON vault_view TO ytw_readonly",
+      "public.vault_view ytw_readonly",
+    ],
+    [
+      "private_data_exposure",
+      "CREATE TABLE ytw_private.vault (secret text); CREATE VIEW v1 AS SELECT * FROM ytw_private.vault; CREATE VIEW v2 AS SELECT * FROM v1; GRANT SELECT (secret) ON v2 TO ytw_mcp",
+      "public.v2 ytw_mcp",
+    ],
+    [
+      "private_data_exposure",
+      "CREATE TABLE ytw_private.vault (secret text); CREATE MATERIALIZED VIEW vault_copy AS SELECT * FROM ytw_private.vault; GRANT SELECT ON vault_copy TO ytw_web",
+      "public.vault_copy ytw_web",
+    ],
+    [
+      "definer_owner",
+      "CREATE FUNCTION borrowed() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT 1'; REVOKE ALL ON FUNCTION borrowed() FROM PUBLIC; ALTER FUNCTION borrowed() OWNER TO pg_database_owner",
+      "public.borrowed() SECURITY DEFINER function owned by pg_database_owner",
+    ],
+    [
+      "app_role_settings",
+      "ALTER ROLE ytw_readonly SET statement_timeout = 0",
+      "statement_timeout=0",
+    ],
+    [
+      "app_role_settings",
+      "ALTER ROLE ytw_readonly RESET statement_timeout",
+      "is missing the setting statement_timeout=10s",
+    ],
+    [
+      "app_role_settings",
+      "DO $$ BEGIN EXECUTE format('ALTER ROLE ytw_web IN DATABASE %I SET search_path = public', current_database()); END $$",
+      "ytw_web has a setting for this database: search_path=public",
+    ],
+    [
+      "builtin_function_access",
+      "GRANT EXECUTE ON FUNCTION lo_create(oid) TO ytw_web",
+      "lo_create(oid) ytw_web can execute it",
+    ],
+    [
+      "builtin_function_access",
+      "GRANT EXECUTE ON FUNCTION pg_try_advisory_xact_lock(bigint) TO PUBLIC",
+      "pg_try_advisory_xact_lock(bigint) ytw_readonly can execute it",
     ],
   ];
 
@@ -100,6 +155,40 @@ describe("catalog guard", () => {
     const reported = rows.map((row) => `${row.rule}: ${row.object} ${row.detail}`);
     const escaped = mention.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
     expect(reported).toContainEqual(expect.stringMatching(new RegExp(`^${rule}: .*${escaped}`)));
+  });
+
+  it("accepts allowlisted views and invoker functions, never a SECURITY DEFINER one", async () => {
+    const rows = await violationsAfter(`
+      CREATE TABLE ytw_private.vault (owner text, secret text);
+      CREATE VIEW vault_owners AS SELECT owner FROM ytw_private.vault;
+      GRANT SELECT ON vault_owners TO ytw_web;
+      CREATE FUNCTION helper() RETURNS int LANGUAGE sql STABLE AS 'SELECT 1';
+      GRANT EXECUTE ON FUNCTION helper() TO ytw_readonly;
+      CREATE FUNCTION peek() RETURNS int LANGUAGE sql STABLE SECURITY DEFINER
+        SET search_path = pg_catalog, public, pg_temp AS 'SELECT 1';
+      GRANT EXECUTE ON FUNCTION peek() TO ytw_readonly;
+      INSERT INTO ytw_private.catalog_allowlist (rule, object, reason) VALUES
+        ('private_data_exposure', 'public.vault_owners', 'only the owner column, reviewed'),
+        ('readonly_function_execute', 'public.helper()', 'pure helper, reviewed'),
+        ('readonly_function_execute', 'public.peek()', 'allowlisting cannot excuse this');`);
+    expect(rows.map((row) => `${row.rule}: ${row.object}`)).toEqual([
+      "readonly_function_execute: public.peek()",
+    ]);
+  });
+
+  it("refuses allowlist entries for other rules or without a reason", async () => {
+    for (const values of [
+      "('table_write_privilege', 'public.events', 'a long enough reason')",
+      "('private_data_exposure', 'public.x', 'short')",
+    ]) {
+      expect(
+        await sqlstate(
+          db.admin.query(
+            `INSERT INTO ytw_private.catalog_allowlist (rule, object, reason) VALUES ${values}`,
+          ),
+        ),
+      ).toBe("23514");
+    }
   });
 });
 

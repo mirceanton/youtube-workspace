@@ -63,16 +63,17 @@ COMMENT ON TABLE ytw_private.api_token_permissions IS
 CREATE TRIGGER api_tokens_touch
   BEFORE UPDATE ON ytw_private.api_tokens
   FOR EACH ROW EXECUTE FUNCTION public.ytw_touch();
--- token_hash would be redacted by its name anyway; listed so the intent is explicit.
+-- token_hash would be redacted by its name anyway; listed so the intent is explicit. Tables in
+-- ytw_private are audited default-deny: only +id (the entity id) is recorded with its value.
 CREATE TRIGGER api_tokens_audit
   AFTER INSERT OR UPDATE OR DELETE ON ytw_private.api_tokens
-  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('api_token', 'token_hash', '-updated_by');
+  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('api_token', 'token_hash', '-updated_by', '+id');
 
 CREATE TRIGGER api_token_permissions_touch
   BEFORE UPDATE ON ytw_private.api_token_permissions
   FOR EACH ROW EXECUTE FUNCTION public.ytw_touch();
 CREATE TRIGGER api_token_permissions_audit
   AFTER INSERT OR UPDATE OR DELETE ON ytw_private.api_token_permissions
-  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('api_token_permission', '-updated_by');
+  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('api_token_permission', '-updated_by', '+id');
 
 -- No grants: ytw_private is reachable only through SECURITY DEFINER functions (T14).

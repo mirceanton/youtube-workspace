@@ -1581,7 +1581,7 @@ describe("audit trail", () => {
          LEFT JOIN pg_trigger t ON t.tgrelid = c.oid AND NOT t.tgisinternal
                                AND t.tgfoid = 'public.ytw_audit()'::regprocedure
         WHERE c.relkind IN ('r', 'p') AND n.nspname IN ('public', 'ytw_private')
-          AND c.relname NOT IN ('events', 'schema_migrations', 'web_sessions')`,
+          AND c.relname NOT IN ('events', 'schema_migrations', 'web_sessions', 'catalog_allowlist')`,
     );
     expect(rows.length).toBeGreaterThanOrEqual(ALL_TABLES.length - 1);
     for (const row of rows) {

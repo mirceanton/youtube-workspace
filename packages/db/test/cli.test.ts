@@ -11,6 +11,9 @@ const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 let db: TestDb;
 
 beforeAll(async () => {
+  // A migrated database first: the harness makes sure the roles carry the test passwords, so the
+  // CLI runs below, which pass the same passwords, change nothing.
+  await (await createTestDb()).drop();
   db = await createTestDb({ migrate: false });
 });
 
@@ -65,7 +68,7 @@ describe("migrate CLI", () => {
     expect(first).toMatchObject({ code: 0 });
     expect(first.out).toContain(`migrating database ${db.name} on`);
     expect(first.out).toContain("applied 0001_roles.sql");
-    expect(first.out).toContain("ytw_readonly: password set");
+    expect(first.out).toContain("ytw_readonly: password already current");
     expect(first.out).toContain(`done, ${files.length} applied, 0 already applied`);
 
     const second = await cli(env);

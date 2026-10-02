@@ -238,6 +238,134 @@ export function formatAllowed(values: readonly string[]): string {
   return values.map((value) => JSON.stringify(value)).join(", ");
 }
 
+/**
+ * What a route or an MCP tool may tell a client about an error from the database layer: a stable
+ * `error` code, a `message` that names no table, column, constraint or value, the HTTP `status`,
+ * and whether retrying can help. Log the original error on the server; never send it.
+ *
+ * Catalogue errors keep their message, hint and details, which database functions write for
+ * clients. The web contract (PLAN.md section 3) answers version conflicts with `409 {error, latest}`:
+ * the HTTP layers take `latest` from `details.latest_version`.
+ */
+export interface ClientError {
+  readonly error: string;
+  readonly message: string;
+  readonly status: number;
+  readonly retryable: boolean;
+  readonly hint?: string;
+  readonly details?: DbErrorDetails;
+}
+
+const INTERNAL_ERROR: ClientError = {
+  error: "internal",
+  message: "internal database error",
+  status: 500,
+  retryable: false,
+};
+
+const UNAVAILABLE_ERROR: ClientError = {
+  error: "unavailable",
+  message: "the database is unavailable; retry later",
+  status: 503,
+  retryable: true,
+};
+
+/** Postgres errors outside the catalogue, by SQLSTATE; the first matching pattern wins. */
+const SQLSTATE_CLIENT_ERRORS: readonly (readonly [RegExp, ClientError])[] = [
+  [
+    /^23505$/,
+    {
+      error: "duplicate",
+      message: "a record with the same unique value already exists",
+      status: 422,
+      retryable: false,
+    },
+  ],
+  [
+    /^23503$/,
+    {
+      error: "invalid_reference",
+      message: "the request refers to a record that does not exist, or one that is still in use",
+      status: 422,
+      retryable: false,
+    },
+  ],
+  [
+    /^2[23]/,
+    {
+      error: "validation",
+      message: "a value was rejected by the database (wrong type, out of range or not allowed)",
+      status: 400,
+      retryable: false,
+    },
+  ],
+  [
+    /^(40001|40P01)$/,
+    {
+      error: "retry",
+      message: "the database was busy with a conflicting change; retry the request",
+      status: 503,
+      retryable: true,
+    },
+  ],
+  [
+    /^(57014|55P03)$/,
+    {
+      error: "timeout",
+      message: "the database operation took too long and was cancelled",
+      status: 503,
+      retryable: true,
+    },
+  ],
+  [
+    /^(42501|25006)$/,
+    {
+      error: "forbidden",
+      message: "the database refused this operation",
+      status: 403,
+      retryable: false,
+    },
+  ],
+  [
+    /^42/,
+    {
+      error: "invalid_query",
+      message: "the SQL statement is invalid",
+      status: 400,
+      retryable: false,
+    },
+  ],
+  [/^(08|53|57P0)/, UNAVAILABLE_ERROR],
+];
+
+const NETWORK_ERROR_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE"]);
+
+/** Maps any error thrown by the database layer to what a client may see; see {@link ClientError}. */
+export function toClientError(err: unknown): ClientError {
+  const typed = toDbError(err);
+  if (typed instanceof DbError) {
+    if (typed.status >= 500) {
+      return INTERNAL_ERROR;
+    }
+    return {
+      error: typed.kind,
+      message: typed.message,
+      status: typed.status,
+      retryable: false,
+      ...(typed.hint === undefined ? {} : { hint: typed.hint }),
+      details: typed.details,
+    };
+  }
+  if (isPgError(typed)) {
+    const match = SQLSTATE_CLIENT_ERRORS.find(([pattern]) => pattern.test(typed.code));
+    return match === undefined ? INTERNAL_ERROR : { ...match[1] };
+  }
+  if (err instanceof Error && NETWORK_ERROR_CODES.has(String(Reflect.get(err, "code")))) {
+    return UNAVAILABLE_ERROR;
+  }
+  return INTERNAL_ERROR;
+}
+
 function catalogueEntry(kind: DbErrorKind): (typeof DB_ERROR_CATALOGUE)[number] {
   const entry = DB_ERROR_CATALOGUE.find((candidate) => candidate.kind === kind);
   if (entry === undefined) {

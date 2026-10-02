@@ -15,20 +15,27 @@
  * });
  * ```
  *
- * The server is `TEST_DATABASE_URL` (a superuser connection), else the one in
- * `MIGRATION_DATABASE_URL`, else the local dev cluster of `scripts/pg-local.sh` / docker compose
- * (see {@link testServerUrl}). Each database gets a unique name and is created from
- * template0, so files and workers run in parallel safely. Migrations run under the cluster-wide
- * migration lock because the application roles are shared by every database in the cluster.
- * Never use this module outside tests.
+ * The server is `TEST_DATABASE_URL`, a superuser connection (default: the local dev cluster of
+ * `scripts/pg-local.sh` and docker compose). It must be on this machine unless
+ * `YTW_DISPOSABLE_TEST_SERVER=1` declares it disposable. Each database gets a unique name and is
+ * created from template0, so files and workers run in parallel safely. Migrations run under the
+ * cluster-wide migration lock because the application roles are shared by every database in the
+ * cluster. The harness gives a role a password only when it has none (or the server is declared
+ * disposable); it never overwrites a different one. Never use this module outside tests.
  */
 import { randomBytes } from "node:crypto";
 import { Client, Pool } from "pg";
-import { APP_ROLES, type AppRole } from "./client.js";
-import { ROLE_PASSWORD_ENV, migrate } from "./migrate.js";
+import { APP_ROLES, createPool, type AppRole } from "./client.js";
+import { ROLE_PASSWORD_ENV, migrate, rolePasswordStatus } from "./migrate.js";
 
 /** Used when TEST_DATABASE_URL is unset: the dev superuser of pg-local.sh and docker-compose.yml. */
 export const DEFAULT_TEST_DATABASE_URL = "postgres://postgres:postgres@localhost:5432/postgres";
+
+/**
+ * Set to `1` to declare the test server disposable: tests may then use a server that is not on
+ * this machine, and the harness may overwrite the application roles' passwords there.
+ */
+export const DISPOSABLE_TEST_SERVER_ENV = "YTW_DISPOSABLE_TEST_SERVER";
 
 /**
  * Role passwords the harness uses when YTW_*_PASSWORD are unset. They equal the dev values in
@@ -52,7 +59,7 @@ export interface TestDb {
   readonly name: string;
   /** Superuser pool on this database, for fixtures and assertions only (never for code under test). */
   readonly admin: Pool;
-  /** Pool that logs in as an application role (created on first use). */
+  /** Pool that logs in as an application role, created like the services' pools (lazily, max 4). */
   pool(role: AppRole): Pool;
   /** Connection string for an application role or the superuser, e.g. for a server under test. */
   url(role: AppRole | "admin"): string;
@@ -61,23 +68,30 @@ export interface TestDb {
 }
 
 /**
- * The superuser connection string the harness uses: `TEST_DATABASE_URL`; otherwise the server and
- * credentials of `MIGRATION_DATABASE_URL` (as CI exports it) with the `postgres` maintenance
- * database; otherwise {@link DEFAULT_TEST_DATABASE_URL}. The maintenance database doubles as the
- * shared lock database, so every harness on one cluster must resolve to the same database name.
+ * The superuser connection string the harness uses: `TEST_DATABASE_URL`, else
+ * {@link DEFAULT_TEST_DATABASE_URL}. `MIGRATION_DATABASE_URL` is deliberately ignored, so that an
+ * operator who migrated a real database never points the tests at it by accident. The database in
+ * the URL (normally `postgres`) also holds the cluster-wide migration lock.
  */
 export function testServerUrl(): string {
-  const explicit = process.env.TEST_DATABASE_URL?.trim();
-  if (explicit !== undefined && explicit !== "") {
-    return explicit;
+  const configured = process.env.TEST_DATABASE_URL?.trim();
+  return configured === undefined || configured === "" ? DEFAULT_TEST_DATABASE_URL : configured;
+}
+
+/** True for localhost, 127.0.0.0/8, ::1 and Unix-socket connection strings. */
+export function isLocalServer(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
   }
-  const migration = process.env.MIGRATION_DATABASE_URL?.trim();
-  if (migration !== undefined && migration !== "") {
-    const url = new URL(migration);
-    url.pathname = "/postgres";
-    return url.toString();
+  const socketHost = parsed.searchParams.get("host");
+  if (socketHost !== null) {
+    return socketHost.startsWith("/");
   }
-  return DEFAULT_TEST_DATABASE_URL;
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "" || host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
 /** Role passwords for test databases: YTW_*_PASSWORD when set, otherwise {@link DEV_ROLE_PASSWORDS}. */
@@ -95,6 +109,12 @@ export function testRolePasswords(): Record<AppRole, string> {
 /** Creates (and by default migrates) a uniquely named database. Call `drop()` in `afterAll`. */
 export async function createTestDb(options: CreateTestDbOptions = {}): Promise<TestDb> {
   const serverUrl = testServerUrl();
+  if (!isLocalServer(serverUrl) && !isDisposable()) {
+    throw new Error(
+      `refusing to create test databases on ${describeHost(serverUrl)}: TEST_DATABASE_URL is not ` +
+        `on this machine. Set ${DISPOSABLE_TEST_SERVER_ENV}=1 only if that server is disposable.`,
+    );
+  }
   const name = `ytw_test_${Date.now().toString(36)}_${randomBytes(5).toString("hex")}`;
   const passwords = testRolePasswords();
 
@@ -106,13 +126,18 @@ export async function createTestDb(options: CreateTestDbOptions = {}): Promise<T
 
   const db = new TestDatabase(serverUrl, name, passwords);
   if (options.migrate !== false) {
+    const dir = options.migrationsDir === undefined ? {} : { migrationsDir: options.migrationsDir };
     try {
-      await migrate({
-        databaseUrl: db.url("admin"),
-        lockDatabaseUrl: serverUrl,
-        rolePasswords: passwords,
-        ...(options.migrationsDir === undefined ? {} : { migrationsDir: options.migrationsDir }),
-      });
+      await migrate({ databaseUrl: db.url("admin"), lockDatabaseUrl: serverUrl, ...dir });
+      const missing = await passwordsToSet(serverUrl, passwords);
+      if (Object.keys(missing).length > 0) {
+        await migrate({
+          databaseUrl: db.url("admin"),
+          lockDatabaseUrl: serverUrl,
+          rolePasswords: missing,
+          ...dir,
+        });
+      }
     } catch (err) {
       await db.drop();
       throw new Error(
@@ -180,17 +205,73 @@ class TestDatabase implements TestDb {
     }
     let pool = this.#pools.get(role);
     if (pool === undefined) {
-      pool = new Pool({
-        connectionString: this.url(role),
-        application_name: `ytw-test-${role}`,
-        max: 4,
-        idleTimeoutMillis: 5_000,
-      });
-      // Idle connections are terminated when the database is dropped; that is expected here.
-      pool.on("error", () => undefined);
+      pool =
+        role === "admin"
+          ? new Pool({
+              connectionString: this.url(role),
+              application_name: "ytw-test-admin",
+              max: 4,
+              idleTimeoutMillis: 5_000,
+            }).on("error", ignoreIdleError)
+          : createPool({
+              role,
+              connectionString: this.url(role),
+              applicationName: `ytw-test-${role}`,
+              max: 4,
+              onError: ignoreIdleError,
+            });
       this.#pools.set(role, pool);
     }
     return pool;
+  }
+}
+
+/** Idle connections are terminated when the database is dropped; that is expected here. */
+function ignoreIdleError(): void {
+  // Nothing to do.
+}
+
+function isDisposable(): boolean {
+  return process.env[DISPOSABLE_TEST_SERVER_ENV] === "1";
+}
+
+/**
+ * The roles whose password the harness may set: those without a password, or every role whose
+ * password differs when the server is declared disposable. A different password on a server that
+ * is not disposable is an error, so the harness never overwrites one somebody relies on.
+ */
+async function passwordsToSet(
+  serverUrl: string,
+  passwords: Record<AppRole, string>,
+): Promise<Partial<Record<AppRole, string>>> {
+  const toSet: Partial<Record<AppRole, string>> = {};
+  const blocked: string[] = [];
+  await withAdminClient(serverUrl, async (client) => {
+    for (const role of APP_ROLES) {
+      const status = await rolePasswordStatus(client, role, passwords[role]);
+      if (status === "unset" || (status !== "matches" && isDisposable())) {
+        toSet[role] = passwords[role];
+      } else if (status !== "matches") {
+        blocked.push(`${role} (${status === "unknown" ? "unreadable" : "different password"})`);
+      }
+    }
+  });
+  if (blocked.length > 0) {
+    throw new Error(
+      `the test passwords do not match these roles: ${blocked.join(", ")}. Export ` +
+        `${APP_ROLES.map((role) => ROLE_PASSWORD_ENV[role]).join(", ")} with the roles' real ` +
+        `passwords (TEST_DATABASE_URL must be a superuser to compare them), or set ` +
+        `${DISPOSABLE_TEST_SERVER_ENV}=1 if the server is disposable and may be changed.`,
+    );
+  }
+  return toSet;
+}
+
+function describeHost(url: string): string {
+  try {
+    return new URL(url).host || "a local socket";
+  } catch {
+    return "the configured server";
   }
 }
 
@@ -202,15 +283,8 @@ async function withAdminClient(
   try {
     await client.connect();
   } catch (err) {
-    const target = (() => {
-      try {
-        return new URL(serverUrl).host;
-      } catch {
-        return "the configured server";
-      }
-    })();
     throw new Error(
-      `cannot reach the test Postgres at ${target} (TEST_DATABASE_URL): ` +
+      `cannot reach the test Postgres at ${describeHost(serverUrl)} (TEST_DATABASE_URL): ` +
         `${err instanceof Error ? err.message : String(err)}. ` +
         "Start it with scripts/pg-local.sh start or docker compose up -d.",
       { cause: err },

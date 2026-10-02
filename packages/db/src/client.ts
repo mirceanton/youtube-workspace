@@ -3,8 +3,8 @@
  * queries, and {@link withActor}, the transaction every mutation runs in. Conventions:
  * docs/database.md.
  */
-import { ACTOR_TYPES, type ActorType } from "@ytw/shared/constants";
-import { Pool, type QueryResult, type QueryResultRow } from "pg";
+import { ACTOR_TYPES, QUERY_SQL_TIMEOUT_MS, type ActorType } from "@ytw/shared/constants";
+import { Pool, type QueryConfig, type QueryResult, type QueryResultRow } from "pg";
 import { ValidationError, formatAllowed, toDbError } from "./errors.js";
 
 /** The fixed database roles created by migration 0001 (PRD 5, "Database roles"). */
@@ -63,16 +63,30 @@ export interface CreatePoolOptions {
 }
 
 /**
+ * Settings sent in the startup packet of every connection a pool opens for `role`. They take
+ * precedence over the role-level defaults, which Postgres lets a role change itself
+ * (`ALTER ROLE ytw_readonly SET ...`), so `ytw_readonly` connections stay read-only with the
+ * query_sql timeout whatever is stored for the role.
+ */
+export function roleConnectionOptions(role: AppRole): string | undefined {
+  return role === "ytw_readonly"
+    ? `-c default_transaction_read_only=on -c statement_timeout=${QUERY_SQL_TIMEOUT_MS}`
+    : undefined;
+}
+
+/**
  * Creates the process's pool for its own role. Call {@link assertPoolRole} once at startup so a
  * `DATABASE_URL` that points at the wrong role (or a superuser) stops the process.
  */
 export function createPool(options: CreatePoolOptions): Pool {
+  const pinned = roleConnectionOptions(options.role);
   const pool = new Pool({
     connectionString: options.connectionString,
     application_name: options.applicationName ?? options.role.replace("_", "-"),
     max: options.max ?? 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    ...(pinned === undefined ? {} : { options: pinned }),
   });
   pool.on(
     "error",
@@ -187,5 +201,66 @@ export async function withActor<T>(
   } finally {
     finished = true;
     client.release(broken);
+  }
+}
+
+export interface ReadOnlyQueryOptions {
+  /** Statement timeout in milliseconds; at most, and by default, `QUERY_SQL_TIMEOUT_MS` (10 s). */
+  timeoutMs?: number;
+}
+
+/**
+ * Runs ONE untrusted SQL statement, for the MCP `query_sql` tool (PRD 5), on a pool created for
+ * `ytw_readonly`. Nothing else may run SQL that a client wrote. In order:
+ *
+ * 1. `BEGIN READ ONLY` and `SET LOCAL statement_timeout`;
+ * 2. a query that checks the connection is `ytw_readonly` (any other pool is refused) and takes the
+ *    transaction's snapshot: from then on `SET TRANSACTION READ WRITE` and its `set_config`
+ *    equivalent are rejected, so the statement cannot make its own transaction writable;
+ * 3. the statement alone, through the extended protocol, which refuses a string holding more than
+ *    one statement (with no parameters node-postgres would use the simple protocol, which runs
+ *    several);
+ * 4. ROLLBACK, and the connection is destroyed instead of returned to the pool, so nothing the
+ *    statement changed in its session (settings, advisory locks, prepared statements, LISTEN)
+ *    outlives the call.
+ *
+ * Errors are the driver's, with the SQLSTATE in `code`: 25006 for a write, 42501 for a missing
+ * privilege, 57014 for the timeout, 42601 for a syntax error or several statements. Capping rows
+ * and output size is the caller's job.
+ */
+export async function queryReadOnly<R extends QueryResultRow = QueryResultRow>(
+  pool: Pool,
+  statement: string,
+  options: ReadOnlyQueryOptions = {},
+): Promise<QueryResult<R>> {
+  if (typeof statement !== "string" || statement.trim() === "") {
+    throw new ValidationError("the SQL statement is empty", { field: "sql" });
+  }
+  const timeoutMs = options.timeoutMs ?? QUERY_SQL_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > QUERY_SQL_TIMEOUT_MS) {
+    throw new RangeError(`timeoutMs must be an integer from 1 to ${QUERY_SQL_TIMEOUT_MS}`);
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+    const { rows } = await client.query<{ session: string; current: string }>(
+      "SELECT session_user AS session, current_user AS current",
+    );
+    const who = rows[0];
+    if (who?.session !== "ytw_readonly" || who.current !== "ytw_readonly") {
+      throw new Error(
+        `queryReadOnly needs a ytw_readonly pool, but this connection is ${who?.session ?? "unknown"}`,
+      );
+    }
+    // `queryMode` is supported by node-postgres but missing from its type definitions.
+    const config: QueryConfig & { queryMode: "extended" } = {
+      text: statement,
+      queryMode: "extended",
+    };
+    return await client.query<R>(config);
+  } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release(true);
   }
 }

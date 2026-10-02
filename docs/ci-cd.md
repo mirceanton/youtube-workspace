@@ -43,7 +43,7 @@ The jobs of `ci.yaml`:
 | Job | What it does |
 | --- | --- |
 | `check` | `actionlint` over the workflows; the tests of the CI helper scripts (`.github/scripts/test-scripts.sh`); a gitleaks scan of the commits the push added (`.github/scripts/scan-new-commits.sh`, a few seconds, so a secret committed in ordinary source is found on the push that adds it); `pnpm lint` (`tsc -b` + oxlint); `pnpm format:check`; `pnpm build` (every package and the Vite bundle) and a check that the entry points exist. This is the PRD "lint and build on every pull request" gate. It also decides whether the heavy jobs run |
-| `test` | Starts a `postgres:16` service (healthcheck `pg_isready`), exports `MIGRATION_DATABASE_URL`, runs `pnpm migrate` twice (the second run must be a no-op), then `pnpm test` (unit and integration, every vitest project) and `pnpm --filter @ytw/policy test`, which runs with `--coverage` and enforces the 100 % gate that the root run cannot (vitest ignores per-package thresholds there) |
+| `test` | Starts a `postgres:16` service (healthcheck `pg_isready`), exports `MIGRATION_DATABASE_URL` and `TEST_DATABASE_URL`, runs `pnpm migrate` twice (the second run must be a no-op), then `pnpm test` (unit and integration, every vitest project) and `pnpm --filter @ytw/policy test`, which runs with `--coverage` and enforces the 100 % gate that the root run cannot (vitest ignores per-package thresholds there) |
 | `images` | Per image (`web`, `mcp`): plants local-only files in the build context (`docker/plant-local-files.sh`), builds the image for linux/amd64, runs `docker/smoke.sh`, scans it with Trivy (HIGH and CRITICAL, fixable only). On `main`, the weekly run and manual runs it also builds linux/arm64 under QEMU without publishing |
 | `scan` | `pnpm audit --audit-level=high`; Trivy filesystem scan (secrets and Dockerfile misconfiguration); gitleaks over the whole git history with `.gitleaks.toml`; a self-test that the secret scan still catches planted secrets. The steps are independent, so one finding does not hide the others. Dependency vulnerabilities are found by `pnpm audit` and by the Trivy image scans (their node-pkg targets), not by the Trivy filesystem scan: Trivy does not parse pnpm 12's two-document `pnpm-lock.yaml`, so that scan lists no lockfile (`vuln` stays enabled so it starts to once Trivy does) |
 | `codeql`, `dependency-review` | See step 4 above; skipped while the repository is private without Code Security |
@@ -231,11 +231,11 @@ be rotated, never allowlisted.
 
 ## Extending CI
 
-- **Integration tests** find Postgres through `MIGRATION_DATABASE_URL`
-  (`postgres://postgres:postgres@localhost:5432/youtube_workspace`, the superuser of the
-  `postgres:16` service). A test harness that creates one database per test file needs exactly that
-  privilege; if it wants a differently named variable, export it in the `env:` block of the `test`
-  job as well.
+- **Integration tests** find Postgres through `TEST_DATABASE_URL`
+  (`postgres://postgres:postgres@localhost:5432/postgres`, the superuser of the `postgres:16`
+  service); the `@ytw/db` harness creates one database per test file there and never falls back to
+  `MIGRATION_DATABASE_URL`, which only `pnpm migrate` uses (`docs/database.md`, "Test harness").
+  A harness that wants another variable exports it in the `env:` block of the `test` job as well.
 - **A package with its own enforced coverage threshold** needs a separate step in the `test` job
   (`pnpm --filter <package> test`, as for `@ytw/policy`), because the root `pnpm test` runs every
   package as a vitest project and vitest ignores per-package thresholds there.

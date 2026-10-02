@@ -111,6 +111,8 @@ jobs:
     env:
       # Dev-only credentials of the service container above; nothing real is configured here.
       MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/youtube_workspace
+      # The @ytw/db test harness never falls back to MIGRATION_DATABASE_URL (docs/database.md).
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

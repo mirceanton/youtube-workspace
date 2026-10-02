@@ -134,11 +134,57 @@ BEGIN
 END
 $$;
 
--- 4. Payload hygiene for row snapshots: secret columns are replaced by "[redacted]" and very large
---    values (script bodies) by {"omitted": "too_large", "bytes": n}, because ytw_readonly and the
---    activity feed can read every event. Secret columns are the ones named in the trigger arguments
---    plus any column whose name ends in hash, secret, password, encrypted, ciphertext or token.
-CREATE FUNCTION public.ytw_audit_scrub(p_row jsonb, p_redact text[])
+-- 4. Payload hygiene for row snapshots, because ytw_readonly and the activity feed can read every
+--    event. ytw_is_secret_key() recognises names that look secret (ending in token, secret,
+--    password, hash, blob, cookie, authorization, credential, api_key, private_key, ciphertext or
+--    encrypted, or containing password, secret, refresh/access/id/session token or bearer, any case).
+--    ytw_redact_json() replaces such keys' values with "[redacted]" at any depth of a JSON value.
+--    ytw_audit_scrub() applies the column rules of ytw_audit() (section 5) to one row.
+CREATE FUNCTION public.ytw_is_secret_key(p_key text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT p_key ~* '(token|tokens|secret|secrets|password|passwd|hash|blob|cookie|cookies|authorization|credential|credentials|apikey|api_key|private_key|ciphertext|encrypted)$'
+      OR p_key ~* '(password|passwd|secret|refresh_?token|access_?token|id_?token|session_?token|bearer)'
+$$;
+
+CREATE FUNCTION public.ytw_redact_json(p_value jsonb, p_depth integer DEFAULT 0)
+RETURNS jsonb
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+BEGIN
+  -- Bounded, so a deeply nested value cannot exhaust the stack and fail the audited write.
+  IF p_depth >= 32 AND jsonb_typeof(p_value) IN ('object', 'array') THEN
+    RETURN to_jsonb('[omitted: nested too deeply]'::text);
+  END IF;
+  IF jsonb_typeof(p_value) = 'object' THEN
+    RETURN coalesce((
+      SELECT jsonb_object_agg(
+               e.key,
+               CASE WHEN public.ytw_is_secret_key(e.key) THEN to_jsonb('[redacted]'::text)
+                    ELSE public.ytw_redact_json(e.value, p_depth + 1) END)
+      FROM jsonb_each(p_value) e
+    ), '{}'::jsonb);
+  ELSIF jsonb_typeof(p_value) = 'array' THEN
+    RETURN coalesce((
+      SELECT jsonb_agg(public.ytw_redact_json(e.value, p_depth + 1) ORDER BY e.ordinality)
+      FROM jsonb_array_elements(p_value) WITH ORDINALITY AS e (value, ordinality)
+    ), '[]'::jsonb);
+  END IF;
+  RETURN p_value;
+END
+$$;
+
+CREATE FUNCTION public.ytw_audit_scrub(
+  p_row jsonb,
+  p_redact text[],
+  p_allow text[],
+  p_deny_by_default boolean
+)
 RETURNS jsonb
 LANGUAGE sql
 IMMUTABLE
@@ -149,14 +195,15 @@ AS $$
       e.key,
       CASE
         WHEN e.key = ANY (coalesce(p_redact, '{}'))
-          OR e.key ~ '(^|_)(hash|secret|password|encrypted|ciphertext|token)$'
+          OR (NOT e.key = ANY (coalesce(p_allow, '{}'))
+              AND (p_deny_by_default OR public.ytw_is_secret_key(e.key)))
           THEN to_jsonb('[redacted]'::text)
         WHEN octet_length(e.value::text) > 8192
           THEN jsonb_build_object(
             'omitted', 'too_large',
             'bytes', octet_length(CASE WHEN jsonb_typeof(e.value) = 'string'
                                        THEN e.value #>> '{}' ELSE e.value::text END))
-        ELSE e.value
+        ELSE public.ytw_redact_json(e.value)
       END
     ),
     '{}'::jsonb
@@ -168,11 +215,15 @@ $$;
 --      CREATE TRIGGER ideas_audit AFTER INSERT OR UPDATE ON ideas
 --        FOR EACH ROW EXECUTE FUNCTION ytw_audit('idea');
 --    Argument 1: entity_type written to events (default: the table name). Further arguments name
---    columns: `col` is redacted (kept as "[redacted]"), `-col` is left out of the payload entirely
---    (for derived data such as a generated tsvector). The row's `id` becomes events.entity_id.
---    Payloads: insert {"new": row}; update {"old": changed columns, "new": changed columns}
---    (updated_at and omitted columns are not counted as changes); delete {"old": row}. An update
---    whose only change is last_used_at (API token use) is not logged.
+--    columns: `col` keeps the column with its value replaced by "[redacted]"; `-col` leaves it out
+--    entirely (derived data such as a generated tsvector); `+col` shows its value even where it
+--    would be redacted. Values are redacted when the column name looks secret
+--    (ytw_is_secret_key) and, in tables of schema ytw_private, for every column that is not +col;
+--    there events.entity_id is recorded only with +id. Values over 8 KiB are summarised, and JSON
+--    values have secret-looking keys redacted at any depth. The row's `id` becomes
+--    events.entity_id. Payloads: insert {"new": row}; update {"old": changed columns, "new":
+--    changed columns} (updated_at and omitted columns are not counted as changes); delete
+--    {"old": row}. An update whose only change is last_used_at (API token use) is not logged.
 CREATE FUNCTION public.ytw_audit()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -185,8 +236,10 @@ DECLARE
   v_token_id text := nullif(current_setting('app.token_id', true), '');
   v_entity_type text := coalesce(nullif(TG_ARGV[0], ''), TG_TABLE_NAME);
   v_args text[] := CASE WHEN TG_NARGS > 1 THEN TG_ARGV[1:TG_NARGS - 1] ELSE '{}'::text[] END;
-  v_redact text[] := ARRAY(SELECT a FROM unnest(v_args) a WHERE a NOT LIKE '-%');
+  v_redact text[] := ARRAY(SELECT a FROM unnest(v_args) a WHERE a !~ '^[-+]');
   v_omit text[] := ARRAY(SELECT substr(a, 2) FROM unnest(v_args) a WHERE a LIKE '-%');
+  v_allow text[] := ARRAY(SELECT substr(a, 2) FROM unnest(v_args) a WHERE a LIKE '+%');
+  v_private boolean := TG_TABLE_SCHEMA = 'ytw_private';
   v_old jsonb;
   v_new jsonb;
   v_changed text[];
@@ -213,6 +266,10 @@ BEGIN
     v_new := to_jsonb(NEW);
   END IF;
   v_id := coalesce(v_new, v_old) ->> 'id';
+  IF v_private AND NOT 'id' = ANY (v_allow) THEN
+    -- A private table's id may itself be a credential (a session id, say).
+    v_id := NULL;
+  END IF;
   v_old := v_old - v_omit;
   v_new := v_new - v_omit;
 
@@ -228,14 +285,16 @@ BEGIN
     v_payload := jsonb_build_object(
       'old', public.ytw_audit_scrub(
         (SELECT jsonb_object_agg(key, value) FROM jsonb_each(v_old) WHERE key = ANY (v_changed)),
-        v_redact),
+        v_redact, v_allow, v_private),
       'new', public.ytw_audit_scrub(
         (SELECT jsonb_object_agg(key, value) FROM jsonb_each(v_new) WHERE key = ANY (v_changed)),
-        v_redact));
+        v_redact, v_allow, v_private));
   ELSIF TG_OP = 'INSERT' THEN
-    v_payload := jsonb_build_object('new', public.ytw_audit_scrub(v_new, v_redact));
+    v_payload := jsonb_build_object(
+      'new', public.ytw_audit_scrub(v_new, v_redact, v_allow, v_private));
   ELSE
-    v_payload := jsonb_build_object('old', public.ytw_audit_scrub(v_old, v_redact));
+    v_payload := jsonb_build_object(
+      'old', public.ytw_audit_scrub(v_old, v_redact, v_allow, v_private));
   END IF;
 
   INSERT INTO public.events (actor, actor_type, token_id, action, entity_type, entity_id, payload)
@@ -254,7 +313,7 @@ END
 $$;
 
 COMMENT ON FUNCTION public.ytw_audit() IS
-  'AFTER INSERT OR UPDATE row trigger writing events. Args: entity_type, then columns to redact.';
+  'AFTER INSERT OR UPDATE row trigger writing events. Args: entity_type, then columns: col (redact), -col (omit), +col (show).';
 
 -- 6. Events that are not row changes: MCP tool calls (allowed, failed and denied), logins, logouts.
 --    Same leading actor parameters as every other function. action is a dotted lower-case name

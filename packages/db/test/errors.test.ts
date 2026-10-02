@@ -14,6 +14,7 @@ import {
   formatAllowed,
   formatDbError,
   isPgError,
+  toClientError,
   toDbError,
   type DbErrorKind,
 } from "../src/errors.js";
@@ -193,5 +194,65 @@ describe("toDbError", () => {
     const err = await failure(db.admin.query("SELECT ytw_raise('oops', 'x')"));
     expect(err.message).toMatch(/unknown error kind 'oops'/);
     expect(toDbError(err)).toBe(err);
+  });
+});
+
+/** An error shaped like a node-postgres DatabaseError. */
+function pgError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code, severity: "ERROR" });
+}
+
+describe("toClientError", () => {
+  it("passes catalogue errors through with their message and details", () => {
+    const conflict = new VersionConflictError("idea 1 changed; latest version is 4", {
+      latest_version: 4,
+    });
+    expect(toClientError(conflict)).toEqual({
+      error: "version_conflict",
+      message: "idea 1 changed; latest version is 4",
+      status: 409,
+      retryable: false,
+      details: { latest_version: 4 },
+    });
+    expect(toClientError(new MissingActorError("no actor for ytw_set_actor"))).toEqual({
+      error: "internal",
+      message: "internal database error",
+      status: 500,
+      retryable: false,
+    });
+  });
+
+  it.each([
+    ["23505", "duplicate", 422, false],
+    ["23503", "invalid_reference", 422, false],
+    ["23514", "validation", 400, false],
+    ["23502", "validation", 400, false],
+    ["22P02", "validation", 400, false],
+    ["40001", "retry", 503, true],
+    ["40P01", "retry", 503, true],
+    ["57014", "timeout", 503, true],
+    ["42501", "forbidden", 403, false],
+    ["25006", "forbidden", 403, false],
+    ["42P01", "invalid_query", 400, false],
+    ["08006", "unavailable", 503, true],
+    ["XX000", "internal", 500, false],
+  ])("maps SQLSTATE %s to %s without naming database objects", (code, error, status, retryable) => {
+    const mapped = toClientError(
+      pgError(code, 'violates constraint "users_email_key" on table "users" for "alice@x.test"'),
+    );
+    expect(mapped).toMatchObject({ error, status, retryable });
+    expect(mapped.message).not.toMatch(/users|alice|constraint/);
+  });
+
+  it("treats connection failures as unavailable and anything else as internal", () => {
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+      code: "ECONNREFUSED",
+    });
+    expect(toClientError(refused)).toMatchObject({ error: "unavailable", status: 503 });
+    expect(toClientError(new Error("boom at /srv/app"))).toMatchObject({
+      error: "internal",
+      message: "internal database error",
+    });
+    expect(toClientError("text")).toMatchObject({ error: "internal" });
   });
 });

@@ -472,3 +472,101 @@ describe("withActor", () => {
     expect(err.message).toMatch(/already finished/);
   });
 });
+
+/** Inserts a fixture row as alice (the trigger needs an actor) and returns its id. */
+async function insertFixture(table: string, columns: Record<string, unknown>): Promise<string> {
+  const names = Object.keys(columns);
+  const placeholders = names.map((_, index) => `$${index + 1}`).join(", ");
+  return withActor(db.admin, alice, async (tx) => {
+    const { rows } = await tx.query<{ id: string }>(
+      `INSERT INTO ${table} (${names.join(", ")}) VALUES (${placeholders}) RETURNING id`,
+      Object.values(columns),
+    );
+    return rows[0]?.id as string;
+  });
+}
+
+async function lastEvent(entityType: string): Promise<EventRow | undefined> {
+  const { rows } = await db.admin.query<EventRow>(
+    `SELECT actor, actor_type, token_id, action, entity_type, entity_id, payload
+       FROM events WHERE entity_type = $1 ORDER BY id DESC LIMIT 1`,
+    [entityType],
+  );
+  return rows[0];
+}
+
+describe("audit payload redaction", () => {
+  beforeAll(async () => {
+    await db.admin.query(`
+      CREATE TABLE ytw_private.vault_entries (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v7(), label text, secret_value text, notes jsonb);
+      CREATE TRIGGER vault_entries_audit AFTER INSERT ON ytw_private.vault_entries
+        FOR EACH ROW EXECUTE FUNCTION ytw_audit('vault_entry', '+label');
+      CREATE TABLE ytw_private.keyed_entries (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v7(), label text);
+      CREATE TRIGGER keyed_entries_audit AFTER INSERT ON ytw_private.keyed_entries
+        FOR EACH ROW EXECUTE FUNCTION ytw_audit('keyed_entry', '+id', '+label');
+      CREATE TABLE public.gadgets (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v7(), name text, refresh_token_blob text,
+        id_token_hint text, meta jsonb);
+      CREATE TRIGGER gadgets_audit AFTER INSERT ON public.gadgets
+        FOR EACH ROW EXECUTE FUNCTION ytw_audit('gadget');`);
+  });
+
+  it("shows only +col values of a ytw_private table, and its id only with +id", async () => {
+    await insertFixture("ytw_private.vault_entries", {
+      label: "public label",
+      secret_value: "s3cr3t",
+      notes: JSON.stringify({ any: "thing" }),
+    });
+    const hidden = await lastEvent("vault_entry");
+    expect(hidden?.entity_id).toBeNull();
+    expect(hidden?.payload.new).toEqual({
+      id: "[redacted]",
+      label: "public label",
+      secret_value: "[redacted]",
+      notes: "[redacted]",
+    });
+
+    const id = await insertFixture("ytw_private.keyed_entries", { label: "kept" });
+    const shown = await lastEvent("keyed_entry");
+    expect(shown?.entity_id).toBe(id);
+    expect(shown?.payload.new).toEqual({ id, label: "kept" });
+  });
+
+  it("redacts secret-looking columns and JSON keys at any depth", async () => {
+    await insertFixture("public.gadgets", {
+      name: "visible",
+      refresh_token_blob: "blob",
+      id_token_hint: "hint",
+      meta: JSON.stringify({
+        a: 1,
+        nested: { refresh_token: "r", list: [{ Password: "p", ok: true }] },
+        Authorization: "Bearer x",
+        accessToken: "t",
+      }),
+    });
+    expect((await lastEvent("gadget"))?.payload.new).toMatchObject({
+      name: "visible",
+      refresh_token_blob: "[redacted]",
+      id_token_hint: "[redacted]",
+      meta: {
+        a: 1,
+        nested: { refresh_token: "[redacted]", list: [{ Password: "[redacted]", ok: true }] },
+        Authorization: "[redacted]",
+        accessToken: "[redacted]",
+      },
+    });
+  });
+
+  it("cuts off very deep JSON instead of failing the write", async () => {
+    let deep: unknown = "bottom";
+    for (let level = 0; level < 40; level += 1) {
+      deep = { level: deep };
+    }
+    await insertFixture("public.gadgets", { name: "deep", meta: JSON.stringify(deep) });
+    expect(JSON.stringify((await lastEvent("gadget"))?.payload.new)).toContain(
+      "[omitted: nested too deeply]",
+    );
+  });
+});

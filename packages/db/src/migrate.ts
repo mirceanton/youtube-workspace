@@ -2,24 +2,30 @@
  * The migration runner behind `pnpm migrate` (PRD 9: "one command, safe to run repeatedly").
  *
  * - Files are `migrations/NNNN_name.sql`, applied in order, each in its own transaction together
- *   with its `schema_migrations` row, so a file is either fully applied or not at all.
+ *   with its `schema_migrations` row, so a file is either fully applied or not at all. A file may
+ *   not contain transaction control (COMMIT, ROLLBACK, ...): such files are rejected before anything
+ *   runs, and a file that ends the transaction anyway is detected and fails.
  * - Applied files are immutable: the runner stores a SHA-256 checksum and refuses to run when an
  *   applied file was edited, renamed or deleted, or when a pending file is older than the newest
  *   applied one.
- * - A session-level advisory lock serialises runs. Roles are cluster-wide, so runners that migrate
- *   different databases of one cluster at the same time (the test harness) also share a lock taken
- *   in one common database (`lockDatabaseUrl`).
- * - After each file the catalog guard `ytw_catalog_violations()` (migration 0002) must return no
- *   rows, otherwise the file is rolled back.
+ * - Session-level advisory locks serialise runs: one in the target database and, with
+ *   `lockDatabaseUrl`, one in a database shared by every runner of the cluster (roles are
+ *   cluster-wide, so runs migrating different databases must not interleave).
+ * - Before applying anything, the application roles' settings are restored
+ *   (`ytw_enforce_role_settings()`) and the catalog guard `ytw_catalog_violations()` must report
+ *   nothing. After each file the guard runs again inside the file's transaction; any finding rolls
+ *   the file back. Every guard run is self-tested with canary objects, so a migration cannot
+ *   silently drop or weaken the guard.
  * - Role passwords come from the caller (the CLI reads them from the environment), are sent as
- *   SCRAM-SHA-256 verifiers and are never logged.
+ *   SCRAM-SHA-256 verifiers, are left alone when the stored verifier already matches (readable by a
+ *   superuser only), and are never logged.
  */
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Client, DatabaseError } from "pg";
+import { Client, type DatabaseError } from "pg";
 import { APP_ROLES, type AppRole, type Queryable } from "./client.js";
 import { isPgError } from "./errors.js";
 
@@ -41,6 +47,16 @@ export const CLUSTER_LOCK_KEY = "8751751227461367155";
 const FILE_PATTERN = /^(\d{4})_([a-z0-9]+(?:_[a-z0-9]+)*)\.sql$/;
 const PASSWORD_PATTERN = /^[\x21-\x7e]{16,256}$/;
 const SCRAM_ITERATIONS = 4096;
+const SCRAM_VERIFIER =
+  /^SCRAM-SHA-256\$(\d+):([A-Za-z0-9+/=]+)\$([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)$/;
+const BYTE_ORDER_MARK = 0xfeff;
+
+/** Rules the guard must report for the canary objects; see {@link checkGuard}. */
+const CANARY_RULES = [
+  "table_write_privilege",
+  "private_data_exposure",
+  "readonly_function_execute",
+] as const;
 
 /** Any problem the runner detects itself (bad files, checksum drift, a failed file, lock timeout). */
 export class MigrationError extends Error {
@@ -66,7 +82,7 @@ export interface MigrateOptions {
    * Give every runner that may run concurrently on one cluster the same value.
    */
   lockDatabaseUrl?: string;
-  /** Passwords to set for the application roles after migrating; omitted roles are unchanged. */
+  /** Passwords for the application roles; set after migrating unless already current. */
   rolePasswords?: Partial<Record<AppRole, string>>;
   /** Directory with the `NNNN_name.sql` files (default: this package's `migrations/`). */
   migrationsDir?: string;
@@ -81,8 +97,10 @@ export interface MigrateResult {
   readonly applied: string[];
   /** Number of files that were already applied before this run. */
   readonly alreadyApplied: number;
-  /** Roles whose password this run set. */
+  /** Roles whose password this run changed (a password that already matched is not counted). */
   readonly passwordsSet: AppRole[];
+  /** What `ytw_enforce_role_settings()` repaired before migrating (empty when nothing drifted). */
+  readonly roleSettingsRestored: string[];
 }
 
 export interface MigrationStatus {
@@ -97,10 +115,30 @@ export interface MigrationStatus {
   readonly unknown: string[];
 }
 
+/** A top-level transaction-control statement found in a migration file. */
+export interface TransactionControlStatement {
+  /** The statement's leading keyword(s), e.g. `COMMIT` or `PREPARE TRANSACTION`. */
+  readonly statement: string;
+  /** 1-based line where the statement starts. */
+  readonly line: number;
+}
+
+/**
+ * How a role's stored password relates to a given one: `unset` (no password), `matches`,
+ * `differs`, or `unknown` (the stored verifier is not readable: only superusers may read it).
+ */
+export type PasswordStatus = "unset" | "matches" | "differs" | "unknown";
+
 interface AppliedRow {
   version: string;
   filename: string;
   checksum: string;
+}
+
+interface Violation {
+  rule: string;
+  object: string;
+  detail: string;
 }
 
 /** `packages/db/migrations`, found from this module whether it runs from `src/` or `dist/src/`. */
@@ -144,7 +182,15 @@ export async function loadMigrations(
     seen.set(version, entry.name);
     const path = join(dir, entry.name);
     const raw = await readFile(path, "utf8");
-    const normalized = raw.replace(/^﻿/, "").replace(/\r\n/g, "\n");
+    const withoutBom = raw.charCodeAt(0) === BYTE_ORDER_MARK ? raw.slice(1) : raw;
+    const normalized = withoutBom.replace(/\r\n/g, "\n");
+    for (const control of findTransactionControl(normalized)) {
+      problems.push(
+        `${entry.name}: line ${control.line}: ${control.statement} is not allowed; every file runs ` +
+          "in one transaction that the runner commits (SQL-standard BEGIN ATOMIC bodies count too: " +
+          "quote function bodies with $$)",
+      );
+    }
     files.push({
       version,
       filename: entry.name,
@@ -230,11 +276,22 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       );
     }
 
+    // Roles may have changed their own settings since the last run (Postgres lets a role do
+    // that); put them back before the guard looks at them.
+    const roleSettingsRestored = await enforceRoleSettings(client);
+    for (const line of roleSettingsRestored) {
+      log(line);
+    }
+    let guardPresent = await withRolledBackTransaction(client, () =>
+      checkGuard(client, undefined, false),
+    );
+
     const appliedNow: string[] = [];
     for (const file of status.pendingFiles) {
-      const ms = await applyFile(client, file);
+      const result = await applyFile(client, file, guardPresent);
+      guardPresent = result.guardPresent;
       appliedNow.push(file.filename);
-      log(`applied ${file.filename} (${ms} ms)`);
+      log(`applied ${file.filename} (${result.ms} ms)`);
     }
     if (appliedNow.length === 0) {
       log(`up to date: ${applied.length} migrations already applied`);
@@ -247,12 +304,21 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
         log(`${role}: no password given, left unchanged`);
         continue;
       }
+      if ((await rolePasswordStatus(client, role, password)) === "matches") {
+        log(`${role}: password already current`);
+        continue;
+      }
       await setRolePassword(client, role, password);
       passwordsSet.push(role);
       log(`${role}: password set`);
     }
 
-    return { applied: appliedNow, alreadyApplied: applied.length, passwordsSet };
+    return {
+      applied: appliedNow,
+      alreadyApplied: applied.length,
+      passwordsSet,
+      roleSettingsRestored,
+    };
   } finally {
     // Ending the sessions releases the advisory locks.
     await client.end().catch(() => undefined);
@@ -280,17 +346,199 @@ export async function migrationStatus(
   };
 }
 
+const TRANSACTION_CONTROL = new Set([
+  "ABORT",
+  "BEGIN",
+  "COMMIT",
+  "END",
+  "RELEASE",
+  "ROLLBACK",
+  "SAVEPOINT",
+  "START",
+]);
+// Postgres treats every non-ASCII character as an identifier character.
+const DOLLAR_TAG = /\$(?:(?:[A-Za-z_]|\P{ASCII})(?:\w|\P{ASCII})*)?\$/uy;
+const WORD = /(?:[A-Za-z_]|\P{ASCII})(?:[\w$]|\P{ASCII})*/uy;
+
+/**
+ * Finds top-level transaction-control statements (BEGIN, START, COMMIT, END, ROLLBACK, ABORT,
+ * SAVEPOINT, RELEASE, PREPARE TRANSACTION) in SQL text. A small lexer that follows Postgres's rules
+ * for comments (nested block comments too), string literals (standard and E'' escape strings),
+ * quoted identifiers and dollar quoting, so keywords inside function bodies, strings and comments
+ * are ignored. SQL-standard function bodies (`BEGIN ATOMIC ... END`) contain unquoted semicolons
+ * and are reported as well; quote function bodies with `$$` instead.
+ */
+export function findTransactionControl(sql: string): TransactionControlStatement[] {
+  const found: TransactionControlStatement[] = [];
+  // The statement's first two tokens: words upper-cased, "" for anything else.
+  let leading: string[] = [];
+  let leadingLine = 1;
+  let line = 1;
+  let i = 0;
+
+  const token = (word: string): void => {
+    if (leading.length === 0) {
+      leadingLine = line;
+    }
+    if (leading.length < 2) {
+      leading.push(word);
+    }
+  };
+  const endStatement = (): void => {
+    const [first = "", second = ""] = leading;
+    if (TRANSACTION_CONTROL.has(first)) {
+      found.push({ statement: first, line: leadingLine });
+    } else if (first === "PREPARE" && second === "TRANSACTION") {
+      found.push({ statement: "PREPARE TRANSACTION", line: leadingLine });
+    }
+    leading = [];
+  };
+  const advanceTo = (end: number): void => {
+    for (let j = i; j < end; j += 1) {
+      if (sql.charCodeAt(j) === 10) {
+        line += 1;
+      }
+    }
+    i = end;
+  };
+  const skipQuoted = (quote: string, backslashEscapes: boolean): void => {
+    let j = i + 1;
+    while (j < sql.length) {
+      const ch = sql[j];
+      if (backslashEscapes && ch === "\\") {
+        j += 2;
+      } else if (ch === quote && sql[j + 1] === quote) {
+        j += 2;
+      } else if (ch === quote) {
+        advanceTo(j + 1);
+        return;
+      } else {
+        j += 1;
+      }
+    }
+    advanceTo(sql.length);
+  };
+
+  while (i < sql.length) {
+    const ch = sql[i] as string;
+    if (ch === "\n") {
+      line += 1;
+      i += 1;
+    } else if (/\s/.test(ch)) {
+      i += 1;
+    } else if (ch === "-" && sql[i + 1] === "-") {
+      const end = sql.indexOf("\n", i);
+      advanceTo(end === -1 ? sql.length : end);
+    } else if (ch === "/" && sql[i + 1] === "*") {
+      let depth = 0;
+      let j = i;
+      while (j < sql.length) {
+        if (sql[j] === "/" && sql[j + 1] === "*") {
+          depth += 1;
+          j += 2;
+        } else if (sql[j] === "*" && sql[j + 1] === "/") {
+          depth -= 1;
+          j += 2;
+          if (depth === 0) {
+            break;
+          }
+        } else {
+          j += 1;
+        }
+      }
+      advanceTo(Math.min(j, sql.length));
+    } else if (ch === ";") {
+      endStatement();
+      i += 1;
+    } else if (ch === "'" || ch === '"') {
+      token("");
+      skipQuoted(ch, false);
+    } else if (ch === "$") {
+      token("");
+      DOLLAR_TAG.lastIndex = i;
+      const tag = DOLLAR_TAG.exec(sql)?.[0];
+      if (tag === undefined) {
+        i += 1;
+      } else {
+        const close = sql.indexOf(tag, i + tag.length);
+        advanceTo(close === -1 ? sql.length : close + tag.length);
+      }
+    } else {
+      WORD.lastIndex = i;
+      const word = WORD.exec(sql)?.[0];
+      if (word === undefined) {
+        token("");
+        i += 1;
+      } else if ((word === "E" || word === "e") && sql[i + 1] === "'") {
+        token("");
+        i += 1;
+        skipQuoted("'", true);
+      } else {
+        token(word.toUpperCase());
+        i += word.length;
+      }
+    }
+  }
+  endStatement();
+  return found;
+}
+
 /**
  * The SCRAM-SHA-256 verifier Postgres stores for `password` (RFC 5802/7677, the format of
  * `pg_authid.rolpassword`). Sending the verifier instead of the password keeps the plain text out of
  * server logs and statistics. Passwords are printable ASCII, for which SASLprep changes nothing.
  */
-export function scramSha256Verifier(password: string, salt: Buffer = randomBytes(16)): string {
-  const salted = pbkdf2Sync(password, salt, SCRAM_ITERATIONS, 32, "sha256");
+export function scramSha256Verifier(
+  password: string,
+  salt: Buffer = randomBytes(16),
+  iterations: number = SCRAM_ITERATIONS,
+): string {
+  const salted = pbkdf2Sync(password, salt, iterations, 32, "sha256");
   const clientKey = createHmac("sha256", salted).update("Client Key").digest();
   const storedKey = createHash("sha256").update(clientKey).digest();
   const serverKey = createHmac("sha256", salted).update("Server Key").digest();
-  return `SCRAM-SHA-256$${SCRAM_ITERATIONS}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
+}
+
+/**
+ * Compares a role's stored password with `password` without changing anything. Reading
+ * `pg_authid` needs a superuser; anyone else gets `unknown`, as does a role that does not exist.
+ */
+export async function rolePasswordStatus(
+  db: Queryable,
+  role: string,
+  password: string,
+): Promise<PasswordStatus> {
+  let stored: string | null;
+  try {
+    const { rows } = await db.query<{ rolpassword: string | null }>(
+      "SELECT rolpassword FROM pg_catalog.pg_authid WHERE rolname = $1",
+      [role],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return "unknown";
+    }
+    stored = row.rolpassword;
+  } catch (err) {
+    if (isPgError(err) && err.code === "42501") {
+      return "unknown";
+    }
+    throw err;
+  }
+  if (stored === null) {
+    return "unset";
+  }
+  const parts = SCRAM_VERIFIER.exec(stored);
+  if (parts === null) {
+    return "differs";
+  }
+  const recomputed = scramSha256Verifier(
+    password,
+    Buffer.from(parts[2] as string, "base64"),
+    Number(parts[1]),
+  );
+  return recomputed === stored ? "matches" : "differs";
 }
 
 async function acquireLock(client: Client, key: string, timeoutMs: number): Promise<void> {
@@ -313,6 +561,14 @@ async function acquireLock(client: Client, key: string, timeoutMs: number): Prom
 async function hasMigrationsTable(db: Queryable): Promise<boolean> {
   const { rows } = await db.query<{ present: boolean }>(
     "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS present",
+  );
+  return rows[0]?.present === true;
+}
+
+async function hasFunction(db: Queryable, signature: string): Promise<boolean> {
+  const { rows } = await db.query<{ present: boolean }>(
+    "SELECT to_regprocedure($1) IS NOT NULL AS present",
+    [signature],
   );
   return rows[0]?.present === true;
 }
@@ -350,48 +606,145 @@ function compare(files: MigrationFile[], applied: AppliedRow[]) {
   return { pendingFiles, changed, changedDescriptions, unknown };
 }
 
-async function applyFile(client: Client, file: MigrationFile): Promise<number> {
+async function enforceRoleSettings(client: Client): Promise<string[]> {
+  if (!(await hasFunction(client, "public.ytw_enforce_role_settings()"))) {
+    return [];
+  }
+  const { rows } = await client.query<{ line: string }>(
+    "SELECT line FROM public.ytw_enforce_role_settings() AS line",
+  );
+  return rows.map((row) => row.line);
+}
+
+async function withRolledBackTransaction<T>(client: Client, fn: () => Promise<T>): Promise<T> {
+  await client.query("BEGIN");
+  try {
+    return await fn();
+  } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
+  }
+}
+
+async function applyFile(
+  client: Client,
+  file: MigrationFile,
+  guardRequired: boolean,
+): Promise<{ ms: number; guardPresent: boolean }> {
   const started = performance.now();
   await client.query("BEGIN");
   try {
+    const xidBefore = await currentXid(client, "SELECT pg_current_xact_id()::text AS xid");
     try {
       await client.query(file.sql);
     } catch (err) {
       throw new MigrationError(describeFailure(file, err), { cause: err });
     }
-    const violations = await catalogViolations(client);
-    if (violations.length > 0) {
+    // Backstop for transaction control the file scan did not catch: the transaction must still
+    // be the one opened above.
+    const xidAfter = await currentXid(
+      client,
+      "SELECT pg_current_xact_id_if_assigned()::text AS xid",
+    );
+    if (xidAfter !== xidBefore) {
       throw new MigrationError(
-        `${file.filename} breaks the privilege rules (ytw_catalog_violations), rolled back:\n- ` +
-          violations.map((v) => `${v.rule}: ${v.object} ${v.detail}`).join("\n- "),
+        `${file.filename} ended the migration's transaction (COMMIT, ROLLBACK or similar); ` +
+          "statements before that point may have been committed without a schema_migrations row. " +
+          "Inspect the database before running the migrations again.",
       );
     }
+    const guardPresent = await checkGuard(client, file.filename, guardRequired);
     const ms = Math.round(performance.now() - started);
     await client.query(
       "INSERT INTO public.schema_migrations (version, filename, checksum, duration_ms) VALUES ($1, $2, $3, $4)",
       [file.version, file.filename, file.checksum, ms],
     );
     await client.query("COMMIT");
-    return ms;
+    return { ms, guardPresent };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw err;
   }
 }
 
-async function catalogViolations(
+async function currentXid(client: Client, sql: string): Promise<string | null> {
+  const { rows } = await client.query<{ xid: string | null }>(sql);
+  return rows[0]?.xid ?? null;
+}
+
+/**
+ * Runs the catalog guard inside the current transaction and throws on any finding. Before that,
+ * inside a savepoint that is always rolled back, it creates three canary objects that break three
+ * different rules and requires the guard to report each of them: a guard that was dropped,
+ * replaced by one that returns nothing, or stripped of those rules fails the run. `fileName` is
+ * the file just applied (undefined before the first file). Returns whether the guard exists.
+ */
+async function checkGuard(
   client: Client,
-): Promise<{ rule: string; object: string; detail: string }[]> {
-  const guard = await client.query<{ present: boolean }>(
-    "SELECT to_regprocedure('public.ytw_catalog_violations()') IS NOT NULL AS present",
-  );
-  if (guard.rows[0]?.present !== true) {
-    return [];
+  fileName: string | undefined,
+  required: boolean,
+): Promise<boolean> {
+  const where = fileName ?? "before applying any file";
+  if (!(await hasFunction(client, "public.ytw_catalog_violations()"))) {
+    if (required) {
+      throw new MigrationError(
+        `${where}: ytw_catalog_violations() no longer exists; migrations must not drop the ` +
+          "catalog guard (extend it with CREATE OR REPLACE in a new migration instead)",
+      );
+    }
+    return false;
   }
-  const { rows } = await client.query<{ rule: string; object: string; detail: string }>(
-    "SELECT rule, object, detail FROM public.ytw_catalog_violations() ORDER BY 1, 2, 3",
+
+  const suffix = randomBytes(6).toString("hex");
+  const table = `ytw_canary_t_${suffix}`;
+  const view = `ytw_canary_v_${suffix}`;
+  const fn = `ytw_canary_f_${suffix}`;
+  let rows: Violation[];
+  await client.query("SAVEPOINT ytw_guard_check");
+  try {
+    await client.query(`
+      CREATE TABLE public.${table} (id integer);
+      GRANT INSERT ON public.${table} TO ytw_web;
+      CREATE TABLE ytw_private.${table} (secret text);
+      CREATE VIEW public.${view} AS SELECT secret FROM ytw_private.${table};
+      GRANT SELECT ON public.${view} TO ytw_readonly;
+      CREATE FUNCTION public.${fn}() RETURNS integer LANGUAGE sql STABLE SECURITY DEFINER
+        SET search_path = pg_catalog, public, pg_temp AS 'SELECT 1';
+      GRANT EXECUTE ON FUNCTION public.${fn}() TO ytw_readonly;`);
+    rows = (
+      await client.query<Violation>(
+        "SELECT rule, object, detail FROM public.ytw_catalog_violations() ORDER BY 1, 2, 3",
+      )
+    ).rows;
+  } catch (err) {
+    throw new MigrationError(
+      `${where}: the catalog guard could not run: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  } finally {
+    await client.query("ROLLBACK TO SAVEPOINT ytw_guard_check").catch(() => undefined);
+    await client.query("RELEASE SAVEPOINT ytw_guard_check").catch(() => undefined);
+  }
+
+  const canaryRules = new Set(
+    rows.filter((row) => row.object.includes(suffix)).map((row) => row.rule),
   );
-  return rows;
+  const blind = CANARY_RULES.filter((rule) => !canaryRules.has(rule));
+  if (blind.length > 0) {
+    throw new MigrationError(
+      `${where}: ytw_catalog_violations() no longer reports ${blind.join(", ")}; a migration ` +
+        "disabled or weakened the catalog guard",
+    );
+  }
+  const violations = rows.filter((row) => !row.object.includes(suffix));
+  if (violations.length > 0) {
+    const list = violations.map((v) => `${v.rule}: ${v.object} ${v.detail}`).join("\n- ");
+    throw new MigrationError(
+      fileName === undefined
+        ? `the database already breaks the privilege rules (ytw_catalog_violations); nothing was applied:\n- ${list}`
+        : `${fileName} breaks the privilege rules (ytw_catalog_violations), rolled back:\n- ${list}`,
+    );
+  }
+  return true;
 }
 
 function describeFailure(file: MigrationFile, err: unknown): string {
