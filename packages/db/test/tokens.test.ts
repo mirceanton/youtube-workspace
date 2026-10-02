@@ -1098,6 +1098,23 @@ describe("touch_token_last_used", () => {
     ).toBe(false);
   });
 
+  it("only touches a token under its own name: knowing a token id (they appear in the audit log) is not enough", async () => {
+    const made = await makeToken(db, collaborator, { name: "named bot" });
+    const events = await eventCount(db);
+    expect(
+      await touchTokenLastUsed(db.pool("ytw_mcp"), { id: made.token.id, name: "somebody else" }),
+    ).toBe(false);
+    expect(
+      await touchTokenLastUsed(db.pool("ytw_mcp"), { id: made.token.id, name: "Named bot" }),
+    ).toBe(false);
+    expect((await lookup(made.hash)).lastUsedAt).toBeNull();
+    expect(
+      await touchTokenLastUsed(db.pool("ytw_mcp"), { id: made.token.id, name: "named bot" }),
+    ).toBe(true);
+    expect((await lookup(made.hash)).lastUsedAt).toBeInstanceOf(Date);
+    expect(await eventCount(db)).toBe(events);
+  });
+
   it("is called as the token itself: a person or a missing token id is refused", async () => {
     const made = await makeToken(db, collaborator, {});
     const asHuman = await failure(

@@ -382,7 +382,8 @@ COMMENT ON FUNCTION public.revoke_api_token(text, text, uuid, uuid, uuid) IS
 -- Records that a token was just used. Called by the service that authenticated the token, as that
 -- token (actor = its name, type agent, token id = its id): only the last_used_at column changes, so
 -- the audit trigger writes nothing and `updated_at` stays (no event spam). Revoked and expired
--- tokens are left alone. Returns whether a token was updated.
+-- tokens are left alone, and so is a token whose name is not the actor's. Returns whether a token
+-- was updated.
 CREATE FUNCTION public.touch_token_last_used(p_actor text, p_actor_type text, p_token_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -402,9 +403,12 @@ BEGIN
       jsonb_build_object('field', 'actor_type', 'allowed', jsonb_build_array('agent')));
   END IF;
 
+  -- Only as the token itself (its id and its name), so a caller that merely knows a token id (ids
+  -- appear in the readable audit log) cannot make an unused token look used.
   UPDATE ytw_private.api_tokens t
      SET last_used_at = greatest(coalesce(t.last_used_at, '-infinity'::timestamptz), v_now)
    WHERE t.id = p_token_id
+     AND t.name = btrim(p_actor)
      AND t.revoked_at IS NULL
      AND (t.expires_at IS NULL OR t.expires_at > v_now);
   GET DIAGNOSTICS v_rows = ROW_COUNT;

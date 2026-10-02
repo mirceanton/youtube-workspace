@@ -790,8 +790,9 @@ by mistake is not copied into a log. Rules:
   `toTokenPrincipal(found)` builds the `TokenPrincipal` of `@ytw/policy`; `principalLevels` of it
   equals `effectiveLevels` (tested for owners and tokens at every level).
 - `touch_token_last_used(actor = token name, 'agent', token id)` changes only `last_used_at`: the audit
-  trigger and `updated_at` skip it, so there is no event spam. Throttle it in the caller (T21) if the
-  statement per call matters.
+  trigger and `updated_at` skip it, so there is no event spam. It touches an active token only under
+  its own name (token ids appear in the readable audit log, so knowing one is not enough). Throttle it
+  in the caller (T21) if the statement per call matters.
 
 **Sessions** (web only, deliberately not audited and without an actor parameter: the session id is
 the bearer handle behind the cookie and must never reach `events`; no message here repeats one). Idle
