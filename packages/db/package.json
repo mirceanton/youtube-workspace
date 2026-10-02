@@ -25,5 +25,8 @@
     "@types/pg": "^8.23.0",
     "@ytw/shared": "workspace:*",
     "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@ytw/policy": "workspace:*"
   }
 }

@@ -301,6 +301,10 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
+    devDependencies:
+      '@ytw/policy':
+        specifier: workspace:*
+        version: link:../policy
 
   packages/observability:
     dependencies:
