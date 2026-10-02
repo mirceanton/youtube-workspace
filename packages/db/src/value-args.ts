@@ -44,9 +44,21 @@ export function decimalJson(field: string, value: DecimalInput): number | string
   throw new ValidationError(`${field} must be a number or a decimal string`, { field });
 }
 
-/** The value as the text of a `numeric` argument (for `$n::numeric`). */
+const DECIMAL = /^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)$/;
+
+/**
+ * The value as the text of a `numeric` argument (for `$n::numeric`). A string that is not a plain
+ * decimal would make the driver fail with a bare "invalid input syntax" error, so it is refused here.
+ */
 export function decimalText(field: string, value: DecimalInput): string {
-  return String(decimalJson(field, value));
+  const json = decimalJson(field, value);
+  if (typeof json === "string" && (json.length > 64 || !DECIMAL.test(json))) {
+    throw new ValidationError(
+      `${field} must be a number or a decimal string such as "4.52" (got ${show(json)})`,
+      { field },
+    );
+  }
+  return String(json);
 }
 
 const ISO_WITH_ZONE =
