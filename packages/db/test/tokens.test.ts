@@ -144,6 +144,37 @@ async function lookup(hash: string): Promise<FoundToken> {
   return found;
 }
 
+const update = (
+  user: TestUser,
+  apiTokenId: string,
+  permissions: Partial<Record<Resource, Level>>,
+  actor: Actor = person(user.username),
+) =>
+  withActor(web(), actor, (tx) =>
+    updateTokenPermissions(tx, { actingUserId: user.id, apiTokenId, permissions }),
+  );
+
+const rotate = (
+  user: TestUser,
+  apiTokenId: string,
+  input: Partial<{ prefix: string; hash: string; expiresAt: Date | null }> = {},
+  actor: Actor = person(user.username),
+) => {
+  const made = newSecret();
+  return withActor(web(), actor, (tx) =>
+    rotateApiToken(tx, {
+      actingUserId: user.id,
+      apiTokenId,
+      newTokenPrefix: input.prefix ?? made.prefix,
+      newTokenHash: input.hash ?? made.hash,
+      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+    }),
+  ).then((token) => ({ token, ...made, hash: input.hash ?? made.hash }));
+};
+
+const revoke = (user: TestUser, apiTokenId: string, actor: Actor = person(user.username)) =>
+  withActor(web(), actor, (tx) => revokeApiToken(tx, { actingUserId: user.id, apiTokenId }));
+
 async function expireToken(tokenId: string, when = "now() - interval '1 minute'"): Promise<void> {
   await withActor(db.admin, person("fixer"), (tx) =>
     tx.query(`UPDATE ytw_private.api_tokens SET expires_at = ${when} WHERE id = $1`, [tokenId]),
@@ -293,9 +324,7 @@ describe("create_api_token", () => {
           /^token_hash must be the SHA-256 of the token as 64 lower-case/,
         );
         expect(JSON.stringify((err as ValidationError).details)).not.toContain(secret.secret);
-        if (hash !== "") {
-          expect(err.message).not.toContain(hash);
-        }
+        expect(hash !== "" && err.message.includes(hash)).toBe(false);
       }
     });
 
@@ -372,32 +401,41 @@ describe("create_api_token", () => {
       it(`${label}: every (object, level) request is accepted exactly when @ytw/policy accepts it`, async () => {
         const user = who();
         const ceilingOwner = await owner(user);
-        for (const resource of RESOURCES) {
-          for (const requested of requests) {
-            const violations = grantViolations(ceilingOwner, {
-              [resource]: requested,
-            } as Partial<Record<Resource, Level>>);
-            const before = await tokenCount(user.id);
-            const attempt = create(user, { [resource]: requested } as Partial<
-              Record<Resource, Level>
-            >);
-            if (violations.length === 0) {
-              const made = await attempt;
-              expect(made.levels[resource]).toBe(requested);
-              expect(await tokenCount(user.id)).toBe(before + 1);
-              continue;
-            }
-            const err = await failure(attempt);
-            const reasons = new Set(violations.map((violation) => violation.reason));
-            expect(err).toBeInstanceOf(
-              reasons.has("exceeds_owner") && reasons.size === 1 ? ForbiddenError : ValidationError,
-            );
-            // The database words every problem exactly like the policy layer.
-            for (const violation of violations) {
-              expect(err.message).toContain(violation.message);
-            }
-            expect(await tokenCount(user.id)).toBe(before);
+        const cases = RESOURCES.flatMap((resource) =>
+          requests.map((requested) => {
+            const permissions = { [resource]: requested } as Partial<Record<Resource, Level>>;
+            return {
+              resource,
+              requested,
+              permissions,
+              violations: grantViolations(ceilingOwner, permissions),
+            };
+          }),
+        );
+        const accepted = cases.filter((entry) => entry.violations.length === 0);
+        const refused = cases.filter((entry) => entry.violations.length > 0);
+        expect(accepted.length).toBeGreaterThan(0);
+        expect(refused.length).toBeGreaterThan(0);
+
+        for (const entry of accepted) {
+          const before = await tokenCount(user.id);
+          const made = await create(user, entry.permissions);
+          expect(made.levels[entry.resource]).toBe(entry.requested);
+          expect(await tokenCount(user.id)).toBe(before + 1);
+        }
+        for (const entry of refused) {
+          const before = await tokenCount(user.id);
+          const err = await failure(create(user, entry.permissions));
+          // Above the owner's level is "forbidden"; a malformed or never-allowed level is "validation".
+          const onlyCeiling = entry.violations.every(
+            (violation) => violation.reason === "exceeds_owner",
+          );
+          expect(err).toBeInstanceOf(onlyCeiling ? ForbiddenError : ValidationError);
+          // The database words every problem exactly like the policy layer.
+          for (const violation of entry.violations) {
+            expect(err.message).toContain(violation.message);
           }
+          expect(await tokenCount(user.id)).toBe(before);
         }
       });
     }
@@ -683,16 +721,6 @@ describe("lookup_token_by_hash", () => {
 });
 
 describe("update_token_permissions", () => {
-  const update = (
-    user: TestUser,
-    apiTokenId: string,
-    permissions: Partial<Record<Resource, Level>>,
-    actor: Actor = person(user.username),
-  ) =>
-    withActor(web(), actor, (tx) =>
-      updateTokenPermissions(tx, { actingUserId: user.id, apiTokenId, permissions }),
-    );
-
   it("lowers and raises levels within the ceiling and leaves the objects not named alone", async () => {
     const made = await makeToken(db, collaborator, {
       permissions: { ideas: "write", notes: "read" },
@@ -804,24 +832,6 @@ describe("update_token_permissions", () => {
 });
 
 describe("rotate_api_token", () => {
-  const rotate = (
-    user: TestUser,
-    apiTokenId: string,
-    input: Partial<{ prefix: string; hash: string; expiresAt: Date | null }> = {},
-    actor: Actor = person(user.username),
-  ) => {
-    const made = newSecret();
-    return withActor(web(), actor, (tx) =>
-      rotateApiToken(tx, {
-        actingUserId: user.id,
-        apiTokenId,
-        newTokenPrefix: input.prefix ?? made.prefix,
-        newTokenHash: input.hash ?? made.hash,
-        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-      }),
-    ).then((token) => ({ token, ...made, hash: input.hash ?? made.hash }));
-  };
-
   it("kills the old secret at once and activates the new one; id, name, owner and levels stay", async () => {
     const made = await makeToken(db, collaborator, {
       name: "rotating bot",
@@ -960,8 +970,12 @@ describe("rotate_api_token", () => {
           ),
         ]);
         expect(results[1]?.status).toBe("fulfilled");
-        if (results[0]?.status === "rejected") {
-          expect(results[0].reason).toBeInstanceOf(InvalidTransitionError);
+        // The rotation either won (and the revocation then killed the new secret) or lost and was
+        // refused because the token was already revoked.
+        for (const rejection of results.filter(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        )) {
+          expect(rejection.reason).toBeInstanceOf(InvalidTransitionError);
         }
         for (const hash of [made.hash, fresh.hash]) {
           expect((await lookupTokenByHash(web(), hash)).status).not.toBe("active");
@@ -974,9 +988,6 @@ describe("rotate_api_token", () => {
 });
 
 describe("revoke_api_token", () => {
-  const revoke = (user: TestUser, apiTokenId: string, actor: Actor = person(user.username)) =>
-    withActor(web(), actor, (tx) => revokeApiToken(tx, { actingUserId: user.id, apiTokenId }));
-
   it("takes effect at once, keeps the token listed, and is audited once", async () => {
     const made = await makeToken(db, collaborator, { permissions: { ideas: "write" } });
     expect((await lookup(made.hash)).status).toBe("active");

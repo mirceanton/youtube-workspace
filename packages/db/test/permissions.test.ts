@@ -47,6 +47,15 @@ async function storedRows(db: TestDb, userId: string): Promise<Record<string, st
   return Object.fromEntries(rows.map((row) => [row.resource, row.level]));
 }
 
+/** Whether @ytw/shared lets `resource` hold `level` (the activity log is never write). */
+function holdable(resource: Resource, level: Level): boolean {
+  return (GRANTABLE_LEVELS[resource] as readonly Level[]).includes(level);
+}
+
+function isRejected(result: PromiseSettledResult<unknown>): result is PromiseRejectedResult {
+  return result.status === "rejected";
+}
+
 async function adminNames(db: TestDb): Promise<string[]> {
   const { rows } = await db.admin.query<{ username: string }>(
     "SELECT username FROM users WHERE is_admin ORDER BY username",
@@ -161,23 +170,31 @@ describe("set_user_permission", () => {
 
   // Every (object, level) pair: accepted exactly when the object can hold that level.
   const pairs = RESOURCES.flatMap((resource) => LEVELS.map((level) => [resource, level] as const));
-  it.each(pairs)("%s %s", async (resource, level) => {
-    const user = await login(db, `pair-${resource}-${level}-${unique()}`);
-    const allowed = (GRANTABLE_LEVELS[resource] as readonly Level[]).includes(level);
-    const attempt = setPermission(db, root, user, resource, level);
-    if (allowed) {
-      expect(await attempt).toMatchObject({ resource, level, changed: level !== "none" });
+  it.each(pairs.filter(([resource, level]) => holdable(resource, level)))(
+    "%s %s is accepted",
+    async (resource, level) => {
+      const user = await login(db, `pair-${resource}-${level}-${unique()}`);
+      expect(await setPermission(db, root, user, resource, level)).toMatchObject({
+        resource,
+        level,
+        changed: level !== "none",
+      });
       expect((await getUserAccess(db.pool("ytw_web"), user.id))?.levels[resource]).toBe(level);
-    } else {
-      const err = await failure(attempt);
+    },
+  );
+  it.each(pairs.filter(([resource, level]) => !holdable(resource, level)))(
+    "%s %s is refused with the values the object can hold",
+    async (resource, level) => {
+      const user = await login(db, `pair-${resource}-${level}-${unique()}`);
+      const err = await failure(setPermission(db, root, user, resource, level));
       expect(err).toBeInstanceOf(ValidationError);
       expect((err as ValidationError).allowed).toEqual(["none", "read"]);
       expect(err.message).toBe(
         `write is never allowed on activity (the maximum is read); choose one of: none, read`,
       );
       expect((await getUserAccess(db.pool("ytw_web"), user.id))?.levels[resource]).toBe("none");
-    }
-  });
+    },
+  );
 
   it("names the valid objects and levels when either is unknown", async () => {
     const badResource = await failure(setPermission(db, root, bob, "videoz", "read"));
@@ -545,10 +562,8 @@ describe("the last admin under concurrency", () => {
       const succeeded = results.filter((result) => result.status === "fulfilled").length;
       // Around a ring every demoter is also somebody's victim, so not all six can act in time.
       expect(succeeded).toBeLessThanOrEqual(5);
-      for (const result of results) {
-        if (result.status === "rejected") {
-          expect(result.reason).toBeInstanceOf(ForbiddenError);
-        }
+      for (const rejection of results.filter(isRejected)) {
+        expect(rejection.reason).toBeInstanceOf(ForbiddenError);
       }
       expect((await adminNames(db)).length).toBe(6 - succeeded);
       expect((await adminNames(db)).length).toBeGreaterThanOrEqual(1);
@@ -585,11 +600,9 @@ describe("promotion racing with changes to the same user's levels", () => {
         // The promotion always succeeds; each lowering either ran before it (and was then undone by the
         // promotion) or was refused because the user already was an admin.
         expect(results[0]?.status).toBe("fulfilled");
-        for (const result of results.slice(1)) {
-          if (result.status === "rejected") {
-            expect(result.reason).toBeInstanceOf(ForbiddenError);
-            expect((result.reason as Error).message).toMatch(/is an admin and always holds/);
-          }
+        for (const refusal of results.slice(1).filter(isRejected)) {
+          expect(refusal.reason).toBeInstanceOf(ForbiddenError);
+          expect((refusal.reason as Error).message).toMatch(/is an admin and always holds/);
         }
         expect(await storedRows(db, target.id)).toEqual(MAX_LEVELS);
         expect((await getUserAccess(db.pool("ytw_web"), target.id))?.levels).toEqual(MAX_LEVELS);
