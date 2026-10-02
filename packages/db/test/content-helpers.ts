@@ -237,3 +237,35 @@ export async function withoutRowLock<T>(
     }
   }
 }
+
+/** A small seeded random number generator (mulberry32), so a failing random walk can be replayed. */
+export function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+/** The result of a call that may fail, as data, so a test can assert on it without branching. */
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+export async function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
+  try {
+    return { ok: true, value: await promise };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+/** `"moved"`-style label of an outcome: `ok` for a success, the database error kind otherwise. */
+export function outcomeKind<T>(outcome: Settled<T>, ok = "ok"): string {
+  if (outcome.ok) {
+    return ok;
+  }
+  const kind: unknown = Reflect.get(outcome.error as object, "kind");
+  return typeof kind === "string" ? kind : `not a database error: ${String(outcome.error)}`;
+}

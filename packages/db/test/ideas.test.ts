@@ -32,7 +32,8 @@ import {
   type CreateIdeaInput,
   type IdeaFields,
 } from "../src/ideas.js";
-import { listNotes } from "../src/notes.js";
+import { addNote, listNotes } from "../src/notes.js";
+import { getScriptVersion, saveScriptVersion } from "../src/scripts.js";
 import { createTestDb, type TestDb } from "../src/testing.js";
 import {
   act,
@@ -43,8 +44,11 @@ import {
   ideaInStage,
   newAgent,
   newIdea,
+  outcomeKind,
   partition,
+  seededRandom,
   setStageDirectly,
+  settle,
   tick,
   withoutRowLock,
 } from "./content-helpers.js";
@@ -1288,6 +1292,216 @@ describe("optimistic concurrency without the row lock", () => {
     expect(rows).toHaveLength(4);
     expect(rows.every((row) => row.locks)).toBe(true);
     expect((await db.admin.query("SELECT * FROM ytw_catalog_violations()")).rows).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("model-based checks", () => {
+  /** Replayable: a failing seed can be run again on its own. */
+  it.each([1, 2, 3, 4])(
+    "a random walk through the stages agrees with IDEA_STAGE_TRANSITIONS at every step (seed %i)",
+    async (seed) => {
+      const random = seededRandom(seed);
+      const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
+      const people = [alice, newAgent("walker")];
+      const idea = await newIdea(db, { title: `Walk ${seed}` });
+      let status: IdeaStage = "inbox";
+      let version = 1;
+      let moves = 0;
+      let notes = 0;
+
+      for (let step = 0; step < 120; step += 1) {
+        const to = pick(IDEA_STAGES);
+        const note = random() < 0.4 ? `reason ${step}` : undefined;
+        const stale = version > 1 && random() < 0.1;
+        const expectedVersion = stale ? version - 1 : random() < 0.5 ? version : undefined;
+        const rule = findIdeaStageTransition(status, to);
+        // The order the function checks in: version, then the stage rule, then the note.
+        const expected = stale
+          ? "version_conflict"
+          : rule === undefined
+            ? "invalid_transition"
+            : rule.requiresNote && note === undefined
+              ? "validation"
+              : "ok";
+
+        const outcome = await settle(
+          act(db, pick(people), (tx) =>
+            advanceIdea(tx, { id: idea.id, newStatus: to, note, expectedVersion }),
+          ),
+        );
+        expect(outcomeKind(outcome)).toBe(expected);
+        expect(
+          outcome.ok || !(outcome.error instanceof VersionConflictError)
+            ? version
+            : outcome.error.latestVersion,
+        ).toBe(version);
+        if (outcome.ok) {
+          status = to;
+          version += 1;
+          moves += 1;
+          notes += note === undefined ? 0 : 1;
+        }
+        expect(await getIdea(db.admin, idea.id)).toMatchObject({ status, version });
+      }
+
+      expect(moves).toBeGreaterThan(10);
+      const { rows } = await db.admin.query<{
+        from: string | null;
+        to: string | null;
+        version: number;
+      }>(
+        `SELECT payload->'old'->>'status' AS "from", payload->'new'->>'status' AS "to",
+                (payload->'new'->>'version')::int AS version
+           FROM events WHERE entity_id = $1 AND action = 'update' ORDER BY 3`,
+        [idea.id],
+      );
+      // One audit row per move, a gap-free chain of versions, and every logged move is in the table.
+      expect(rows.map((row) => row.version)).toEqual(
+        Array.from({ length: moves }, (_, i) => i + 2),
+      );
+      expect(
+        rows.every(
+          (row) =>
+            findIdeaStageTransition(row.from as IdeaStage, row.to as IdeaStage) !== undefined,
+        ),
+      ).toBe(true);
+      expect(await listNotes(db.admin, { entityType: "idea", entityId: idea.id })).toHaveLength(
+        notes,
+      );
+    },
+  );
+
+  it("survives a storm of mixed concurrent writers without a gap, a duplicate or an illegal move", async () => {
+    const random = seededRandom(2026);
+    const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
+    const people = [alice, newAgent("storm a"), newAgent("storm b")];
+    const idea = await newIdea(db, { title: "Storm" });
+    const tally = { updates: 0, moves: 0, moveNotes: 0, notes: 0, script: 0, packaging: 0 };
+    const failures: string[] = [];
+
+    for (let round = 0; round < 10; round += 1) {
+      // Everyone reads the same state, so the writers of a round collide with each other.
+      const seen = (await getIdea(db.admin, idea.id)) as NonNullable<
+        Awaited<ReturnType<typeof getIdea>>
+      >;
+      const latest = {
+        script:
+          (await getScriptVersion(db.admin, { ideaId: idea.id, kind: "script" }))?.version ?? 0,
+        packaging:
+          (await getScriptVersion(db.admin, { ideaId: idea.id, kind: "packaging" }))?.version ?? 0,
+      };
+      const calls = Array.from({ length: 12 }, (_, i) => {
+        const actor = people[i % people.length] as Actor;
+        const type = pick(["update", "advance", "advance", "save", "save", "note"] as const);
+        const kind = pick(["script", "packaging"] as const);
+        const note = random() < 0.5 ? `storm note ${round}.${i}` : undefined;
+        const to = pick(IDEA_STAGES);
+        const run: () => Promise<unknown> = {
+          update: () =>
+            act(db, actor, (tx) =>
+              updateIdea(tx, {
+                id: idea.id,
+                expectedVersion: seen.version,
+                fields: { title: `Storm ${round}.${i}` },
+              }),
+            ),
+          advance: () =>
+            act(db, actor, (tx) =>
+              advanceIdea(tx, {
+                id: idea.id,
+                newStatus: to,
+                note,
+                expectedVersion: random() < 0.5 ? seen.version : undefined,
+              }),
+            ),
+          save: () =>
+            act(db, actor, (tx) =>
+              saveScriptVersion(tx, {
+                ideaId: idea.id,
+                kind,
+                baseVersion: latest[kind],
+                bodyMd: `storm ${round}.${i}`,
+              }),
+            ),
+          note: () =>
+            act(db, actor, (tx) =>
+              addNote(tx, {
+                entityType: "idea",
+                entityId: idea.id,
+                bodyMd: `chatter ${round}.${i}`,
+              }),
+            ),
+        }[type];
+        return { type, kind, note, run };
+      });
+
+      const outcomes = await Promise.all(
+        calls.map(async (call) => ({ call, outcome: await settle(call.run()) })),
+      );
+      for (const { call, outcome } of outcomes) {
+        if (outcome.ok) {
+          tally.updates += call.type === "update" ? 1 : 0;
+          tally.moves += call.type === "advance" ? 1 : 0;
+          tally.moveNotes += call.type === "advance" && call.note !== undefined ? 1 : 0;
+          tally.notes += call.type === "note" ? 1 : 0;
+          tally.script += call.type === "save" && call.kind === "script" ? 1 : 0;
+          tally.packaging += call.type === "save" && call.kind === "packaging" ? 1 : 0;
+        } else {
+          failures.push(outcomeKind(outcome));
+        }
+      }
+    }
+
+    // Losers fail with the errors the contract names: never a deadlock, a unique violation or a raw error.
+    expect(new Set(failures).size).toBeGreaterThan(0);
+    expect(
+      failures.filter(
+        (kind) => !["version_conflict", "invalid_transition", "validation"].includes(kind),
+      ),
+    ).toEqual([]);
+
+    // The idea: one version per successful change, and the audit trail is the same chain.
+    const version = 1 + tally.updates + tally.moves;
+    expect(await getIdea(db.admin, idea.id)).toMatchObject({ version, archivedAt: null });
+    const { rows } = await db.admin.query<{
+      old: number;
+      new: number;
+      from: string | null;
+      to: string | null;
+    }>(
+      `SELECT (payload->'old'->>'version')::int AS old, (payload->'new'->>'version')::int AS new,
+              payload->'old'->>'status' AS "from", payload->'new'->>'status' AS "to"
+         FROM events WHERE entity_id = $1 AND action = 'update' ORDER BY 2`,
+      [idea.id],
+    );
+    expect(rows.map((row) => row.new)).toEqual(
+      Array.from({ length: version - 1 }, (_, i) => i + 2),
+    );
+    expect(rows.every((row) => row.old === row.new - 1)).toBe(true);
+    expect(
+      rows.every(
+        (row) =>
+          row.from === null ||
+          findIdeaStageTransition(row.from as IdeaStage, row.to as IdeaStage) !== undefined,
+      ),
+    ).toBe(true);
+    expect(await listNotes(db.admin, { entityType: "idea", entityId: idea.id })).toHaveLength(
+      tally.moveNotes + tally.notes,
+    );
+
+    // The scripts: every version line is 1..n, exactly as many as were saved.
+    for (const kind of ["script", "packaging"] as const) {
+      const lines = await db.admin.query<{ version: number }>(
+        "SELECT version FROM scripts WHERE idea_id = $1 AND kind = $2 ORDER BY version",
+        [idea.id, kind],
+      );
+      expect(lines.rows.map((row) => row.version)).toEqual(
+        Array.from({ length: tally[kind] }, (_, i) => i + 1),
+      );
+    }
+    expect(tally.updates + tally.moves + tally.script + tally.packaging).toBeGreaterThan(10);
   });
 });
 

@@ -40,7 +40,10 @@ import {
   functionPrivileges,
   newAgent,
   newIdea,
+  outcomeKind,
   partition,
+  seededRandom,
+  settle,
   tick,
   waitForLockWait,
   withoutRowLock,
@@ -851,6 +854,92 @@ describe("set_script_status", () => {
     expect(SCRIPT_STATUSES).toContain(stored?.status);
     expect(stored).toMatchObject({ version: 1, sizeBytes: 4, bodyMd: "text" });
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("model-based check", () => {
+  type Revision = { id: string; body: string; status: ScriptStatus };
+
+  it.each([1, 2, 3])(
+    "random saves and status changes agree with a model of the version lines (seed %i)",
+    async (seed) => {
+      const random = seededRandom(seed);
+      const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
+      const people = [alice, newAgent("model bot")];
+      const ideas = [await newIdea(db), await newIdea(db)];
+      const lines = new Map<string, Revision[]>();
+      let saved = 0;
+
+      for (let step = 0; step < 100; step += 1) {
+        const idea = pick(ideas);
+        const kind = pick(SCRIPT_KINDS);
+        const key = `${idea.id}:${kind}`;
+        const line = lines.get(key) ?? [];
+        const latest = line.length;
+        const actor = pick(people);
+
+        // Either change the review status of a saved revision, or save with the right base, a
+        // stale one or one from the future. The plan is data, so the checks below do not branch.
+        const roll = random();
+        const target = latest > 0 && random() < 0.25 ? pick(line) : undefined;
+        const status = pick(SCRIPT_STATUSES);
+        const base =
+          roll < 0.6
+            ? latest
+            : roll < 0.8
+              ? Math.max(0, latest - 1 - Math.floor(random() * 2))
+              : latest + 1 + Math.floor(random() * 3);
+        const body = `step ${step} ${"x".repeat(Math.floor(random() * 40))}`;
+        const outcome = await settle(
+          target === undefined
+            ? save(actor, idea.id, base, body, kind)
+            : setStatus(actor, target.id, status),
+        );
+
+        const expectedKind = target !== undefined || base === latest ? "ok" : "version_conflict";
+        const expectedVersion = target === undefined ? latest + 1 : line.indexOf(target) + 1;
+        expect(outcomeKind(outcome)).toBe(expectedKind);
+        expect(
+          outcome.ok || !(outcome.error instanceof VersionConflictError)
+            ? latest
+            : outcome.error.latestVersion,
+        ).toBe(latest);
+        expect(outcome.ok ? outcome.value.version : expectedVersion).toBe(expectedVersion);
+
+        if (outcome.ok && target === undefined) {
+          line.push({ id: outcome.value.id, body, status: "draft" });
+          lines.set(key, line);
+          saved += 1;
+        } else if (outcome.ok && target !== undefined) {
+          target.status = status;
+        }
+      }
+
+      expect(saved).toBeGreaterThan(10);
+      for (const idea of ideas) {
+        for (const kind of SCRIPT_KINDS) {
+          const { rows } = await db.admin.query<{
+            id: string;
+            version: number;
+            body_md: string;
+            status: string;
+          }>(
+            "SELECT id, version, body_md, status FROM scripts WHERE idea_id = $1 AND kind = $2 ORDER BY version",
+            [idea.id, kind],
+          );
+          expect(rows).toEqual(
+            (lines.get(`${idea.id}:${kind}`) ?? []).map((revision, index) => ({
+              id: revision.id,
+              version: index + 1,
+              body_md: revision.body,
+              status: revision.status,
+            })),
+          );
+        }
+      }
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------------------------
