@@ -105,7 +105,7 @@ describe("EXECUTE grants", () => {
 
   it.each(entries)("%s is executable by exactly: %j", async (signature, roles) => {
     const info = await functionInfo(signature);
-    expect(info, `${signature} does not exist`).toBeDefined();
+    expect(info).toBeDefined();
     expect(info?.grantees).toEqual([...roles].toSorted());
     expect(info?.public_execute).toBe(false);
   });
@@ -154,21 +154,31 @@ describe("EXECUTE grants", () => {
   });
 });
 
+/** Statements with their bind parameters. */
+type Attempts = readonly (readonly [string, readonly unknown[]])[];
+
+/** Runs every statement as `role` and expects each to be refused with 42501 (insufficient privilege). */
+async function expectRefused(role: AppRole, attempts: Attempts): Promise<void> {
+  const outcomes: Record<string, string> = {};
+  for (const [statement, params] of attempts) {
+    outcomes[statement] = await sqlstate(db.pool(role).query(statement, [...params]));
+  }
+  expect(outcomes).toEqual(Object.fromEntries(attempts.map(([statement]) => [statement, "42501"])));
+}
+
 describe("calling the functions as the application roles", () => {
-  const web = () => db.pool("ytw_web");
-  const mcp = () => db.pool("ytw_mcp");
-  const readonly = () => db.pool("ytw_readonly");
   const nobody = "00000000-0000-4000-8000-0000000000aa";
   const hash = "0".repeat(64);
 
   it("ytw_mcp authenticates tokens but cannot do anything else in this area", async () => {
-    expect((await mcp().query("SELECT * FROM lookup_token_by_hash($1)", [hash])).rowCount).toBe(0);
+    const mcp = db.pool("ytw_mcp");
+    expect((await mcp.query("SELECT * FROM lookup_token_by_hash($1)", [hash])).rowCount).toBe(0);
     expect(
-      (await mcp().query("SELECT touch_token_last_used('bot', 'agent', $1) AS touched", [nobody]))
+      (await mcp.query("SELECT touch_token_last_used('bot', 'agent', $1) AS touched", [nobody]))
         .rows[0],
     ).toEqual({ touched: false });
 
-    const denied: [string, unknown[]][] = [
+    await expectRefused("ytw_mcp", [
       ["SELECT * FROM upsert_user_on_login('a', 'human', NULL, 'https://i', 's', 'a')", []],
       ["SELECT * FROM get_user_access($1)", [nobody]],
       ["SELECT * FROM list_users_with_levels($1)", [nobody]],
@@ -178,14 +188,11 @@ describe("calling the functions as the application roles", () => {
       ["SELECT delete_web_session($1)", [nobody]],
       ["SELECT purge_expired_web_sessions()", []],
       ["SELECT ytw_lock_users()", []],
-    ];
-    for (const [statement, params] of denied) {
-      expect(await sqlstate(mcp().query(statement, params)), statement).toBe("42501");
-    }
+    ]);
   });
 
   it("ytw_readonly (query_sql) can call none of them", async () => {
-    const attempts: [string, unknown[]][] = [
+    await expectRefused("ytw_readonly", [
       ["SELECT * FROM lookup_token_by_hash($1)", [hash]],
       ["SELECT touch_token_last_used('bot', 'agent', $1)", [nobody]],
       ["SELECT * FROM get_user_access($1)", [nobody]],
@@ -193,45 +200,34 @@ describe("calling the functions as the application roles", () => {
       ["SELECT * FROM get_web_session($1)", [nobody]],
       ["SELECT ytw_resources()", []],
       ["SELECT ytw_user_effective_levels($1)", [nobody]],
-    ];
-    for (const [statement, params] of attempts) {
-      expect(await sqlstate(readonly().query(statement, params)), statement).toBe("42501");
-    }
+    ]);
   });
 
   it("the helpers are out of reach of every application role", async () => {
-    const attempts = [
-      "SELECT ytw_resources()",
-      "SELECT ytw_level_rank('read')",
-      "SELECT ytw_max_level('ideas')",
-      "SELECT ytw_least_level('read', 'write')",
-      "SELECT ytw_cap_level('activity', 'write')",
-      "SELECT ytw_lock_users()",
-      "SELECT ytw_effective_levels('{}', '{}')",
-      "SELECT ytw_clean_text('x', 10)",
-      "SELECT ytw_clean_email('a@b.c')",
-      "SELECT ytw_check_token_grant('u', '{}', '{}')",
-      "SELECT ytw_token_status(NULL, NULL)",
+    const helpers: Attempts = [
+      ["SELECT ytw_resources()", []],
+      ["SELECT ytw_level_rank('read')", []],
+      ["SELECT ytw_max_level('ideas')", []],
+      ["SELECT ytw_least_level('read', 'write')", []],
+      ["SELECT ytw_cap_level('activity', 'write')", []],
+      ["SELECT ytw_lock_users()", []],
+      ["SELECT ytw_effective_levels('{}', '{}')", []],
+      ["SELECT ytw_clean_text('x', 10)", []],
+      ["SELECT ytw_clean_email('a@b.c')", []],
+      ["SELECT ytw_check_token_grant('u', '{}', '{}')", []],
+      ["SELECT ytw_token_status(NULL, NULL)", []],
     ];
-    for (const role of ["ytw_web", "ytw_mcp"] as const) {
-      for (const statement of attempts) {
-        expect(await sqlstate(db.pool(role).query(statement)), `${role}: ${statement}`).toBe(
-          "42501",
-        );
-      }
-    }
+    await expectRefused("ytw_web", helpers);
+    await expectRefused("ytw_mcp", helpers);
   });
 
   it("the advisory lock behind the first-login race and the last-admin guard is out of reach: nobody can hold it to stall logins", async () => {
+    const locks: Attempts = [
+      ["SELECT pg_advisory_lock(1498699553, 1)", []],
+      ["SELECT pg_advisory_xact_lock(1498699553, 1)", []],
+    ];
     for (const role of APP_ROLES) {
-      expect(
-        await sqlstate(db.pool(role).query("SELECT pg_advisory_lock(1498699553, 1)")),
-        role,
-      ).toBe("42501");
-      expect(
-        await sqlstate(db.pool(role).query("SELECT pg_advisory_xact_lock(1498699553, 1)")),
-        role,
-      ).toBe("42501");
+      await expectRefused(role, locks);
     }
   });
 });
@@ -274,28 +270,19 @@ describe("nothing goes around the functions", () => {
   });
 
   it("the secret tables and the access matrix are unreadable to the MCP and query_sql roles", async () => {
-    const reads = [
-      "SELECT * FROM ytw_private.api_tokens",
-      "SELECT * FROM ytw_private.api_token_permissions",
-      "SELECT * FROM ytw_private.web_sessions",
-      "SELECT * FROM users",
-      "SELECT * FROM user_permissions",
+    const reads: Attempts = [
+      ["SELECT * FROM ytw_private.api_tokens", []],
+      ["SELECT * FROM ytw_private.api_token_permissions", []],
+      ["SELECT * FROM ytw_private.web_sessions", []],
+      ["SELECT * FROM users", []],
+      ["SELECT * FROM user_permissions", []],
     ];
-    for (const role of ["ytw_mcp", "ytw_readonly"] as const) {
-      for (const statement of reads) {
-        expect(await sqlstate(db.pool(role).query(statement)), `${role}: ${statement}`).toBe(
-          "42501",
-        );
-      }
-    }
+    await expectRefused("ytw_mcp", reads);
+    await expectRefused("ytw_readonly", reads);
     // The web role reads identities and the matrix (sign-in, /api/me) but never the secret tables.
-    expect(await sqlstate(db.pool("ytw_web").query("SELECT * FROM ytw_private.api_tokens"))).toBe(
-      "42501",
-    );
-    expect(await sqlstate(db.pool("ytw_web").query("SELECT * FROM ytw_private.web_sessions"))).toBe(
-      "42501",
-    );
+    await expectRefused("ytw_web", reads.slice(0, 3));
     await db.pool("ytw_web").query("SELECT count(*) FROM users");
+    await db.pool("ytw_web").query("SELECT count(*) FROM user_permissions");
   });
 
   it("a caller cannot shadow the tables the functions use: no temporary tables, no objects, search_path ignored", async () => {
