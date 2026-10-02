@@ -10,7 +10,34 @@ import {
   type ResourceLevels,
 } from "@ytw/shared/constants";
 import type { Queryable, SqlQuery } from "../client.js";
-import { toDbError } from "../errors.js";
+import { ValidationError, toDbError } from "../errors.js";
+
+/**
+ * Throws a {@link ValidationError} when a JSON-bound value (a permission map) contains a NUL
+ * character anywhere: Postgres cannot store U+0000 in `jsonb`, and its own error would be a bare
+ * driver error. Strings are checked by `rejectNul` of args.ts.
+ */
+export function rejectNulInJson(field: string, value: unknown): void {
+  if (containsNul(value)) {
+    throw new ValidationError(
+      `${field} contains a NUL character (U+0000), which cannot be stored: remove it`,
+      { field },
+    );
+  }
+}
+
+function containsNul(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.includes("\u0000");
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsNul);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).some(([key, item]) => key.includes("\u0000") || containsNul(item));
+  }
+  return false;
+}
 
 /** Runs a query on any `Queryable` and returns the rows, turning catalogue errors into typed ones. */
 export async function queryRows<R extends Record<string, unknown>>(

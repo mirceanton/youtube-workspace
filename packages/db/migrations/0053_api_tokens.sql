@@ -174,6 +174,35 @@ $$;
 COMMENT ON FUNCTION public.create_api_token(text, text, uuid, uuid, text, text, text, timestamptz, jsonb) IS
   'Create a token for the acting person. Every level is checked against the owner''s current effective level; only the SHA-256 hash and a short prefix are stored.';
 
+-- Finds one of the owner's tokens and locks its row until the end of the transaction, so changing,
+-- rotating and revoking it queue up instead of interleaving. A token that does not exist and a
+-- token of somebody else are the same answer (not_found), so nobody learns which ids are in use.
+CREATE FUNCTION public.ytw_lock_own_token(p_api_token_id uuid, p_owner_id uuid)
+RETURNS ytw_private.api_tokens
+LANGUAGE plpgsql
+VOLATILE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+  v_token ytw_private.api_tokens;
+BEGIN
+  IF p_api_token_id IS NULL THEN
+    PERFORM public.ytw_raise(
+      'validation', 'api_token_id is required', jsonb_build_object('field', 'api_token_id'));
+  END IF;
+  SELECT * INTO v_token FROM ytw_private.api_tokens t
+   WHERE t.id = p_api_token_id AND t.user_id = p_owner_id
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    PERFORM public.ytw_raise(
+      'not_found',
+      format('you have no API token with id %s', p_api_token_id),
+      jsonb_build_object('entity', 'api_token', 'id', p_api_token_id));
+  END IF;
+  RETURN v_token;
+END
+$$;
+
 -- Changes some or all levels of one of the acting person's tokens. Only the objects named are
 -- touched (the rest keep their level); the ceiling is checked again against the owner's current
 -- level, so a token can never be raised above its owner. Revoked tokens cannot be changed.
@@ -203,16 +232,7 @@ DECLARE
 BEGIN
   PERFORM public.ytw_set_actor(p_actor, p_actor_type, p_token_id);
   v_owner := public.ytw_acting_user(p_actor, p_actor_type, p_acting_user_id, 'change API tokens', false);
-
-  SELECT * INTO v_token FROM ytw_private.api_tokens t
-   WHERE t.id = p_api_token_id AND t.user_id = v_owner.id
-   FOR UPDATE;
-  IF NOT FOUND THEN
-    PERFORM public.ytw_raise(
-      'not_found',
-      format('you have no API token with id %s', coalesce(p_api_token_id::text, 'NULL')),
-      jsonb_build_object('entity', 'api_token', 'id', p_api_token_id));
-  END IF;
+  v_token := public.ytw_lock_own_token(p_api_token_id, v_owner.id);
   IF v_token.revoked_at IS NOT NULL THEN
     PERFORM public.ytw_raise(
       'invalid_transition',
@@ -281,16 +301,7 @@ DECLARE
 BEGIN
   PERFORM public.ytw_set_actor(p_actor, p_actor_type, p_token_id);
   v_owner := public.ytw_acting_user(p_actor, p_actor_type, p_acting_user_id, 'rotate API tokens', false);
-
-  SELECT * INTO v_token FROM ytw_private.api_tokens t
-   WHERE t.id = p_api_token_id AND t.user_id = v_owner.id
-   FOR UPDATE;
-  IF NOT FOUND THEN
-    PERFORM public.ytw_raise(
-      'not_found',
-      format('you have no API token with id %s', coalesce(p_api_token_id::text, 'NULL')),
-      jsonb_build_object('entity', 'api_token', 'id', p_api_token_id));
-  END IF;
+  v_token := public.ytw_lock_own_token(p_api_token_id, v_owner.id);
   IF v_token.revoked_at IS NOT NULL THEN
     PERFORM public.ytw_raise(
       'invalid_transition',
@@ -355,16 +366,7 @@ DECLARE
 BEGIN
   PERFORM public.ytw_set_actor(p_actor, p_actor_type, p_token_id);
   v_owner := public.ytw_acting_user(p_actor, p_actor_type, p_acting_user_id, 'revoke API tokens', false);
-
-  SELECT * INTO v_token FROM ytw_private.api_tokens t
-   WHERE t.id = p_api_token_id AND t.user_id = v_owner.id
-   FOR UPDATE;
-  IF NOT FOUND THEN
-    PERFORM public.ytw_raise(
-      'not_found',
-      format('you have no API token with id %s', coalesce(p_api_token_id::text, 'NULL')),
-      jsonb_build_object('entity', 'api_token', 'id', p_api_token_id));
-  END IF;
+  v_token := public.ytw_lock_own_token(p_api_token_id, v_owner.id);
 
   IF v_token.revoked_at IS NULL THEN
     UPDATE ytw_private.api_tokens t SET revoked_at = statement_timestamp() WHERE t.id = v_token.id;
@@ -518,6 +520,7 @@ COMMENT ON FUNCTION public.get_api_token(uuid, uuid) IS
 REVOKE ALL ON FUNCTION public.ytw_token_status(timestamptz, timestamptz) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.ytw_api_token_info_of(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.ytw_check_token_secret(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ytw_lock_own_token(uuid, uuid) FROM PUBLIC;
 
 -- Settings (web server): the acting person's own tokens.
 REVOKE ALL ON FUNCTION public.create_api_token(text, text, uuid, uuid, text, text, text, timestamptz, jsonb)

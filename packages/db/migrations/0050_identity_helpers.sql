@@ -239,6 +239,43 @@ AS $$
       AND coalesce(public.ytw_level_rank(up.level), 0) < public.ytw_level_rank(EXCLUDED.level)
 $$;
 
+-- 14a. A caller-supplied JSON value inside an error message, bounded like ytw_fmt_value() (0030): a
+--      string JSON-quoted and cut after 60 characters, a number, boolean or null as it is (cut the
+--      same way), an array or object by its type, so a megabyte-sized request is never echoed back.
+CREATE FUNCTION public.ytw_fmt_json(p_value jsonb)
+RETURNS text
+LANGUAGE sql
+STABLE
+PARALLEL SAFE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT CASE jsonb_typeof(p_value)
+    WHEN 'string' THEN public.ytw_fmt_value(p_value #>> '{}')
+    WHEN 'array' THEN 'an array'
+    WHEN 'object' THEN 'an object'
+    ELSE coalesce(left(p_value::text, 60), 'NULL')
+  END
+$$;
+
+-- 14b. The same value for the DETAIL of an error (a bounded jsonb): scalars as they are, strings and
+--      numbers cut after 60 characters, arrays and objects by their type.
+CREATE FUNCTION public.ytw_brief_json(p_value jsonb)
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT CASE jsonb_typeof(p_value)
+    WHEN 'string' THEN to_jsonb(left(p_value #>> '{}', 60))
+    WHEN 'array' THEN to_jsonb('array'::text)
+    WHEN 'object' THEN to_jsonb('object'::text)
+    WHEN 'number' THEN CASE WHEN char_length(p_value::text) > 60 THEN to_jsonb(left(p_value::text, 60))
+                            ELSE p_value END
+    ELSE p_value
+  END
+$$;
+
 -- 14. Validates the levels requested for a token and returns them normalised ({"ideas": "read"}:
 --     only the objects asked for). Every problem is reported at once, in the wording of @ytw/policy
 --     grantViolations: an unknown object or level is a validation error; a level above what the
@@ -275,12 +312,24 @@ BEGIN
       jsonb_build_object('field', 'permissions', 'allowed', to_jsonb(v_resources)));
   END IF;
 
+  -- A request names each object at most once, so more entries than objects can only be junk; do not
+  -- walk (or describe) an arbitrarily large map.
+  IF (SELECT count(*) FROM jsonb_object_keys(p_requested)) > 2 * cardinality(v_resources) THEN
+    PERFORM public.ytw_raise(
+      'validation',
+      format('permissions names %s entries, but only %s objects have access levels (%s)',
+             (SELECT count(*) FROM jsonb_object_keys(p_requested)), cardinality(v_resources),
+             array_to_string(v_resources, ', ')),
+      jsonb_build_object('field', 'permissions', 'allowed', to_jsonb(v_resources)));
+  END IF;
+
   FOR v_resource, v_value IN SELECT e.key, e.value FROM jsonb_each(p_requested) e ORDER BY e.key LOOP
     IF NOT v_resource = ANY (v_resources) THEN
       v_invalid := v_invalid || jsonb_build_object(
-        'resource', v_resource, 'reason', 'unknown_resource', 'allowed', to_jsonb(v_resources));
+        'resource', left(v_resource, 60), 'reason', 'unknown_resource', 'allowed', to_jsonb(v_resources));
       v_messages := v_messages || format('%s is not an object with access levels; valid objects: %s',
-                                         to_json(v_resource), array_to_string(v_resources, ', '));
+                                         public.ytw_fmt_value(v_resource),
+                                         array_to_string(v_resources, ', '));
       CONTINUE;
     END IF;
 
@@ -295,10 +344,10 @@ BEGIN
 
     IF public.ytw_level_rank(v_level) IS NULL THEN
       v_invalid := v_invalid || jsonb_build_object(
-        'resource', v_resource, 'requested', v_value, 'reason', 'invalid_level',
+        'resource', v_resource, 'requested', public.ytw_brief_json(v_value), 'reason', 'invalid_level',
         'allowed', to_jsonb(v_allowed));
       v_messages := v_messages || format('%s is not an access level for %s; %s',
-                                         v_value::text, v_resource, v_choose);
+                                         public.ytw_fmt_json(v_value), v_resource, v_choose);
     ELSIF public.ytw_level_rank(v_level) > public.ytw_level_rank(v_max) THEN
       v_invalid := v_invalid || jsonb_build_object(
         'resource', v_resource, 'requested', v_level, 'reason', 'not_grantable',
@@ -353,3 +402,5 @@ REVOKE ALL ON FUNCTION public.ytw_clean_email(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.ytw_acting_user(text, text, uuid, text, boolean) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.ytw_sync_user_rows(uuid, boolean) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.ytw_check_token_grant(text, jsonb, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ytw_fmt_json(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ytw_brief_json(jsonb) FROM PUBLIC;

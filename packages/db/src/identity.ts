@@ -6,6 +6,7 @@
  * tokens, sessions").
  */
 import type { ResourceLevels } from "@ytw/shared/constants";
+import { rejectNul, requireUuid } from "./args.js";
 import { sql, type ActorTx, type Queryable } from "./client.js";
 import {
   onlyRow,
@@ -48,6 +49,11 @@ export async function upsertUserOnLogin(
   tx: ActorTx,
   input: UpsertUserOnLoginInput,
 ): Promise<LoginResult> {
+  rejectNul("issuer", input.issuer);
+  rejectNul("sub", input.sub);
+  rejectNul("username", input.username);
+  rejectNul("email", input.email);
+  rejectNul("display_name", input.displayName);
   const rows = await queryRows<UserAccessRow & { created: boolean }>(
     tx,
     sql`SELECT * FROM upsert_user_on_login(${tx.actor.name}, ${tx.actor.type}, ${tx.actor.tokenId},
@@ -63,6 +69,7 @@ export async function upsertUserOnLogin(
  * unknown id. Read it on every request that needs a decision; never cache the levels (PRD 7).
  */
 export async function getUserAccess(db: Queryable, userId: string): Promise<UserAccess | null> {
+  requireUuid("user_id", userId);
   const rows = await queryRows<UserAccessRow>(db, sql`SELECT * FROM get_user_access(${userId})`);
   const row = rows[0];
   return row === undefined ? null : userAccessFromRow(row);
@@ -100,6 +107,8 @@ export interface AdminChange {
  * user.
  */
 export async function setUserAdmin(tx: ActorTx, input: SetUserAdminInput): Promise<AdminChange> {
+  requireUuid("acting_user_id", input.actingUserId);
+  requireUuid("user_id", input.userId);
   const rows = await queryRows<{
     user_id: string;
     username: string;

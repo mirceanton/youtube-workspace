@@ -5,6 +5,7 @@
  * here. Conventions: docs/database.md ("Identity, permissions, tokens, sessions").
  */
 import type { Level, Resource } from "@ytw/shared/constants";
+import { rejectNul, requireUuid } from "./args.js";
 import { sql, type ActorTx, type Queryable } from "./client.js";
 import {
   onlyRow,
@@ -45,6 +46,10 @@ export async function setUserPermission(
   tx: ActorTx,
   input: SetUserPermissionInput,
 ): Promise<PermissionChange> {
+  requireUuid("acting_user_id", input.actingUserId);
+  requireUuid("user_id", input.userId);
+  rejectNul("resource", input.resource);
+  rejectNul("level", input.level);
   const rows = await queryRows<{
     user_id: string;
     resource: Resource;
@@ -72,6 +77,7 @@ export async function setUserPermission(
  * (`ForbiddenError` otherwise).
  */
 export async function listUserAccess(db: Queryable, actingUserId: string): Promise<UserAccess[]> {
+  requireUuid("acting_user_id", actingUserId);
   const rows = await queryRows<UserAccessRow>(
     db,
     sql`SELECT * FROM list_users_with_levels(${actingUserId})`,

@@ -122,10 +122,14 @@ BEGIN
   END IF;
   PERFORM public.ytw_check_session_args(
     p_idle_timeout_seconds, p_absolute_timeout_seconds, p_refresh_token_encrypted, p_id_token_hint);
-  IF p_user_id IS NULL OR NOT EXISTS (SELECT 1 FROM public.users u WHERE u.id = p_user_id) THEN
+  IF p_user_id IS NULL THEN
+    PERFORM public.ytw_raise(
+      'validation', 'user_id is required', jsonb_build_object('field', 'user_id'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.users u WHERE u.id = p_user_id) THEN
     PERFORM public.ytw_raise(
       'not_found',
-      format('user %s does not exist: a session belongs to a user who has signed in', coalesce(p_user_id::text, 'NULL')),
+      format('user %s does not exist: a session belongs to a user who has signed in', p_user_id),
       jsonb_build_object('entity', 'user', 'id', p_user_id));
   END IF;
 

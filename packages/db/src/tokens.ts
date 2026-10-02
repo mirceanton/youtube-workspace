@@ -7,8 +7,14 @@
  * ("Identity, permissions, tokens, sessions").
  */
 import type { Level, Resource, ResourceLevels } from "@ytw/shared/constants";
+import { rejectNul, requireUuid } from "./args.js";
 import { sql, type ActorTx, type Queryable } from "./client.js";
-import { onlyRow, parseResourceLevels, queryRows } from "./internal/identity-rows.js";
+import {
+  onlyRow,
+  parseResourceLevels,
+  queryRows,
+  rejectNulInJson,
+} from "./internal/identity-rows.js";
 
 /** `revoked` wins over `expired` when both hold. */
 export type ApiTokenStatus = "active" | "revoked" | "expired";
@@ -95,6 +101,11 @@ export async function createApiToken(
   tx: ActorTx,
   input: CreateApiTokenInput,
 ): Promise<ApiTokenInfo> {
+  requireUuid("owner_user_id", input.ownerUserId);
+  rejectNul("name", input.name);
+  rejectNul("token_prefix", input.tokenPrefix);
+  rejectNul("token_hash", input.tokenHash);
+  rejectNulInJson("permissions", input.permissions);
   const rows = await queryRows<ApiTokenInfoRow>(
     tx,
     sql`SELECT * FROM create_api_token(${tx.actor.name}, ${tx.actor.type}, ${tx.actor.tokenId},
@@ -122,6 +133,9 @@ export async function updateTokenPermissions(
   tx: ActorTx,
   input: UpdateTokenPermissionsInput,
 ): Promise<ApiTokenInfo> {
+  requireUuid("acting_user_id", input.actingUserId);
+  requireUuid("api_token_id", input.apiTokenId);
+  rejectNulInJson("permissions", input.permissions);
   const rows = await queryRows<ApiTokenInfoRow>(
     tx,
     sql`SELECT * FROM update_token_permissions(${tx.actor.name}, ${tx.actor.type}, ${tx.actor.tokenId},
@@ -154,6 +168,10 @@ export async function rotateApiToken(
   tx: ActorTx,
   input: RotateApiTokenInput,
 ): Promise<ApiTokenInfo> {
+  requireUuid("acting_user_id", input.actingUserId);
+  requireUuid("api_token_id", input.apiTokenId);
+  rejectNul("token_prefix", input.newTokenPrefix);
+  rejectNul("token_hash", input.newTokenHash);
   const setExpiry = input.expiresAt !== undefined;
   const rows = await queryRows<ApiTokenInfoRow>(
     tx,
@@ -178,6 +196,8 @@ export async function revokeApiToken(
   tx: ActorTx,
   input: RevokeApiTokenInput,
 ): Promise<ApiTokenInfo> {
+  requireUuid("acting_user_id", input.actingUserId);
+  requireUuid("api_token_id", input.apiTokenId);
   const rows = await queryRows<ApiTokenInfoRow>(
     tx,
     sql`SELECT * FROM revoke_api_token(${tx.actor.name}, ${tx.actor.type}, ${tx.actor.tokenId},
@@ -188,6 +208,7 @@ export async function revokeApiToken(
 
 /** The acting person's own tokens, newest first, revoked ones included. */
 export async function listApiTokens(db: Queryable, ownerUserId: string): Promise<ApiTokenInfo[]> {
+  requireUuid("owner_user_id", ownerUserId);
   const rows = await queryRows<ApiTokenInfoRow>(
     db,
     sql`SELECT * FROM list_api_tokens(${ownerUserId})`,
@@ -201,6 +222,8 @@ export async function getApiToken(
   ownerUserId: string,
   apiTokenId: string,
 ): Promise<ApiTokenInfo | null> {
+  requireUuid("owner_user_id", ownerUserId);
+  requireUuid("api_token_id", apiTokenId);
   const rows = await queryRows<ApiTokenInfoRow>(
     db,
     sql`SELECT * FROM get_api_token(${ownerUserId}, ${apiTokenId})`,
@@ -271,6 +294,7 @@ export function toTokenPrincipal(token: FoundToken): TokenPrincipalData {
  * `status`, and all-none `effectiveLevels`.
  */
 export async function lookupTokenByHash(db: Queryable, tokenHash: string): Promise<TokenLookup> {
+  rejectNul("token_hash", tokenHash);
   const rows = await queryRows<{
     token_id: string;
     token_name: string;
@@ -323,6 +347,8 @@ export async function touchTokenLastUsed(
   db: Queryable,
   token: { id: string; name: string },
 ): Promise<boolean> {
+  requireUuid("token_id", token.id);
+  rejectNul("token_name", token.name);
   const rows = await queryRows<{ touched: boolean }>(
     db,
     sql`SELECT touch_token_last_used(${token.name}, 'agent', ${token.id}) AS touched`,

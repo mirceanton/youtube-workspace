@@ -58,15 +58,17 @@ BEGIN
     PERFORM public.ytw_raise(
       'validation',
       format('resource %s is not an object with access levels; valid objects: %s',
-             coalesce(to_json(p_resource)::text, 'NULL'), array_to_string(v_resources, ', ')),
-      jsonb_build_object('field', 'resource', 'value', p_resource, 'allowed', to_jsonb(v_resources)));
+             public.ytw_fmt_value(p_resource), array_to_string(v_resources, ', ')),
+      jsonb_build_object('field', 'resource', 'value', left(p_resource, 60),
+                         'allowed', to_jsonb(v_resources)));
   END IF;
   IF public.ytw_level_rank(p_level) IS NULL THEN
     PERFORM public.ytw_raise(
       'validation',
       format('level %s is not an access level; valid levels: none, read, write',
-             coalesce(to_json(p_level)::text, 'NULL')),
-      jsonb_build_object('field', 'level', 'value', p_level, 'allowed', jsonb_build_array('none', 'read', 'write')));
+             public.ytw_fmt_value(p_level)),
+      jsonb_build_object('field', 'level', 'value', left(p_level, 60),
+                         'allowed', jsonb_build_array('none', 'read', 'write')));
   END IF;
   v_max := public.ytw_max_level(p_resource);
   IF public.ytw_level_rank(p_level) > public.ytw_level_rank(v_max) THEN

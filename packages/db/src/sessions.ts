@@ -8,6 +8,7 @@
  * Two clocks: the idle expiry moves forward on activity (`touchWebSession`), the absolute expiry
  * is fixed at login; a session is alive only while both lie in the future.
  */
+import { rejectNul, requireUuid } from "./args.js";
 import { sql, type Queryable } from "./client.js";
 import { ValidationError } from "./errors.js";
 import { onlyRow, queryRows } from "./internal/identity-rows.js";
@@ -86,6 +87,8 @@ export async function createWebSession(
   db: Queryable,
   input: CreateWebSessionInput,
 ): Promise<WebSession> {
+  requireUuid("user_id", input.userId);
+  rejectNul("id_token_hint", input.idTokenHint);
   const rows = await queryRows<WebSessionRow>(
     db,
     sql`SELECT * FROM create_web_session(
@@ -108,6 +111,7 @@ export async function touchWebSession(
   sessionId: string,
   idleTimeoutSeconds: number,
 ): Promise<WebSession | null> {
+  requireUuid("session_id", sessionId);
   const rows = await queryRows<WebSessionRow>(
     db,
     sql`SELECT * FROM touch_web_session(${sessionId}, ${requireSeconds("idle_timeout_seconds", idleTimeoutSeconds)})`,
@@ -124,6 +128,7 @@ export async function getWebSession(
   db: Queryable,
   sessionId: string,
 ): Promise<WebSessionDetails | null> {
+  requireUuid("session_id", sessionId);
   const rows = await queryRows<
     WebSessionRow & { refresh_token_encrypted: Buffer | null; id_token_hint: string | null }
   >(db, sql`SELECT * FROM get_web_session(${sessionId})`);
@@ -154,6 +159,8 @@ export async function updateWebSessionTokens(
   sessionId: string,
   input: UpdateWebSessionTokensInput,
 ): Promise<boolean> {
+  requireUuid("session_id", sessionId);
+  rejectNul("id_token_hint", input.idTokenHint);
   const rows = await queryRows<{ updated: boolean }>(
     db,
     sql`SELECT update_web_session_tokens(
@@ -166,6 +173,7 @@ export async function updateWebSessionTokens(
 
 /** Ends a session (logout, or a refresh that found the user outside the access group). */
 export async function deleteWebSession(db: Queryable, sessionId: string): Promise<boolean> {
+  requireUuid("session_id", sessionId);
   const rows = await queryRows<{ deleted: boolean }>(
     db,
     sql`SELECT delete_web_session(${sessionId}) AS deleted`,
