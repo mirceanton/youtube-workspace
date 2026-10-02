@@ -87,3 +87,11 @@ You did not write this code; be adversarial but fair. You review the commit rang
   flaky/untested requirement) or NON-BLOCKING, each with file:line and a concrete failing scenario or missing test.
 - Review report format: `VERDICT: approve | changes-requested`, then findings, then "what I ran". Max 40 lines.
 - (Gate tasks T16/T35/T49/T63 are different: they are written as work cards, they may add tests and fix defects.)
+
+## 7. Usage is limited: be economical
+The whole fleet shares one person's usage limit, and it has been exhausted several times, stopping every worker mid-task.
+Keep your context small and your tool calls few: `grep`/`sed -n` for the lines you need instead of reading whole large files;
+do not re-read files you just wrote; iterate with package-scoped tests and run the root suite once before pushing; pipe
+command output through `tail`/`head`; do not repeat verification that is still valid; prefer a few decisive calls to many
+exploratory ones; no gold-plating beyond the card's "Done when". Commit locally at each green checkpoint (section 3). If the
+remaining work is large and your budget is shrinking, push what is green and list the rest as REMAINING in your report.
