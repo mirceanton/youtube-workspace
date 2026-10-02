@@ -37,9 +37,11 @@ import {
   alice,
   eventCount,
   eventsFor,
+  expectedNullOutcomes,
   functionPrivileges,
   newAgent,
   newIdea,
+  nullArgumentOutcomes,
   outcomeKind,
   partition,
   seededRandom,
@@ -47,6 +49,7 @@ import {
   tick,
   waitForLockWait,
   withoutRowLock,
+  type FunctionSpec,
 } from "./content-helpers.js";
 import { failure, sqlstate } from "./helpers.js";
 
@@ -977,6 +980,46 @@ describe("getScriptVersion", () => {
     );
     expect(version.field).toBe("version");
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("arguments that are NULL", () => {
+  // Generated at run time: a literal id next to a "token" key reads as a credential to the secret scan.
+  const agentToken = randomUUID();
+  const specs: FunctionSpec[] = [
+    {
+      name: "save_script_version",
+      types: ["text", "text", "uuid", "uuid", "text", "integer", "text"],
+      valid: async () => [
+        "bot",
+        "agent",
+        agentToken,
+        (await newIdea(db)).id,
+        "script",
+        0,
+        "# Body",
+      ],
+      optional: [2],
+    },
+    {
+      name: "set_script_status",
+      types: ["text", "text", "uuid", "uuid", "text"],
+      valid: async () => {
+        const idea = await newIdea(db);
+        const script = await save(alice, idea.id, 0, "# Body");
+        return ["bot", "agent", agentToken, script.id, "review"];
+      },
+      optional: [2],
+    },
+  ];
+
+  it.each(specs)(
+    "$name answers a NULL with a validation error wherever a value is required",
+    async (spec) => {
+      expect(await nullArgumentOutcomes(db, spec)).toEqual(expectedNullOutcomes(spec));
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

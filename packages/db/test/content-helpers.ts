@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { IdeaStage } from "@ytw/shared/constants";
 import type { Pool } from "pg";
 import { withActor, type Actor, type ActorTx, type AppRole } from "../src/client.js";
+import { toDbError } from "../src/errors.js";
 import { createIdea, getIdea, type CreateIdeaInput, type IdeaRecord } from "../src/ideas.js";
 import type { TestDb } from "../src/testing.js";
 
@@ -261,11 +262,58 @@ export async function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
   }
 }
 
-/** `"moved"`-style label of an outcome: `ok` for a success, the database error kind otherwise. */
+/**
+ * Label of an outcome: `ok` for a success, the database error kind (`validation`,
+ * `version_conflict`, ...) for a catalogue error, and a description of anything else, which in a
+ * test is always a bug. Raw driver errors are mapped first.
+ */
 export function outcomeKind<T>(outcome: Settled<T>, ok = "ok"): string {
   if (outcome.ok) {
     return ok;
   }
-  const kind: unknown = Reflect.get(outcome.error as object, "kind");
-  return typeof kind === "string" ? kind : `not a database error: ${String(outcome.error)}`;
+  const error = toDbError(outcome.error);
+  const kind: unknown = Reflect.get(error as object, "kind");
+  return typeof kind === "string" ? kind : `not a database error: ${String(error)}`;
+}
+
+/** One database function, with a factory for a fresh set of valid arguments. */
+export interface FunctionSpec {
+  name: string;
+  /** SQL type of every argument, including the three actor arguments. */
+  types: readonly string[];
+  /** Fresh valid arguments (fixtures are created here, so every call starts clean). */
+  valid: () => Promise<unknown[]>;
+  /** Positions that may be NULL (the token id of an agent, optional arguments). */
+  optional: readonly number[];
+}
+
+/**
+ * Calls the function once per argument as the MCP role, with exactly that argument NULL, and
+ * returns what came of each call by position: `ok` or the database error kind.
+ */
+export async function nullArgumentOutcomes(
+  db: TestDb,
+  spec: FunctionSpec,
+): Promise<Record<number, string>> {
+  const outcomes: Record<number, string> = {};
+  const placeholders = spec.types.map((type, index) => `$${index + 1}::${type}`).join(", ");
+  for (let position = 0; position < spec.types.length; position += 1) {
+    const values = await spec.valid();
+    values[position] = null;
+    const outcome = await settle(
+      db.pool("ytw_mcp").query(`SELECT * FROM public.${spec.name}(${placeholders})`, values),
+    );
+    outcomes[position] = outcomeKind(outcome);
+  }
+  return outcomes;
+}
+
+/** What the NULL-argument matrix must look like: validation everywhere except where NULL is fine. */
+export function expectedNullOutcomes(spec: FunctionSpec): Record<number, string> {
+  return Object.fromEntries(
+    spec.types.map((_type, position) => [
+      position,
+      spec.optional.includes(position) ? "ok" : "validation",
+    ]),
+  );
 }

@@ -22,13 +22,16 @@ import {
   act,
   alice,
   eventsFor,
+  expectedNullOutcomes,
   functionPrivileges,
   insertExperiment,
   insertVideo,
   newAgent,
   newIdea,
+  nullArgumentOutcomes,
   partition,
   tick,
+  type FunctionSpec,
 } from "./content-helpers.js";
 import { failure, sqlstate } from "./helpers.js";
 
@@ -401,6 +404,23 @@ describe("add_note", () => {
         Array.from({ length: 8 }, (_, i) => `message ${i}`),
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("arguments that are NULL", () => {
+  // Generated at run time: a literal id next to a "token" key reads as a credential to the secret scan.
+  const agentToken = randomUUID();
+  const spec: FunctionSpec = {
+    name: "add_note",
+    types: ["text", "text", "uuid", "text", "uuid", "text"],
+    valid: async () => ["bot", "agent", agentToken, "idea", await makeEntity.idea(), "A note"],
+    optional: [2],
+  };
+
+  it("add_note answers a NULL with a validation error wherever a value is required", async () => {
+    expect(await nullArgumentOutcomes(db, spec)).toEqual(expectedNullOutcomes(spec));
   });
 });
 

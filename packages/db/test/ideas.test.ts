@@ -40,10 +40,12 @@ import {
   alice,
   eventCount,
   eventsFor,
+  expectedNullOutcomes,
   functionPrivileges,
   ideaInStage,
   newAgent,
   newIdea,
+  nullArgumentOutcomes,
   outcomeKind,
   partition,
   seededRandom,
@@ -51,6 +53,7 @@ import {
   settle,
   tick,
   withoutRowLock,
+  type FunctionSpec,
 } from "./content-helpers.js";
 import { failure, sqlstate } from "./helpers.js";
 
@@ -1503,6 +1506,61 @@ describe("model-based checks", () => {
     }
     expect(tally.updates + tally.moves + tally.script + tally.packaging).toBeGreaterThan(10);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("arguments that are NULL", () => {
+  // Generated at run time: a literal id next to a "token" key reads as a credential to the secret scan.
+  const agentToken = randomUUID();
+  const specs: FunctionSpec[] = [
+    {
+      name: "create_idea",
+      types: ["text", "text", "uuid", "text", "text", "text", "text[]", "integer"],
+      valid: async () => ["bot", "agent", agentToken, "A title", "A pitch", "a source", ["tag"], 5],
+      optional: [2, 4, 5, 6, 7],
+    },
+    {
+      name: "update_idea",
+      types: ["text", "text", "uuid", "uuid", "integer", "jsonb"],
+      valid: async () => [
+        "bot",
+        "agent",
+        agentToken,
+        (await newIdea(db)).id,
+        1,
+        '{"title": "New"}',
+      ],
+      optional: [2],
+    },
+    {
+      name: "archive_idea",
+      types: ["text", "text", "uuid", "uuid", "integer"],
+      valid: async () => ["bot", "agent", agentToken, (await newIdea(db)).id, 1],
+      optional: [2, 4],
+    },
+    {
+      name: "advance_idea",
+      types: ["text", "text", "uuid", "uuid", "text", "text", "integer"],
+      valid: async () => [
+        "bot",
+        "agent",
+        agentToken,
+        (await newIdea(db)).id,
+        "shortlisted",
+        "why",
+        1,
+      ],
+      optional: [2, 5, 6],
+    },
+  ];
+
+  it.each(specs)(
+    "$name answers a NULL with a validation error wherever a value is required",
+    async (spec) => {
+      expect(await nullArgumentOutcomes(db, spec)).toEqual(expectedNullOutcomes(spec));
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------------------------
