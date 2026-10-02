@@ -196,7 +196,7 @@ Migrations `0010-0018` (T11); `test/schema.test.ts` covers every rule below.
 | `video_metrics` | public | **append-only** | unique `(video_id, captured_at)`; at least one metric per row |
 | `experiments` | public | mutable, `version` | `status` default `planned`; winner must be its own variant |
 | `experiment_variants` | public | mutable | unique `(experiment_id, label)`; at most one `is_control` per experiment |
-| `notes` | public | body editable; target and author fixed | `entity_type` in `NOTE_ENTITY_TYPES`; the entity must exist |
+| `notes` | public | **append-only** | `entity_type` in `NOTE_ENTITY_TYPES`; the entity must exist; `author`, `actor_type` |
 | `users` | public | mutable | unique `(oidc_issuer, oidc_sub)` |
 | `user_permissions` | public | mutable | unique `(user_id, resource)`; `activity` never `write` |
 | `api_tokens` | ytw_private | mutable, never deleted (`revoked_at`) | `token_hash` = SHA-256 as 64 lower-case hex digits, unique |
@@ -228,14 +228,16 @@ Data changes inside a migration (a backfill) set one first:
 `SELECT public.ytw_set_actor('migration 0200_example', 'human', NULL);`.
 
 **Append-only.** `scripts`: an UPDATE that changes anything but `status` raises `immutable` and
-names the columns; DELETE and TRUNCATE raise `immutable`. `video_metrics`: UPDATE, DELETE and
-TRUNCATE raise `immutable`. Nothing is deleted anywhere else either (every foreign key is `ON
-DELETE RESTRICT`): archive ideas and videos, revoke tokens.
+names the columns; DELETE and TRUNCATE raise `immutable`. `video_metrics` and `notes` (comments,
+as the `/api/notes` contract says): UPDATE, DELETE and TRUNCATE raise `immutable`. Nothing is
+deleted anywhere else either (every foreign key is `ON DELETE RESTRICT`): archive ideas and
+videos, revoke tokens.
 
 **Constraint names** (for error mapping and for `docs/policy.md` "add an object type"). CHECKs are
 named `<table>_<column>_check` (`ideas_status_check`, `scripts_kind_check`,
 `scripts_status_check`, `experiments_type_check`, `experiments_status_check`,
-`notes_entity_type_check`, `user_permissions_resource_check`, `user_permissions_level_check`,
+`notes_entity_type_check`, `notes_actor_type_check`, `user_permissions_resource_check`,
+`user_permissions_level_check`,
 `api_token_permissions_resource_check`, ...), plus `user_permissions_read_only_check` and
 `api_token_permissions_read_only_check` (objects that are never `write`),
 `scripts_body_md_size_check`, `notes_body_md_size_check`, `video_metrics_any_metric_check`,
@@ -258,7 +260,8 @@ validate first and raise catalogue errors; the limits are:
 | `ideas.source` | 1-200 characters, not blank; `NULL` allowed |
 | `ideas.score` | integer 0-100 (higher is better); `NULL` = not scored |
 | `ideas.tags` | at most 50 distinct tags of 1-64 characters, trimmed, no control characters |
-| `scripts.body_md`, `notes.body_md` | at most `SCRIPT_BODY_MAX_BYTES` bytes of UTF-8; a note is not blank |
+| `scripts.body_md` | at most `SCRIPT_BODY_MAX_BYTES` (1 MiB) of UTF-8; may be empty |
+| `notes.body_md` | at most `NOTE_BODY_MAX_BYTES` (64 KiB, `@ytw/shared/api/notes`) of UTF-8; not blank |
 | `videos.youtube_id` | `^[A-Za-z0-9_-]{11}$` (the id, not a URL) |
 | `videos.thumbnail_url` | at most 2048 characters, no whitespace, an `http(s)://` URL or a path without a scheme |
 | `video_metrics` | `views`, `impressions`, `avg_view_duration_s` (seconds), `watch_time_min` (minutes) >= 0; `ctr` percent 0-100; `avg_view_pct` percent >= 0 (can exceed 100); `subs_gained` net (may be negative); `retention` a JSON array <= 64 KiB; exact `numeric`, returned as strings |
@@ -273,7 +276,8 @@ validate first and raise catalogue errors; the limits are:
   `status = 'concluded'` in the same UPDATE.
 - `notes`: a trigger raises `validation` (with `allowed`) for an unknown `entity_type` and
   `not_found` (`entity`, `id`) for a missing target; `add_note` may rely on it. `author` is
-  generated from `created_by`; `author_type` defaults to the actor type.
+  generated from `created_by` and `actor_type` defaults to the actor's type, so a note row maps
+  onto the `/api/notes` `noteSchema` without renaming.
 - Full-text: `ideas.search_vector` (title weight A, pitch B) and `scripts.search_vector` use the
   `english` configuration; query them with `websearch_to_tsquery('english', $1)`. A `tsvector` is
   limited to 1 MB, which a 1 MiB body of unrelated words (or pasted base64) exceeds; for such a
@@ -466,3 +470,5 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   handle, so it should carry 122 random bits and not reveal when the session started.
 - `ytw_touch()` maintains `updated_at`, `updated_by`, `version` and `ideas.status_changed_at` in the
   database instead of leaving them to each function (PLAN.md lists only the columns).
+- `notes` are append-only and limited to `NOTE_BODY_MAX_BYTES`, matching the `/api/notes` contract
+  (PRD 4 names only `scripts` and `video_metrics` as append-only and sets no note limit).

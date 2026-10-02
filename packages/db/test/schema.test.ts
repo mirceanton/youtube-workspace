@@ -24,6 +24,7 @@ import {
   SCRIPT_KINDS,
   SCRIPT_STATUSES,
 } from "@ytw/shared/constants";
+import { NOTE_BODY_MAX_BYTES } from "@ytw/shared/api/notes";
 import type { QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -81,7 +82,10 @@ const ALL_TABLES = [
   ...PUBLIC_TABLES.map((table) => `public.${table}`),
   ...PRIVATE_TABLES.map((table) => `ytw_private.${table}`),
 ];
-/** Tables whose rows may change (they carry updated_at/updated_by, maintained by ytw_touch()). */
+/**
+ * Tables that carry updated_at/updated_by (maintained by ytw_touch()). Notes keep them although
+ * they are append-only, because the /api/notes contract returns updated_at.
+ */
 const MUTABLE_TABLES = ALL_TABLES.filter(
   (table) => table !== "public.video_metrics" && table !== "ytw_private.web_sessions",
 );
@@ -342,7 +346,7 @@ describe("agreement with @ytw/shared", () => {
     ["experiments", "experiments_type_check", EXPERIMENT_TYPES],
     ["experiments", "experiments_status_check", EXPERIMENT_STATUSES],
     ["notes", "notes_entity_type_check", NOTE_ENTITY_TYPES],
-    ["notes", "notes_author_type_check", ACTOR_TYPES],
+    ["notes", "notes_actor_type_check", ACTOR_TYPES],
     ["user_permissions", "user_permissions_resource_check", RESOURCES],
     ["user_permissions", "user_permissions_level_check", LEVELS],
     ["ytw_private.api_token_permissions", "api_token_permissions_resource_check", RESOURCES],
@@ -435,39 +439,33 @@ describe("agreement with @ytw/shared", () => {
     },
   );
 
-  it("limits script and note bodies to SCRIPT_BODY_MAX_BYTES bytes of UTF-8", async () => {
-    for (const [table, constraint] of [
-      ["scripts", "scripts_body_md_size_check"],
-      ["notes", "notes_body_md_size_check"],
-    ] as const) {
+  it.each([
+    ["scripts", "scripts_body_md_size_check", SCRIPT_BODY_MAX_BYTES],
+    ["notes", "notes_body_md_size_check", NOTE_BODY_MAX_BYTES],
+  ] as const)(
+    "limits %s bodies to the shared byte limit (%s = %i)",
+    async (table, constraint, max) => {
       const { rows } = await db.admin.query<{ def: string }>(
         `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
-          WHERE conrelid = $1::regclass AND conname = $2`,
+        WHERE conrelid = $1::regclass AND conname = $2`,
         [table, constraint],
       );
-      expect(rows[0]?.def).toContain(`octet_length(body_md) <= ${SCRIPT_BODY_MAX_BYTES})`);
-    }
+      expect(rows[0]?.def).toContain(`octet_length(body_md) <= ${max})`);
 
-    // Two bytes per character: the limit counts bytes, not characters.
-    const largest = "é".repeat(SCRIPT_BODY_MAX_BYTES / 2);
-    const ideaId = await actAs(alice, (tx) => newIdea(tx));
-    await actAs(alice, (tx) => newScript(tx, ideaId, { body: largest }));
-    await actAs(alice, (tx) => newNote(tx, "idea", ideaId, largest));
-
-    const tooLarge = `${largest}x`;
-    expect(
-      await pgFailure(actAs(alice, (tx) => newScript(tx, ideaId, { version: 2, body: tooLarge }))),
-    ).toMatchObject({
-      code: "23514",
-      constraint: "scripts_body_md_size_check",
-    });
-    expect(
-      await pgFailure(actAs(alice, (tx) => newNote(tx, "idea", ideaId, tooLarge))),
-    ).toMatchObject({
-      code: "23514",
-      constraint: "notes_body_md_size_check",
-    });
-  });
+      // Two bytes per character: the limit counts bytes of UTF-8, not characters.
+      const largest = "é".repeat(max / 2);
+      const tooLarge = `${largest}x`;
+      const write = (tx: ActorTx, ideaId: string, body: string) =>
+        table === "scripts" ? newScript(tx, ideaId, { body }) : newNote(tx, "idea", ideaId, body);
+      const ideaId = await actAs(alice, (tx) => newIdea(tx));
+      const stored = await actAs(alice, (tx) => write(tx, ideaId, largest));
+      expect(stored).toMatch(/^[0-9a-f-]{36}$/);
+      expect(await pgFailure(actAs(alice, (tx) => write(tx, ideaId, tooLarge)))).toMatchObject({
+        code: "23514",
+        constraint,
+      });
+    },
+  );
 
   it("starts new ideas, scripts and experiments in their first stage or status", async () => {
     const { ideaStatus, scriptStatus, experimentStatus } = await actAs(alice, async (tx) => {
@@ -1438,13 +1436,13 @@ describe("notes", () => {
         experiment: f.experimentId,
       };
       const noteId = await actAs(bot, (tx) => newNote(tx, entityType, target[entityType]));
-      const note = await one<{ author: string; author_type: string; created_by: string }>(
+      const note = await one<{ author: string; actor_type: string; created_by: string }>(
         db.admin,
-        sql`SELECT author, author_type, created_by FROM notes WHERE id = ${noteId}`,
+        sql`SELECT author, actor_type, created_by FROM notes WHERE id = ${noteId}`,
       );
       expect(note).toEqual({
         author: "research bot",
-        author_type: "agent",
+        actor_type: "agent",
         created_by: "research bot",
       });
 
@@ -1466,24 +1464,24 @@ describe("notes", () => {
     expect((err as ValidationError).allowed?.toSorted()).toEqual([...NOTE_ENTITY_TYPES].toSorted());
   });
 
-  it("can be edited but never moved to another entity or author type", async () => {
-    const noteId = await actAs(alice, (tx) => newNote(tx, "idea", f.ideaId));
-    await actAs(alice, (tx) =>
-      tx.query(sql`UPDATE notes SET body_md = 'Edited' WHERE id = ${noteId}`),
-    );
+  it("are append-only: never edited, moved, deleted or truncated", async () => {
+    const noteId = await actAs(alice, (tx) => newNote(tx, "idea", f.ideaId, "First thoughts"));
     for (const statement of [
+      sql`UPDATE notes SET body_md = 'Edited' WHERE id = ${noteId}`,
       sql`UPDATE notes SET entity_id = ${f.videoId}, entity_type = 'video' WHERE id = ${noteId}`,
-      sql`UPDATE notes SET author_type = 'agent' WHERE id = ${noteId}`,
+      sql`UPDATE notes SET actor_type = 'agent' WHERE id = ${noteId}`,
+      sql`DELETE FROM notes WHERE id = ${noteId}`,
+      { text: "TRUNCATE notes", values: [] },
     ]) {
-      expect(toDbError(await failure(actAs(alice, (tx) => tx.query(statement))))).toBeInstanceOf(
-        ImmutableError,
-      );
+      const err = toDbError(await failure(actAs(alice, (tx) => tx.query(statement))));
+      expect(err).toBeInstanceOf(ImmutableError);
+      expect((err as ImmutableError).details).toMatchObject({ table: "notes" });
     }
-    const note = await one<{ body_md: string; author: string; author_type: string }>(
+    const note = await one<{ body_md: string; author: string; actor_type: string }>(
       db.admin,
-      sql`SELECT body_md, author, author_type FROM notes WHERE id = ${noteId}`,
+      sql`SELECT body_md, author, actor_type FROM notes WHERE id = ${noteId}`,
     );
-    expect(note).toEqual({ body_md: "Edited", author: "alice", author_type: "human" });
+    expect(note).toEqual({ body_md: "First thoughts", author: "alice", actor_type: "human" });
   });
 });
 
@@ -1687,10 +1685,10 @@ describe("audit trail", () => {
         ),
     },
     {
+      // Append-only: inserts only.
       table: "notes",
       entity: "note",
       insert: (tx) => newNote(tx, "video", f.videoId),
-      update: (tx, id) => tx.query(sql`UPDATE notes SET body_md = 'Edited note' WHERE id = ${id}`),
     },
   ];
 
