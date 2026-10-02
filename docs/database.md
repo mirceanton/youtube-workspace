@@ -21,7 +21,9 @@ privileges, default privileges, schema `ytw_private`, restricted built-in functi
 `0002_catalog_guard` (`ytw_catalog_violations()` and its allowlist), `0003_core_functions`
 (`uuid_generate_v7()`, `ytw_error_codes()`, `ytw_raise()`) and `0004_audit` (`events`,
 `ytw_set_actor()`, `ytw_current_actor()`, `ytw_audit()`, `ytw_log_event()`, `ytw_append_only()`).
-T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see "Schema").
+T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see "Schema"). T14 owns `0050-0059`:
+`0050_identity_helpers`, `0051_identity`, `0052_permissions`, `0053_api_tokens`, `0054_web_sessions`
+(see "Identity, permissions, tokens, sessions").
 
 ## Running migrations
 
@@ -694,6 +696,155 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   `db.admin` when testing a mechanism (as `test/audit.test.ts` does with a fixture table).
 - A crashed run can leave a `ytw_test_*` database behind; drop only databases you created.
 
+## Identity, permissions, tokens, sessions
+
+Migrations `0050-0054` (T14). Tests: `test/identity.test.ts`, `permissions.test.ts`,
+`tokens.test.ts`, `sessions.test.ts`, `identity-privileges.test.ts`. The rules of PRD 7 live in these
+functions, not in the callers; `@ytw/policy` is the same rules for code that already holds the
+levels, and the tests compare the two.
+
+| Function | Wrapper | Roles | Does |
+| --- | --- | --- | --- |
+| `upsert_user_on_login` | `upsertUserOnLogin` | web | Sign a person in: create or update the user of an OIDC identity (issuer + `sub`). The first user ever becomes admin |
+| `get_user_access` | `getUserAccess` | web | A user with the levels they hold now (read on every request, never cache) |
+| `set_user_permission` | `setUserPermission` | web | Admin: set one cell of the access matrix |
+| `set_user_admin` | `setUserAdmin` | web | Admin: promote or demote; the last admin stays |
+| `list_users_with_levels` | `listUserAccess` | web | Admin: the access matrix |
+| `create_api_token` | `createApiToken` | web | A person creates a token for themselves; every level at most the owner's current level |
+| `update_token_permissions`, `rotate_api_token`, `revoke_api_token` | same names, camel case | web | The owner edits, replaces the secret of, or revokes a token |
+| `list_api_tokens`, `get_api_token` | `listApiTokens`, `getApiToken` | web | The owner's tokens with own and effective levels, last use, expiry. Never a hash |
+| `lookup_token_by_hash` | `lookupTokenByHash`, `toTokenPrincipal` | mcp, web | Authenticate: token, owner and both level sets, `active`, `revoked`, `expired` or unknown |
+| `touch_token_last_used` | `touchTokenLastUsed` | mcp, web | Record a use (`last_used_at` only, no event) |
+| `create_web_session`, `touch_web_session`, `get_web_session`, `update_web_session_tokens`, `delete_web_session`, `purge_expired_web_sessions` | `createWebSession`, ... | web | Browser sessions: idle and absolute expiry, opaque refresh-token ciphertext |
+
+Nothing here is executable by `ytw_readonly`, and the helpers (`ytw_resources()`,
+`ytw_user_effective_levels()`, `ytw_acting_user()`, `ytw_lock_users()`, ...) by nobody: they run
+inside the functions above (`test/identity-privileges.test.ts` pins every grant and fails when a
+function is added without being listed).
+
+**Who may call.** Everything that manages users, access or tokens needs a signed-in *person*:
+`actor_type` `human`, the actor name equal to the `username` of the acting user the caller passes
+(`actingUserId`), and for access management `is_admin`. The audit log therefore names the person who
+was allowed to make the change; a mismatch or an unknown acting user is refused. API tokens are
+refused (`forbidden`, `reason: not_human`) even when their owner is an admin, so a stolen token
+cannot mint, widen or rotate tokens. Tokens are managed by their owner only, an admin included
+(someone else's token is `not_found`); an admin who wants a token to stop lowers the user's levels,
+which lowers every token they own at once. The web server is trusted to pass the right
+`actingUserId`: the database checks consistency (exists, is that person, is admin), not
+authentication.
+
+**Levels.** `levels` in every result is the *effective* level per object: admins hold the maximum
+(`write`, the activity log `read`) whatever rows are stored, everyone else their stored level, `none`
+without a row. It is safe to pass `{ isAdmin, levels }` to every `@ytw/policy` function. The object
+list and the maximum per object are two SQL functions, `ytw_resources()` and `ytw_max_level()`;
+`test/permissions.test.ts` compares them with `RESOURCES` and `GRANTABLE_LEVELS`, and
+[`policy.md`](policy.md) says how to add an object. Level maps list every object the database knows;
+the wrappers read them as `@ytw/policy` reads stored rows (`parseResourceLevels`): an object this
+build does not know is ignored, so a migration may run before the services are redeployed, one the
+database does not list yet is `none`, and only a value that is not a level throws a plain `Error`.
+
+**First and last admin.** `ytw_lock_users()` takes `pg_advisory_xact_lock(0x59545721, 1)` inside the
+`SECURITY DEFINER` functions (the application roles cannot call advisory-lock functions themselves,
+so nobody can hold it to stall logins). `upsert_user_on_login` and `set_user_admin` take it first, so
+whoever finds no user at all becomes the one admin however many first logins race, and the last
+admin cannot be demoted however many demotions race (`forbidden`, `reason: last_admin`). Keep a
+transaction that calls them short. A user's row is share-locked while an access change runs, so a
+concurrent promotion or demotion waits for it. Tests: 20 parallel first logins (3 rounds), six
+admins demoting themselves at once (exactly five succeed), rings and pairs of admins demoting each
+other.
+
+**Admin rows.** Promoting raises the user's stored rows to the maximum in the same transaction;
+`set_user_permission` never lowers an admin's level (`forbidden`, `reason: target_is_admin`; asking
+for the level they already hold is a no-op). Demoting resets the user to `none` on every object unless
+`keepLevels` is true, so a demotion lowers the person and their tokens at once; the admin then grants
+back what the person should keep.
+
+**Login.** The audit actor of a login is the person signing in (actor = `preferred_username`, type
+`human`, which must equal the `username` argument); `lastLoginAt` is an audited change, so every login
+leaves an `update` event on the user. Profile fields mirror the identity provider's latest claims;
+an `email` or `display_name` that cannot be stored (blank, too long, whitespace) is dropped instead of
+failing the login, while a missing issuer, `sub` or username is a `validation` error. `username` is
+not unique: the identity is (issuer, `sub`), and `ytw_acting_user()` looks users up by id. Every user
+has one row per object; a login restores missing rows (and raises an admin's lowered ones).
+
+**Tokens.** The caller generates the secret, hashes it (SHA-256, 64 lower-case hex digits) and passes
+the hash and the prefix (`ytw_` plus at most 11 characters). Error messages and events never contain
+the hash, the secret or the prefix: a malformed hash is reported without echoing it, so a secret passed
+by mistake is not copied into a log. Rules:
+
+- Every requested level is at most the owner's *current* effective level and an object's maximum;
+  the error lists every problem and the values that would be accepted, in the words of
+  `grantViolations` (`forbidden` when only the ceiling is exceeded, `validation` for unknown objects
+  or levels and `write` on the activity log). Objects left out get `none`. An owner with no access to
+  any object cannot create tokens (PRD 7).
+- `expires_at` is empty (never) or in the future. Rotation replaces hash and prefix at once (the old
+  secret is unknown from the next statement on), keeps id, name and levels, starts `last_used_at`
+  over, and keeps the expiry unless one is passed; an expired token must be given a new one.
+  Revoked tokens cannot be changed or rotated; revoking twice changes nothing.
+- `lookup_token_by_hash` reads the token and its owner in one statement, so lowering a user (or
+  demoting an admin) lowers the result at once. `status` is `revoked` (wins), `expired` or `active`;
+  an unknown hash returns no row (`{ status: "unknown" }`); a hash that is not 64 lower-case hex
+  digits is a `validation` error. `levels` are the token's own, `owner.levels` the owner's effective
+  levels (with `owner.isAdmin`), `effectiveLevels` the per-object minimum and all `none` unless the
+  token is active, so a caller that forgets to look at `status` still grants nothing.
+  `toTokenPrincipal(found)` builds the `TokenPrincipal` of `@ytw/policy`; `principalLevels` of it
+  equals `effectiveLevels` (tested for owners and tokens at every level).
+- `touch_token_last_used(actor = token name, 'agent', token id)` changes only `last_used_at`: the audit
+  trigger and `updated_at` skip it, so there is no event spam. Throttle it in the caller (T21) if the
+  statement per call matters.
+
+**Sessions** (web only, deliberately not audited and without an actor parameter: the session id is
+the bearer handle behind the cookie and must never reach `events`; no message here repeats one). Idle
+expiry `expires_at` = last activity + idle timeout, moved by `touch_web_session`; absolute expiry
+`absolute_expires_at` = login + absolute timeout, never moved; `expires_at <= absolute_expires_at`.
+Both are measured against the clock of the call that checks them. A session is alive only while both
+lie in the future; `get_web_session` reports `active`, `idle_expired` or `absolute_expired` (absolute
+wins) and returns the refresh-token ciphertext only while active; `touch_web_session` and
+`update_web_session_tokens` never revive a dead session; `purge_expired_web_sessions()` deletes the
+dead ones. Timeouts are whole seconds between 60 and 31 622 400, the ciphertext 1-16 384 bytes. The
+ciphertext is made and read by the caller; the database stores it as given.
+
+**Events.** The audit triggers of 0011-0013 log every row change; their payloads for the two
+`ytw_private` tables carry column names and the entity id only (default-deny), so each management call
+also logs one readable event with `ytw_log_event` (never a secret):
+
+| `action` | `entity_type` / id | Payload |
+| --- | --- | --- |
+| `user.permission_changed` | `user` / the user changed | `user`, `resource`, `from`, `to` |
+| `user.admin_granted`, `user.admin_revoked` | `user` / the user | `user` (and `levels_reset` when revoked) |
+| `token.created` | `api_token` / the token | `token_name`, `owner`, `expires_at`, `levels` |
+| `token.permissions_changed` | `api_token` / the token | `token_name`, `owner`, `changes: [{ resource, from, to }]` |
+| `token.rotated` | `api_token` / the token | `token_name`, `owner`, `expires_at` |
+| `token.revoked` | `api_token` / the token | `token_name`, `owner` |
+
+A call that changes nothing (same level, same admin state, a second revocation) writes nothing.
+Actor, `actor_type` and `token_id` of every event are the caller's (the person; `token_id` is NULL).
+
+**Errors.** `validation` (malformed or unknown value), `forbidden` (not a person, not the acting
+user, not an admin, last admin, an admin's levels, above the owner's level, no access to any object),
+`not_found` (unknown user; a token that is not the caller's), `invalid_transition` (changing or
+rotating a revoked token), `duplicate` (a token hash in use). Wrappers throw the typed classes of
+`errors.ts`; reads on a plain pool map catalogue errors too.
+
+**From the services.**
+
+```ts
+// MCP (T21/T30): authenticate, then act as the token.
+const found = await lookupTokenByHash(mcpPool, sha256Hex(secret));
+if (found.status !== "active") return unauthorized();   // never tell the client which failure
+const principal: TokenPrincipal = toTokenPrincipal(found);
+void touchTokenLastUsed(mcpPool, found).catch(log);       // after the call is authorised
+
+// Web (T40): per request, then per page.
+const session = await touchWebSession(pool, sessionId, idleSeconds);   // null = signed out
+const me = session && (await getUserAccess(pool, session.userId));     // levels read now
+await withActor(pool, { name: me.username, type: "human" }, (tx) =>
+  setUserPermission(tx, { actingUserId: me.id, userId, resource, level }));
+```
+
+Not covered here: a person removed from the Keycloak access group keeps working tokens until an
+admin lowers their levels (or they revoke them); the database has no "disabled" flag.
+
 ## Notes for specific tasks
 
 - **T11** (done, see "Schema"): every business table carries `ytw_audit('<entity>', ...)` with
@@ -708,10 +859,10 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   another owner; the loader rejects files with transaction control or `BEGIN ATOMIC` bodies; the
   application roles cannot call advisory-lock functions, so take locks inside `SECURITY DEFINER`
   functions only.
-- **T14**: `touch_token_last_used` should update only `last_used_at` (and `updated_at`), so the
-  trigger skips it. Functions reading `ytw_private` are `SECURITY DEFINER`, granted to `ytw_web`
-  and/or `ytw_mcp` only. To show more of a token in the audit log than its id, recreate the
-  trigger in your range with more `+col` arguments (never the hash).
+- **T14** (done, see "Identity, permissions, tokens, sessions"): the row-level audit triggers of
+  `api_tokens` and `api_token_permissions` stay default-deny as T10 left them; the readable record of
+  a token change is the `token.*` event of the function that made it. Functions reading
+  `ytw_private` are `SECURITY DEFINER`, granted to `ytw_web` and/or `ytw_mcp` only.
 - **T15**: views granted to `ytw_readonly` must not read `ytw_private` (guard), and a function that
   `query_sql` may call needs `SECURITY INVOKER` and an allowlist row. Functions only the services
   call (`search_all`, `list_events`) are granted to `ytw_web` and `ytw_mcp`.
@@ -751,3 +902,13 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   database instead of leaving them to each function (PLAN.md lists only the columns).
 - `notes` are append-only and limited to `NOTE_BODY_MAX_BYTES`, matching the `/api/notes` contract
   (PRD 4 names only `scripts` and `video_metrics` as append-only and sets no note limit).
+- The session functions take no actor and write no event (the one exception to the function
+  convention: a session id is a bearer handle and must not reach `events`); the functions that manage
+  users, access and tokens add a readable `user.*` / `token.*` event to the row-level ones and require a
+  signed-in person whose username is the audit actor (PLAN.md asks only for the actor parameters).
+- Demoting an admin resets their levels to none unless asked otherwise (PRD 7 does not say; the
+  alternative leaves a demoted admin with Write on everything and leaves their tokens as strong as
+  before, which contradicts "lowering a user's levels immediately lowers their tokens"). Rotating a
+  token can set a new expiry, and `update_web_session_tokens` exists, because a silent refresh needs
+  it (PLAN.md lists create/touch/get/delete/purge).
+- `@ytw/policy` is a dev dependency of `@ytw/db`, for the tests that compare the SQL with it.

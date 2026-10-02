@@ -54,6 +54,17 @@ The owner's levels must be read in the same request as the token, never cached: 
 "lowering a user's levels immediately lowers their tokens" true. `levelsFromRecord` does the same
 for a jsonb object such as `{ "ideas": "write" }`.
 
+`@ytw/db` hands these inputs over ready-made (docs/database.md, "Identity, permissions, tokens,
+sessions"). `getUserAccess(db, userId)` returns `{ id, username, isAdmin, levels }` whose `levels`
+are already effective, so `{ kind: "user", userId: id, username, isAdmin, levels }` needs no
+`levelsFromRows`. `lookupTokenByHash(db, hash)` returns the token's own levels, the owner (id,
+username, admin flag, effective levels) and the database's own `effectiveLevels`;
+`toTokenPrincipal(found)` turns an `active` token into the `TokenPrincipal` above, and
+`principalLevels` of it equals `effectiveLevels` (a test compares both for owners and tokens at every
+level). A revoked or expired token comes back with `effectiveLevels` all None, so a caller that
+forgets to look at `status` still grants nothing. Objects the build does not know are ignored when
+the levels are read, and objects the database does not list yet are None.
+
 ## Using it
 
 **Web server.** Every route declares an `AccessRule`: `"public"`, `"authenticated"`, `"admin"` or
@@ -168,53 +179,70 @@ what the object is.
 2. **Write a migration** `packages/db/migrations/NNNN_resource_sponsors.sql`, using the next free
    number in your task's range (`0200+` for later work, from the orchestrator). Applied migrations
    are immutable, so everything below goes in the new file.
+   [`packages/db/test/resource-migration.test.ts`](../packages/db/test/resource-migration.test.ts)
+   runs exactly this procedure, for `sponsors` and for a read-only `reports`, on a database that
+   already has users and tokens, so the names below are checked against the real schema.
 
-   > **Status: planned, not yet built.** The permission tables and their constraints (T11), the
-   > database functions named below (T14), `docs/database.md` (T10) and the database test that
-   > compares the object list with `RESOURCES` (T11/T14, as CLAUDE.md requires) are to be
-   > implemented by those tasks. T16 and T62 verify this step against what they ship and correct the
-   > names. Until then, read the table, constraint and function names below as the plan, not as
-   > existing code.
+   - **Accept the value.** `user_permissions` and `ytw_private.api_token_permissions` each have a
+     CHECK on `resource` (`user_permissions_resource_check`,
+     `api_token_permissions_resource_check`); the levels have `..._level_check`. They are CHECK
+     constraints, not an enum, so drop and add each one in a single `ALTER TABLE` with the new
+     object in the list:
 
-   - **Accept the value.** Replace the `resource` CHECK constraint that T11 is to define on
-     `user_permissions` and on `api_token_permissions` with one that also lists `'sponsors'`
-     (`\d user_permissions` in psql shows the constraint names). If T11 uses an enum type
-     instead, run `ALTER TYPE ... ADD VALUE 'sponsors'` in a migration of its own: a new enum value
-     cannot be used in the transaction that adds it, and each migration file is one transaction.
-   - **Read-only object?** Extend the CHECK that forbids `write` on the activity log so it also
-     covers `'sponsors'`.
+     ```sql
+     ALTER TABLE public.user_permissions
+       DROP CONSTRAINT user_permissions_resource_check,
+       ADD CONSTRAINT user_permissions_resource_check
+         CHECK (resource IN ('ideas', 'scripts', 'experiments', 'videos', 'notes', 'activity', 'sponsors'));
+     ALTER TABLE ytw_private.api_token_permissions
+       DROP CONSTRAINT api_token_permissions_resource_check,
+       ADD CONSTRAINT api_token_permissions_resource_check
+         CHECK (resource IN ('ideas', 'scripts', 'experiments', 'videos', 'notes', 'activity', 'sponsors'));
+     ```
+   - **Read-only object?** The CHECKs `user_permissions_read_only_check` and
+     `api_token_permissions_read_only_check` forbid `write` on the activity log; replace both with
+     `CHECK (level <> 'write' OR resource NOT IN ('activity', 'sponsors'))`.
+   - **The object list in SQL.** Two functions spell out the objects and are the only ones to
+     change: `public.ytw_resources()` (the list, in display order) and `public.ytw_max_level(text)`
+     (`read` for read-only objects, `write` for the rest). Redefine them with `CREATE OR REPLACE
+     FUNCTION`, keeping `IMMUTABLE`, `PARALLEL SAFE` and `SET search_path = pg_catalog, public,
+     pg_temp` (replacing keeps their privileges: nobody may execute them). Everything else that
+     deals with levels reads these two, directly or through the helpers of
+     `0050_identity_helpers.sql`: `upsert_user_on_login`, `set_user_permission`, `set_user_admin`,
+     `create_api_token`, `update_token_permissions`, `lookup_token_by_hash`, the lists. To check
+     that nothing else spells the objects out, `grep -rn "'activity'" packages/db/migrations`
+     should find only the two functions and the four CHECK constraints above (plus whatever a
+     later feature adds, such as a search function that filters by object).
    - **Backfill a row for every existing user and token.** Admins get the maximum (`write`, or
      `read` for a read-only object) so stored rows agree with the policy rule that admins hold the
      maximum everywhere. Everyone else gets `none`, and so does every existing token: access to a
-     new object is always granted deliberately, never inherited.
+     new object is always granted deliberately, never inherited. The audit triggers need an actor
+     for data changes in a migration (`docs/database.md`, "Bookkeeping belongs to the database"):
 
      ```sql
-     INSERT INTO user_permissions (user_id, resource, level)
-     SELECT id, 'sponsors', CASE WHEN is_admin THEN 'write' ELSE 'none' END FROM users
+     SELECT public.ytw_set_actor('migration 0200_resource_sponsors', 'human', NULL);
+
+     INSERT INTO public.user_permissions (user_id, resource, level)
+     SELECT id, 'sponsors', CASE WHEN is_admin THEN public.ytw_max_level('sponsors') ELSE 'none' END
+     FROM public.users
      ON CONFLICT (user_id, resource) DO NOTHING;
 
-     INSERT INTO api_token_permissions (token_id, resource, level)
-     SELECT id, 'sponsors', 'none' FROM api_tokens
+     INSERT INTO ytw_private.api_token_permissions (token_id, resource, level)
+     SELECT id, 'sponsors', 'none' FROM ytw_private.api_tokens
      ON CONFLICT (token_id, resource) DO NOTHING;
      ```
 
-     Fill any other required columns those tables will define (T11), and set the audit actor for
-     data changes the way `docs/database.md` (to be written by T10) prescribes for migrations.
-   - **Update the functions that spell out the object list.** Find them with
-     `grep -rn "'activity'" packages/db/migrations` (every list contains the activity log). Once
-     T14 has built them, expect at least `upsert_user_on_login` (rows for new users, Write
-     everywhere for the first admin), the permission and token functions (`set_user_permission`,
-     `create_api_token`, `update_token_permissions`, `lookup_token_by_hash`) and, if the object is
-     searchable, `search_all` (T15). Redefine each with `CREATE OR REPLACE FUNCTION` in the new
-     migration, keeping the conventions `docs/database.md` will set (SECURITY DEFINER, pinned
-     `search_path`, grants).
+     New users and tokens get their rows from the functions (`upsert_user_on_login`,
+     `create_api_token`), which read `ytw_resources()`. A user or token without a row for an object
+     is treated as `none` everywhere, and a login restores a missing row, so a forgotten backfill
+     cannot grant anything.
    - **New tables** for the object follow the same conventions: mutations only through SECURITY
      DEFINER functions, no table-level DML for app roles, the `ytw_audit()` trigger, and `SELECT`
      for `ytw_readonly` unless the table holds secrets.
    - Run `pnpm migrate` twice (the second run must be a no-op) and `pnpm --filter @ytw/db test`.
-     Once T11/T14 add the test that compares the database's object list with `RESOURCES`, it must
-     pass; until then, check by hand that every list found by the grep above includes the new
-     object.
+     `test/permissions.test.ts` ("lists the same objects and maximum levels as @ytw/shared") fails
+     until `ytw_resources()` and `ytw_max_level()` agree with `RESOURCES` and `GRANTABLE_LEVELS`, and
+     `test/schema.test.ts` compares the CHECK constraints with them.
 
 3. **Policy** (`packages/policy`): no source change. Run `pnpm --filter @ytw/policy test`; the
    matrix, grant and summary tests now include the new object and coverage stays at 100 %. If the
@@ -262,10 +290,13 @@ rows and a check of every token that referenced it.
 
 - **Admins.** PRD 7 says admins "have Write on everything". `userLevels` therefore gives an admin
   the maximum on every object whatever rows are stored, and a token owned by an admin is limited
-  only by the token's own levels. The database is expected to store matching rows (Write
-  everywhere for the first admin, and for anyone promoted later) so that database-side checks
-  agree; if a stored row is lower, the database side is stricter, never looser. Demoting an admin
-  takes effect on the next request, for the user and for every token they own.
+  only by the token's own levels. The database stores matching rows (`upsert_user_on_login` for
+  the first admin, `set_user_admin` raises them in the same transaction for anyone promoted later)
+  and applies the admin rule itself wherever it computes levels (`ytw_user_effective_levels`), so
+  the two sides agree even if a stored row were lower. `set_user_permission` never lowers an
+  admin's level. Demoting an admin resets their levels to None unless the admin asks to keep them
+  (`keepLevels`), so it takes effect on the next request, for the user and for every token they own;
+  the admin then grants back what the person should keep.
 - **Impossible requirements.** A route or tool that requires a level its object can never have
   (Write on the activity log) or requires None is a programming error and throws at registration
   (`validateRequirement`) instead of silently denying or allowing everyone.

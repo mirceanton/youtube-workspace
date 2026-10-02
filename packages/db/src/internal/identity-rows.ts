@@ -36,9 +36,13 @@ export function onlyRow<R>(rows: readonly R[], fn: string): R {
 
 /**
  * Turns the `jsonb` object a database function returns (`{"ideas": "write", ...}`) into a complete
- * level map. Anything but exactly one valid level per object throws a plain Error: the database
- * always writes the full set, so a gap or a stranger means a corrupt or out-of-date schema, and the
- * caller must fail closed instead of guessing a level.
+ * level map for the objects this build knows (`RESOURCES`), the way `@ytw/policy` reads stored rows:
+ *
+ * - an object the database lists but this build does not know is ignored, so a migration that adds
+ *   an object type can run before the services that understand it are deployed (docs/policy.md);
+ * - an object this build knows but the database does not list yet is `none` (fail closed);
+ * - a value that is not a level, or something that is not an object, is corrupt data and throws a
+ *   plain Error, so the caller fails instead of guessing a level.
  */
 export function parseResourceLevels(value: unknown, what = "levels"): ResourceLevels {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -48,17 +52,13 @@ export function parseResourceLevels(value: unknown, what = "levels"): ResourceLe
   const levels: Partial<Record<Resource, Level>> = {};
   for (const resource of RESOURCES) {
     const level = record[resource];
-    if (typeof level !== "string" || !(LEVELS as readonly string[]).includes(level)) {
-      throw new Error(`the database returned ${what} without a valid level for ${resource}`);
+    if (level === undefined) {
+      levels[resource] = "none";
+    } else if (typeof level === "string" && (LEVELS as readonly string[]).includes(level)) {
+      levels[resource] = level as Level;
+    } else {
+      throw new Error(`the database returned ${what} with an invalid level for ${resource}`);
     }
-    levels[resource] = level as Level;
-  }
-  const known = new Set<string>(RESOURCES);
-  const unknown = Object.keys(record).filter((key) => !known.has(key));
-  if (unknown.length > 0) {
-    throw new Error(
-      `the database returned ${what} for objects this build does not know: ${unknown.join(", ")}`,
-    );
   }
   return levels as ResourceLevels;
 }
