@@ -3,6 +3,16 @@
 Source of truth for requirements: [`docs/PRD.md`](../PRD.md). Worker rules: [`PROTOCOL.md`](PROTOCOL.md).
 The orchestrator only dispatches, tracks and unblocks. Workers implement; separate workers review.
 
+## Scope decision (user, 2026-10-02): deliver phases 0-2 now, defer the web app
+Delivered in this round: Phase 0 (foundations), Phase 1 (data layer) and Phase 2 (MCP server) = the backend plus the MCP
+interface, usable by agents without any UI (PRD 10: "agents can collaborate through the database before any UI exists").
+**Deferred until the user asks:** Phase 3 (web BFF, SPA features, OIDC login, settings screens: T40, T41b, T42-T49), Phase 4
+(PWA and mobile: T50, T51) and the web-related parts of Phase 5 (T60 security review of the web tier, T61 web performance,
+T62 full README). T41 (SPA shell) and T02 (Keycloak realm) are already merged and stay dormant. Because the web app is where
+users and API tokens are normally created, phase 2 gains **T21b (admin CLI)** and **T36 (operator guide)**, and T63 becomes a
+final acceptance check of phases 0-2 only. Also deferred to the web phase: the "disabled user" design gap found in the T14
+review (a user removed from the Keycloak group should lose their API tokens too).
+
 ## 0. Decisions fixed up front (cheap to decide now, expensive to change mid-fleet)
 
 PRD section 3 lists defaults and allows deviation with a written justification. These are the deviations/choices
@@ -189,6 +199,12 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* `generateToken()` (`ytw_` + 32 random bytes base64url; stored prefix + SHA-256 hash; secret returned once), create/rotate/revoke/update services combining `@ytw/policy` ceilings with the T14 functions, `authenticateBearer(header)` -> principal `{tokenId, tokenName, ownerId, ownerUsername, levels}` or a typed failure (missing, malformed, unknown, revoked, expired, owner removed), `touch last_used_at` throttled (<= once/min/token), in-memory failure rate limiter (per IP and per prefix, `Retry-After`), redaction helper. Never logs a secret.
 *Done when:* tests for every failure mode, revocation takes effect on the next call, owner-lowering reflected, limiter behaviour, timing-safe comparison where applicable.
 
+**T21b Admin CLI: bootstrap admin, users, tokens** · P2 · sonnet · deps: T21, T14 · Review tier B
+*Owns:* new package `apps/admin-cli` (`@ytw/admin-cli`, bin `ytw-admin`, root script `pnpm ytw-admin`), `docs/admin-cli.md`. Creating the package needs its tsconfig reference in the root `tsconfig.json` and a `vitest.config.ts` (CLAUDE.md rules).
+*PRD:* 7 (First user becomes admin; API tokens; Settings page equivalents), 5 (token auth), 9 (setup).
+*Do:* a small, scriptable CLI that does what the web settings screens would, through the T14 database functions and the T21 token service (never raw SQL writes), connecting with `DATABASE_URL` (the `ytw_web` role): `user create --issuer --sub --username [--email] [--display-name]` (first user becomes admin; defaults issuer `local` and sub = username for a no-OIDC setup, documented), `user list`, `user set-level --as <admin> <user> <resource>=<level>`, `user set-admin`, `token create --owner <user> --name <n> --expires-in 90d|never --grant ideas=write,scripts=read,...` (levels up to the owner's, prints the secret ONCE to stdout, nothing else secret ever printed or logged), `token list|update|rotate|revoke`. Human-readable errors, `--json` output mode, non-zero exit codes. The management functions require an admin acting user: `--as <admin-username>` (document why).
+*Done when:* integration tests through the db harness for the whole flow (first admin, second user starts with none, grant levels, create a token above the owner's level fails with the allowed list, rotate invalidates the old secret, revoke), secrets never appear in output besides the one-time secret, `docs/admin-cli.md` shows the exact commands to go from an empty database to a working MCP token.
+
 **T30 MCP foundation** · P2 · sonnet · deps: T21, T23, T20 · Review tier A
 *Owns:* `apps/mcp/**` except `src/tools/*.ts` group files and `src/files/**`.
 *PRD:* 5 (Server, Transport and auth, Tool design rules, Database roles), 9.
@@ -222,7 +238,13 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* generate the tool reference (`pnpm docs:mcp`) from the registry plus an agent integration guide (client config example, token creation steps, the file round-trip recipe). Exhaustive matrix over **every tool** x {None, Read, Write} x {owner Write, owner lowered}; revoke/expire/rotate take effect on the next call; `last_used_at` updates; audit actor = token name + id + owner; error messages are actionable; concurrency scenarios; the PRD 5 tool contract table is checked tool-by-tool. Fix defects.
 *Done when:* all green; traceability shows no gap; phase 1+2 usable without any UI (agents collaborate through MCP).
 
-### Phase 3: web UI + authentication
+**T36 Operator guide for the backend and MCP server** · P2 · sonnet · deps: T35, T21b · Review tier B
+*Owns:* `README.md`, `docs/operations.md`.
+*PRD:* 9 (Quality: README contents), 3 (stack deviation justification), 5.
+*Do:* README with what this is, a mermaid architecture diagram (backend + MCP, web app marked as a later phase), prerequisites, local development (`scripts/pg-local.sh` or docker compose), the configuration table generated with `renderEnvTable` from the MCP server's zod env schema, running migrations (roles, passwords, the superuser bootstrap for non-superuser owners, `queryReadOnly` role notes), starting the MCP server, going from an empty database to a working token with the admin CLI, connecting an agent (client configuration example), the script download/edit/upload recipe, `query_sql` rules, security notes (METRICS_TOKEN, TLS termination in front, rate limits, log redaction), deployment (images from `docs/ci-cd.md`, migrate job command), how to add an object type (link `docs/policy.md`), and the stack-deviation justification (from the ADR). State clearly that the web app is not built yet.
+*Done when:* a fresh worker follows the README from a clean clone and reaches a running MCP server, creates a token with the CLI and makes a successful tool call (docs-as-tests); every command in the README was executed.
+
+### Phase 3: web UI + authentication (DEFERRED by user decision)
 
 **T40 Web BFF: OIDC, sessions, authz, security** · P3 · sonnet · deps: T14, T20, T23 · Review tier A
 *Owns:* `apps/web-server/**` except `src/routes/<feature>/` for features (T41-T47).
@@ -323,7 +345,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* README with setup, one-command local dev, configuration table generated from the zod env schemas, how to create an API token for a new agent, how to add a new object type to the permission matrix (from `docs/policy.md`), architecture diagram (mermaid), MCP agent guide link, deployment notes (images, env, migration job, roles), stack-deviation justification (from the ADR).
 *Done when:* a fresh worker follows the README from a clean clone and reaches a running stack, creates a token and calls the MCP server (docs-as-tests); every command in the README was executed.
 
-**T63 Final acceptance QA** · P5 gate · sonnet · deps: T60, T61, T62 · gate
+**T63 Final acceptance QA (phases 0-2 only; web-related requirements listed as deferred)** · P5 gate · sonnet · deps: T60, T61, T62 · gate
 *Owns:* `docs/acceptance.md`.
 *Do:* independent verification. Traceability matrix of **every** PRD requirement (goals G1-G5, stories, section 4 integrity rules, section 5 tools, section 6 rows, section 7 bullets, section 8, section 9) -> evidence (test file/command) or a gap; run the full suite from a clean clone; list what cannot be verified in the sandbox (real Keycloak realm, real iPhone, hosted CI) and what the user must configure.
 *Done when:* every row is pass / not-verifiable-with-reason / gap-with-follow-up-task.
@@ -354,9 +376,9 @@ Parallel slots: after T00 -> {T01,T02,T10,T20,T22,T23}. After T11 -> {T12,T13,T1
 | P0 foundations | T00 + T01 + T02 | not started |
 | P1 data layer | T16 | not started |
 | P2 MCP | T35 | not started |
-| P3 web | T49 | not started |
-| P4 PWA/mobile | T51 | not started |
-| P5 hardening | T63 | not started |
+| P3 web | T49 | DEFERRED (user decision) |
+| P4 PWA/mobile | T51 | DEFERRED (user decision) |
+| P5 hardening | T63 (phases 0-2 only) | not started; T60/T61/T62 deferred with the web app |
 
 Note: the PRD roadmap diagram (section 10, "5 phases, 5 gates") was an embedded image and was not in the text export; the phase
 split above is inferred from the prose ("phases 1 and 2 are useful on their own: agents can collaborate through the database
