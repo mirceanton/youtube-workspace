@@ -9,18 +9,19 @@ so breaking them fails the build rather than a review.
 | --- | --- |
 | Migrations (plain SQL, one transaction each) | `packages/db/migrations/NNNN_name.sql` |
 | Runner and `pnpm migrate` | `packages/db/src/migrate.ts`, `packages/db/src/bin/migrate.ts` |
-| Pools, `sql` template, `withActor` | `packages/db/src/client.ts` |
-| SQLSTATE catalogue and typed errors | `packages/db/src/errors.ts`, `ytw_error_codes()` in SQL |
+| One-time superuser setup for production | `packages/db/sql/superuser-bootstrap.sql` |
+| Pools, `sql` template, `withActor`, `queryReadOnly` | `packages/db/src/client.ts` |
+| SQLSTATE catalogue, typed errors, `toClientError` | `packages/db/src/errors.ts`, `ytw_error_codes()` in SQL |
 | Typed wrappers, one module per area | `packages/db/src/<area>.ts` (owners: PLAN.md section 3) |
 | Test harness | `@ytw/db/testing` (`packages/db/src/testing.ts`) |
-| Catalog, audit, runner and harness tests | `packages/db/test/*.test.ts` |
+| Catalog, audit, runner, read-only and harness tests | `packages/db/test/*.test.ts` |
 
-T10 owns migrations `0001-0009`: `0001_roles` (roles, database and schema privileges, default
-privileges, schema `ytw_private`), `0002_catalog_guard` (`ytw_catalog_violations()`),
-`0003_core_functions` (`uuid_generate_v7()`, `ytw_error_codes()`, `ytw_raise()`) and `0004_audit`
-(`events`, `ytw_set_actor()`, `ytw_current_actor()`, `ytw_audit()`, `ytw_log_event()`,
-`ytw_append_only()`). T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see
-"Schema").
+T10 owns migrations `0001-0009`: `0001_roles` (roles and their settings, database and schema
+privileges, default privileges, schema `ytw_private`, restricted built-in functions),
+`0002_catalog_guard` (`ytw_catalog_violations()` and its allowlist), `0003_core_functions`
+(`uuid_generate_v7()`, `ytw_error_codes()`, `ytw_raise()`) and `0004_audit` (`events`,
+`ytw_set_actor()`, `ytw_current_actor()`, `ytw_audit()`, `ytw_log_event()`, `ytw_append_only()`).
+T11 owns `0010-0029`: the tables of PRD 4 plus `web_sessions` (see "Schema").
 
 ## Running migrations
 
@@ -34,57 +35,118 @@ MIGRATION_DATABASE_URL=postgres://postgres:postgres@localhost:5432/youtube_works
 
 | Variable | Meaning |
 | --- | --- |
-| `MIGRATION_DATABASE_URL` | Required. Privileged connection to the target database. |
-| `YTW_WEB_PASSWORD`, `YTW_MCP_PASSWORD`, `YTW_READONLY_PASSWORD` | Optional. Set after migrating; 16-256 printable ASCII characters (`openssl rand -hex 24`). Unset: the role keeps its password. |
+| `MIGRATION_DATABASE_URL` | Required. Connection to the target database as the migration owner (see "Production setup"). |
+| `YTW_WEB_PASSWORD`, `YTW_MCP_PASSWORD`, `YTW_READONLY_PASSWORD` | Optional. 16-256 printable ASCII characters without spaces (`openssl rand -hex 24`). Unset: the role keeps its password. |
 | `MIGRATION_LOCK_DATABASE_URL` | Optional. A database every concurrent runner of the cluster also locks (see "Locking"). |
 
 What a run does, in order:
 
 1. Reads `migrations/*.sql`. Every `.sql` file must be named `NNNN_lower_snake_case.sql` with a
-   unique number; other files are ignored. The checksum is SHA-256 of the file with CRLF turned
-   into LF and a BOM removed.
+   unique number; other files are ignored. A file containing transaction control is rejected here,
+   before anything runs (see "Writing a migration"). The checksum is SHA-256 of the file with CRLF
+   turned into LF and a leading byte-order mark removed.
 2. Takes the locks, creates `schema_migrations` if missing and compares it with the files. It
    **refuses to run** (and applies nothing) when an applied file was edited, renamed or deleted, or
-   when a pending file is numbered below the newest applied one. Fix forward with a new file; in
-   development, recreate the database.
-3. Applies each pending file in its own transaction together with its `schema_migrations` row,
-   then calls `ytw_catalog_violations()` in that same transaction; any row rolls the file back
-   (**enforced**, see "Privilege rules").
-4. Sets the role passwords it was given, as SCRAM-SHA-256 verifiers computed in Node, so the plain
-   text never reaches the server. Passwords are never logged.
+   when a pending file is numbered below the newest applied one (see "Out-of-order files").
+3. Restores the application roles' stored settings (`ytw_enforce_role_settings()`, see "What keeps
+   `query_sql` read-only") and runs the catalog guard: a database that already breaks a privilege
+   rule is not migrated any further.
+4. Applies each pending file in its own transaction together with its `schema_migrations` row.
+   Before committing it checks that the file did not end that transaction, then calls
+   `ytw_catalog_violations()` in the same transaction; any row rolls the file back (**enforced**,
+   see "Privilege rules").
+5. Sets each role password it was given, unless the stored one already matches, as a
+   SCRAM-SHA-256 verifier computed in Node, so the plain text never reaches the server. Passwords
+   are never logged.
 
-Running it again is a no-op (CI runs it twice). Exit codes: 0 done, 1 failed, 2
-`MIGRATION_DATABASE_URL` unset. A failed file reports its name, line, SQLSTATE, detail and hint.
+A second run applies nothing and changes no schema (CI runs it twice). The only writes it can still
+make are repairs: role settings that drifted, and passwords that differ. Comparing a password reads
+`pg_authid`, which only a superuser may do, so a run as a non-superuser owner sets every password
+it is given again (same password, new salt; open connections are not affected). Exit codes: 0
+done, 1 failed, 2 `MIGRATION_DATABASE_URL` unset. A failed file reports its name, line, SQLSTATE,
+detail and hint.
 
-**Locking.** The runner holds a session advisory lock in the target database for the whole run,
-so two runners never migrate one database at once. Roles are cluster-wide, though, and advisory
-locks are per database, so runners migrating *different* databases of one cluster at the same time
-additionally lock a shared database (`lockDatabaseUrl`; the test harness uses the maintenance
-database `postgres`). Keys: `MIGRATION_LOCK_KEY` (target) and `CLUSTER_LOCK_KEY` (shared), always
-taken in that order, so runs cannot deadlock. Waiting longer than 5 minutes fails the run.
+**Out-of-order files.** Every task numbers its files inside its own range (PLAN.md section 3), and
+the runner applies files strictly in number order: a pending file numbered below the newest applied
+one is refused, and there is no override. Applying it late would give that database a different
+history than a fresh one (a later file may already depend on, or replace, what the earlier one
+creates), and the checksums could no longer show that every database went through the same steps.
 
-**Who runs it.** A superuser, or (recommended for production) the role that owns the database
-with `CREATEROLE` and `ADMIN OPTION` on the three application roles. `test/owner.test.ts` runs
-every migration that way, so a migration that silently needs a superuser fails CI. Functions are
-owned by whoever runs the migrations, which is the identity `SECURITY DEFINER` functions run as.
-The roles are shared by every database in the cluster: run one deployment per cluster, or give
-concurrent runners the same `MIGRATION_LOCK_DATABASE_URL`.
+- In development, a database that applied a higher-numbered file from another branch must be
+  recreated (`dropdb`/`createdb`, or a new database name, then `pnpm migrate`). Test databases are
+  new on every run and never hit this.
+- Once a database that matters has been migrated (the first deployment), new files are numbered
+  above every merged file (`0200+`, ask the orchestrator), never in an older task's unused range.
+
+**Locking.** Roles are cluster-wide but advisory locks are per database, so a run holds up to two
+session advisory locks: first `CLUSTER_LOCK_KEY` in the shared lock database
+(`MIGRATION_LOCK_DATABASE_URL`, `lockDatabaseUrl` in code; the test harness uses the database of
+`TEST_DATABASE_URL`, normally `postgres`), then `MIGRATION_LOCK_KEY` in the target database. They
+are always taken in that order and the holder of the target lock waits for nothing else, so runs
+cannot deadlock. Without a lock database only the target is locked, which is enough for one
+application database per cluster. Waiting longer than 5 minutes for a lock fails the run.
 
 **Readiness.** `migrationStatus(pool)` compares `schema_migrations` with the files on disk without
 changing anything (`upToDate`, `pending`, `changed`, `unknown`). `ytw_web` and `ytw_mcp` may read
 `schema_migrations` for this.
 
+## Production setup
+
+Every `SECURITY DEFINER` function is owned by, and runs as, the role that ran the migration that
+created it, and that must always be the same role (**enforced** by `definer_owner`).
+
+- **Development and CI** migrate as the superuser `postgres`. There every `SECURITY DEFINER`
+  function runs as a superuser, so a mistake inside one (careless dynamic SQL, say) has no
+  privilege boundary behind it. Review such functions with that in mind.
+- **Production** should migrate as the role that owns the application database, with `CREATEROLE`
+  (Postgres 16 gives it `ADMIN OPTION` on the roles it creates; grant it `ADMIN OPTION` on roles
+  that already exist). Taking the large-object and advisory-lock functions away from `PUBLIC` needs
+  a superuser, so once per database, before the first `pnpm migrate`, a superuser runs:
+
+  ```bash
+  psql "postgres://<superuser>@<host>/<database>" -f packages/db/sql/superuser-bootstrap.sql
+  ```
+
+  The script is idempotent and gives the database owner `EXECUTE` on the advisory-lock functions
+  back (the runner and the functions the owner creates use them). Without it `0001_roles` stops
+  with a hint naming the script. `test/owner.test.ts` runs every migration this way, so a migration
+  that silently needs a superuser fails CI.
+- `ALTER DEFAULT PRIVILEGES` in `0001` covers only objects created by the role that ran it.
+  Functions created by any other role are executable by `PUBLIC` again, which the guard reports
+  (`function_public_execute`). Migrate as one role, and still write `REVOKE ALL ON FUNCTION ...
+  FROM PUBLIC` for every function.
+- `0001` revokes `PUBLIC`'s `CONNECT` and `TEMPORARY` on the application database only. Every
+  other database of the cluster (`postgres`, `template1`, other applications') keeps the Postgres
+  defaults, so the application roles can connect there, read those catalogs and create temporary
+  tables. On a shared cluster, lock them out: `REVOKE CONNECT, TEMPORARY ON DATABASE <name> FROM
+  PUBLIC` for each other database, or restrict the three roles to the application database in
+  `pg_hba.conf`.
+- The roles are shared by every database in the cluster: run one deployment per cluster, or give
+  concurrent runners the same `MIGRATION_LOCK_DATABASE_URL`.
+
 ## Writing a migration
 
-- Use only your task's number range (PLAN.md section 3). Merged files are immutable.
-- A file runs once per database, in one transaction: no `CREATE INDEX CONCURRENTLY`, no
-  `COMMIT`. Cluster-wide statements (roles) must be idempotent because other databases of the
-  cluster run the same file; nothing after T10 should need them.
+- Use only your task's number range (PLAN.md section 3). Merged files are immutable; fix forward.
+- A file runs once per database, inside one transaction that the runner opens and commits.
+  **Enforced:** a file whose top level contains `BEGIN`, `START`, `COMMIT`, `END`, `ROLLBACK`,
+  `ABORT`, `SAVEPOINT`, `RELEASE` or `PREPARE TRANSACTION` is rejected before anything runs. The
+  scanner skips comments, string literals, quoted identifiers and dollar-quoted text, so
+  `BEGIN ... END` inside a `$$` body is fine; SQL-standard bodies (`BEGIN ATOMIC ... END`) are
+  rejected because they cannot be told apart, so quote function bodies with `$$`. Statements that
+  cannot run inside a transaction (`CREATE INDEX CONCURRENTLY`, `VACUUM`) fail anyway. Should a
+  file still end the transaction, the runner notices and fails, warning that part of the file may
+  have been committed.
+- Cluster-wide statements (roles) must be idempotent because other databases of the cluster run
+  the same file; nothing after T10 should need them. Never `ALTER ROLE` an application role: their
+  stored settings are data in `ytw_expected_role_settings()` (replace that function in a new file
+  and change `roleConnectionOptions` in `client.ts` with it).
 - Schema-qualify what you create (`public.ideas`, `ytw_private.api_tokens`).
-- Grant explicitly, per object, to the roles that need it; there are no default grants:
+- Grant explicitly, per object, to the roles that need it. There are no default grants, and every
+  function gets an explicit `REVOKE ... FROM PUBLIC` (see "Production setup"):
 
   ```sql
   GRANT SELECT ON public.ideas TO ytw_web, ytw_mcp, ytw_readonly;
+  REVOKE ALL ON FUNCTION public.create_idea(text, text, uuid, text, text, text, text[]) FROM PUBLIC;
   GRANT EXECUTE ON FUNCTION public.create_idea(text, text, uuid, text, text, text, text[]) TO ytw_web, ytw_mcp;
   ```
 
@@ -94,6 +156,10 @@ changing anything (`upToDate`, `pending`, `changed`, `unknown`). `ytw_web` and `
   even a stray `GRANT SELECT` does not open them. `api_token_permissions` holds no secret, but it
   lives there too: no application role needs to read it directly (T14's functions return a token
   together with its levels), and `query_sql` should not reveal which agent holds which access.
+- A view runs with its owner's privileges, so a view outside `ytw_private` that reads a
+  `ytw_private` table would hand its rows to every role that may select from the view. The guard
+  reports such views and materialized views, also through other views (`private_data_exposure`),
+  unless the allowlist names them.
 - Primary keys: `id uuid PRIMARY KEY DEFAULT public.uuid_generate_v7()`. Audit columns:
   `created_by text NOT NULL DEFAULT public.ytw_current_actor()` (fails loudly when no actor is set).
 
@@ -106,34 +172,89 @@ Created by `0001_roles`, never superuser, never members of another role, owning 
 | --- | --- | --- |
 | `ytw_web` | web server (`DATABASE_URL`) | connect; `SELECT` on what it reads; `EXECUTE` on the functions it calls |
 | `ytw_mcp` | MCP server (`DATABASE_URL`) | the same, for the MCP tools |
-| `ytw_readonly` | MCP `query_sql` only (`READONLY_DATABASE_URL`) | connect; `SELECT` on readable tables and views; `STABLE`/`IMMUTABLE` functions only. Sessions start with `default_transaction_read_only = on` and `statement_timeout = 10s` (equal to `QUERY_SQL_TIMEOUT_MS`, tested) |
+| `ytw_readonly` | MCP `query_sql` only (`READONLY_DATABASE_URL`) | connect; `SELECT` on readable tables and views; `EXECUTE` only on allowlisted functions and never on a `SECURITY DEFINER` one (**enforced**) |
 
 No application role can create objects or temporary tables, and none holds `INSERT`, `UPDATE`,
-`DELETE`, `TRUNCATE`, `REFERENCES` or `TRIGGER` on anything: every write is a `SECURITY DEFINER`
-function. New functions are not executable by `PUBLIC` (default privileges revoke it).
+`DELETE`, `TRUNCATE`, `REFERENCES` or `TRIGGER` on anything, or `USAGE`/`UPDATE` on a sequence:
+every write is a `SECURITY DEFINER` function. New functions are not executable by `PUBLIC`
+(default privileges revoke it), and neither are the large-object and advisory-lock built-ins
+(`ytw_restricted_builtins()`): large objects would store data outside every table and grant, and
+an advisory lock held by an application role could block a function or the runner that uses the
+same key.
+
+### What keeps `query_sql` read-only
+
+Several layers; only the first is a guarantee on its own.
+
+1. **Privileges.** `ytw_readonly` holds `SELECT` only, cannot see `ytw_private`, cannot execute a
+   `SECURITY DEFINER` function or a restricted built-in, and cannot create anything. Even in a
+   read-write transaction it can change no data (**enforced** by the guard; `test/readonly.test.ts`
+   tries the ways around it).
+2. **`queryReadOnly(pool, sql)`** (`client.ts`), the only way `query_sql` may run a statement: one
+   statement through the extended protocol (a second one is a syntax error), inside
+   `BEGIN READ ONLY` with `SET LOCAL statement_timeout`. The transaction's snapshot is taken before
+   the statement runs, so `SET TRANSACTION READ WRITE` is refused. Then `ROLLBACK`, and the
+   connection is closed instead of going back to the pool, so session state (settings, advisory
+   locks, prepared statements, `LISTEN`) never reaches the next call.
+3. **Pinned connection settings.** `createPool({ role: "ytw_readonly", ... })` sends
+   `default_transaction_read_only=on` and `statement_timeout=10000` (`QUERY_SQL_TIMEOUT_MS`) in the
+   startup packet of every connection, which overrides whatever is stored for the role.
+4. **Stored role settings,** the same two, for any other client. Postgres lets every role change
+   its own stored settings (`ALTER ROLE ytw_readonly SET ...`, from outside a read-only
+   transaction) and its own password, and nothing can forbid that. So the expected settings are
+   data (`ytw_expected_role_settings()`), every `pnpm migrate` restores them, and the guard
+   reports drift (`app_role_settings`). A changed password only locks `query_sql` out until a
+   migrate run with `YTW_READONLY_PASSWORD` sets it back.
+
+`ytw_web` and `ytw_mcp` have no stored settings.
 
 ### Privilege rules (`ytw_catalog_violations()`)
 
-The runner calls this after every file; `test/catalog.test.ts` calls it on the full schema and
-proves each rule fires. It must return no rows.
+The runner calls the guard before applying anything and after every file, inside that file's
+transaction; `test/catalog.test.ts` calls it on the full schema and proves that each rule fires. It
+must return no rows.
 
-| Rule | Meaning |
+| Rule | Reported when |
 | --- | --- |
 | `app_role_attributes` | an application role is superuser or has CREATEROLE, CREATEDB, REPLICATION or BYPASSRLS |
 | `app_role_membership` | an application role is a member of any role (e.g. `pg_read_all_data`) |
 | `app_role_owns_object` | an application role owns a table, view, sequence, function, schema or the database |
+| `app_role_settings` | an application role's stored settings differ from `ytw_expected_role_settings()`, or it has settings for this database |
 | `table_write_privilege` | an application role has a write privilege (table- or column-level) on a table, view, materialized view or foreign table |
 | `sequence_privilege` | an application role has `USAGE` or `UPDATE` on a sequence |
 | `database_privilege` | an application role has `CREATE` or `TEMPORARY` on the database |
 | `schema_create` | an application role has `CREATE` on a schema |
 | `private_schema_access` | an application role has `USAGE` on `ytw_private` or `SELECT` on anything in it |
 | `secret_table_location` | a table named `api_tokens` or `web_sessions` exists outside `ytw_private` |
+| `private_data_exposure` | an application role may select from a view or materialized view outside `ytw_private` that reads a `ytw_private` relation, directly or through other views (allowlist possible) |
 | `function_public_execute` | a function (outside extensions) is executable by `PUBLIC` |
 | `definer_search_path` | a `SECURITY DEFINER` function does not `SET search_path = pg_catalog, public, pg_temp` |
-| `readonly_volatile_definer` | `ytw_readonly` may execute a `VOLATILE SECURITY DEFINER` function |
+| `definer_owner` | a `SECURITY DEFINER` function is not owned by the migration owner (the owner of `schema_migrations`) |
+| `readonly_function_execute` | `ytw_readonly` may execute a `SECURITY DEFINER` function, or any function the allowlist does not name |
+| `builtin_function_access` | an application role may execute a large-object or advisory-lock built-in |
 
-T16 extends the rules with `CREATE OR REPLACE FUNCTION public.ytw_catalog_violations()` in its own
-range.
+**Allowlist.** Two rules accept reviewed exceptions. Only migrations add them (no application
+role can see the table), each with a reason:
+
+```sql
+INSERT INTO ytw_private.catalog_allowlist (rule, object, reason) VALUES
+  ('readonly_function_execute', 'public.idea_age_days(timestamp with time zone)',
+   'pure helper that query_sql may call; reads nothing');
+```
+
+`object` is spelled exactly as the guard reports it, as a failed run prints it: `schema.name` for
+a view, `schema.name(argument types)` for a function. A `SECURITY DEFINER` function cannot be
+allowlisted for `ytw_readonly`.
+
+**Self-test.** Each time the runner calls the guard, it first creates three canary objects in a
+savepoint that is always rolled back (a table with a write grant, a view over `ytw_private`, a
+`SECURITY DEFINER` function that `ytw_readonly` may execute) and requires the guard to report all
+three. A migration that drops the guard, empties it or removes one of those rules fails the run
+(**enforced**).
+
+**Extending the rules** (T16 or later): `CREATE OR REPLACE FUNCTION public.ytw_catalog_violations()`
+in your own range, keeping every existing rule, plus a test in `test/catalog.test.ts` that proves
+the new rule fires. Never drop the function.
 
 ## Database function convention
 
@@ -179,9 +300,13 @@ GRANT EXECUTE ON FUNCTION public.create_idea(text, text, uuid, text, text, text,
 - Optimistic concurrency: `UPDATE ... WHERE id = p_id AND version = p_expected_version`, and when
   no row matched, raise `not_found` or `version_conflict` with `latest_version`. Serialize racing
   writers with `SELECT ... FOR UPDATE` on the parent row or `pg_advisory_xact_lock` (never a
-  session lock).
-- Read functions that `ytw_readonly` may call must be `STABLE` (**enforced**). Functions only the
-  services call may be `SECURITY DEFINER` readers too (for `ytw_private` data).
+  session lock). Advisory locks work inside `SECURITY DEFINER` functions, which run as the owner;
+  the application roles cannot call them directly.
+- Never change the owner of a `SECURITY DEFINER` function (**enforced**, `definer_owner`).
+- Functions that read `ytw_private` are `SECURITY DEFINER` and therefore for `ytw_web` and
+  `ytw_mcp` only. A function that `query_sql` may call is `SECURITY INVOKER` (so it sees only what
+  `ytw_readonly` sees), has a `catalog_allowlist` row (both **enforced**) and should be `STABLE` or
+  `IMMUTABLE`.
 - Do not reuse a name that another wrapper module already exports in TypeScript (see below).
 
 ## Schema
@@ -290,8 +415,8 @@ validate first and raise catalogue errors; the limits are:
 ## Audit log
 
 `events` (PRD 4) is append-only: no role holds UPDATE/DELETE/TRUNCATE, and triggers raise
-`immutable` even for the owner (**tested**). All application roles may `SELECT` it, so no secret may
-ever enter it.
+`immutable` even for the owner (**tested**). All application roles may `SELECT` it, `query_sql`
+included, so no secret may ever enter it.
 
 | Column | Content |
 | --- | --- |
@@ -306,15 +431,25 @@ ever enter it.
 
 ```sql
 CREATE TRIGGER ideas_audit AFTER INSERT OR UPDATE ON public.ideas
-  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('idea', '-search_vector');
+  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('idea', '-search_vector', '-updated_by');
 CREATE TRIGGER api_tokens_audit AFTER INSERT OR UPDATE ON ytw_private.api_tokens
-  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('api_token', 'token_hash');
+  FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('api_token', 'token_hash', '-updated_by', '+id');
 ```
 
-- Arguments: the `entity_type`, then column names: `col` is kept as `"[redacted]"`, `-col` is left
-  out (generated `tsvector` columns and other derived data). Columns whose name ends in `hash`,
-  `secret`, `password`, `encrypted`, `ciphertext` or `token` are always redacted; values larger than
-  8 KiB become `{"omitted": "too_large", "bytes": n}` (script bodies).
+- Arguments: the `entity_type`, then column names. `col` keeps the column with its value replaced
+  by `"[redacted]"`; `-col` leaves it out (generated `tsvector` columns and other derived data);
+  `+col` shows its value where it would otherwise be redacted.
+- Redacted without being named: every column whose name looks secret (`ytw_is_secret_key()`:
+  ending in `token`, `secret`, `password`, `hash`, `blob`, `cookie`, `authorization`,
+  `credential`, `api_key`, `private_key`, `ciphertext` or `encrypted`, or containing `password`,
+  `secret`, `refresh_token`, `access_token`, `id_token`, `session_token` or `bearer`, in any case;
+  `web_sessions.refresh_token_encrypted` and `id_token_hint` match by name alone). Inside JSON
+  values, keys that look secret are redacted at any depth, and nesting deeper than 32 levels
+  becomes `"[omitted: nested too deeply]"`. Values larger than 8 KiB become
+  `{"omitted": "too_large", "bytes": n}` (script bodies).
+- Tables in `ytw_private` are **default-deny**: every column is redacted unless named as `+col`,
+  and `events.entity_id` is recorded only with `+id` (a private table's id can itself be a
+  credential, like a session handle).
 - Payloads: insert `{"new": row}`; update `{"old": {changed}, "new": {changed}}` where
   `updated_at` and omitted columns never count as changes; delete `{"old": row}`.
 - An update whose only change is `last_used_at` is not logged (API token use, T14).
@@ -326,8 +461,8 @@ CREATE TRIGGER api_tokens_audit AFTER INSERT OR UPDATE ON ytw_private.api_tokens
 **Other events** use `ytw_log_event(p_actor, p_actor_type, p_token_id, p_action, p_entity_type,
 p_entity_id, p_payload) RETURNS uuid` (`ytw_web`, `ytw_mcp`). `p_action` must contain a dot
 (`tool.call`, `auth.login`, `auth.login_denied`, `auth.logout`), `p_payload` is a JSON object of at
-most 64 KiB (`EVENT_PAYLOAD_MAX_BYTES`): summarise large arguments (a script body as its byte
-count) and never include tokens, cookies or secrets. Suggested tool-call payload (T30):
+most 64 KiB (`EVENT_PAYLOAD_MAX_BYTES`), stored as given: summarise large arguments (a script body
+as its byte count) and never include tokens, cookies or secrets. Suggested tool-call payload (T30):
 `{"tool": "create_idea", "outcome": "ok" | "error" | "denied", "error": "<kind>", "token_owner": "<username>"}`.
 
 ## Errors
@@ -357,16 +492,41 @@ Example: `ytw_raise('version_conflict', format('idea %s changed since version %s
 is %s: reload it and apply your edit again', p_id, p_expected, v_latest), jsonb_build_object('entity',
 'idea', 'id', p_id, 'expected_version', p_expected, 'latest_version', v_latest))`.
 
+**`latest_version` and `latest`.** DETAIL keys are snake_case and the database layer keeps them
+(`VersionConflictError.latestVersion` reads `details.latest_version`). The web contract answers a
+conflict with `409 {"error": "version_conflict", "latest": n}` (PLAN.md section 3): the HTTP and
+MCP layers name it `latest`, taking the value from `err.latestVersion`.
+
 In TypeScript, `toDbError(err)` turns a driver error with a catalogue SQLSTATE into its class
 (message verbatim, `details`, `hint`, `status`, `toJSON()`); other errors pass through unchanged.
 `withActor` and `ActorTx.query` already apply it. `formatDbError(err)` renders the text an MCP tool
 returns; `formatAllowed(values)` lists values the way SQL messages do (`"a", "b"`). Checks done in
 TypeScript throw the same classes, e.g. `new ValidationError(message, { field, allowed })`.
 
+**What a client may see: `toClientError(err)`.** Driver messages name tables, columns, constraints
+and values, so routes and tools never send them. `toClientError` maps any error from the database
+layer to `{ error, message, status, retryable, hint?, details? }`; log the original on the server
+(without secrets) and send this:
+
+| Error | `error` | HTTP | `retryable` |
+| --- | --- | --- | --- |
+| catalogue error with status below 500 | its kind (message, hint and details kept) | its status | no |
+| `missing_actor`, anything unrecognised | `internal` | 500 | no |
+| 23505 (unique) | `duplicate` | 422 | no |
+| 23503 (foreign key) | `invalid_reference` | 422 | no |
+| other 22xxx, 23xxx (bad value, CHECK, NOT NULL) | `validation` | 400 | no |
+| 40001, 40P01 (serialization failure, deadlock) | `retry` | 503 | yes |
+| 57014, 55P03 (statement or lock timeout) | `timeout` | 503 | yes |
+| 42501, 25006 (no privilege, read-only transaction) | `forbidden` | 403 | no |
+| other 42xxx (syntax, unknown object) | `invalid_query` | 400 | no |
+| 08xxx, 53xxx, 57P0x, `ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT`, `EPIPE` | `unavailable` | 503 | yes |
+
+Outside the catalogue the `message` is a fixed sentence that names nothing.
+
 ## TypeScript API
 
 ```ts
-import { createPool, assertPoolRole, withActor, sql } from "@ytw/db";
+import { createPool, assertPoolRole, withActor, sql, toClientError } from "@ytw/db";
 
 const pool = createPool({ role: "ytw_web", connectionString: env.DATABASE_URL });
 await assertPoolRole(pool, "ytw_web");        // at startup: wrong role or a superuser stops the process
@@ -378,9 +538,18 @@ const idea = await withActor(pool, { name: user.username, type: "human" }, (tx) 
 
 - `createPool({ role, connectionString, max?, applicationName?, onError? })`: one pool per process
   for its own role (`application_name` `ytw-web` etc., idle errors reported instead of crashing).
+  For `ytw_readonly` every connection also pins `default_transaction_read_only` and
+  `statement_timeout` (`roleConnectionOptions(role)`).
 - `withActor(pool, actor, fn)`: one transaction (BEGIN, `ytw_set_actor`, `fn`, COMMIT or
   ROLLBACK). `actor` is `{ name, type: "human" | "agent", tokenId? }`. The callback's `tx` has
   `tx.actor` (normalised, `tokenId` null for humans) and `tx.query`, which throws typed errors.
+- `queryReadOnly(pool, statement, { timeoutMs? })`: runs one untrusted statement on a
+  `ytw_readonly` pool as described in "What keeps `query_sql` read-only" (any other pool is
+  refused; `timeoutMs` at most `QUERY_SQL_TIMEOUT_MS`). Errors are the driver's, with the SQLSTATE
+  in `code`: 25006 a write, 42501 a missing privilege, 57014 the timeout, 42601 a syntax error or
+  more than one statement, 25001 an attempt to make the transaction writable. The caller caps rows
+  and output size.
+- `toClientError(err)`: see "Errors".
 - `sql\`...${value}...\`` turns every interpolation into a bind parameter. There is no way to
   interpolate identifiers or SQL text; write those literally. Parameterized SQL only.
 - `Queryable` is anything with `query` (a pool, a pooled client, an `ActorTx`).
@@ -398,9 +567,9 @@ placeholder when you add the first export):
 - Exported names must be unique across all wrapper modules (`export *` would make a clash a
   compile error in `index.ts`).
 
-Drizzle is not used inside `@ytw/db`: every write is a function call and the reads are views or
-functions, so the `sql` template keeps one source of truth (the SQL) without a mirrored schema.
-A later task that wants a query builder can wrap the same `pg` pool with `drizzle-orm/node-postgres`.
+`@ytw/db` uses `pg` (node-postgres) with the `sql` template and no query builder (ADR 0001): every
+write is a function call and the reads are views or functions, so the SQL stays the only source of
+truth, with no mirrored schema to keep in step.
 
 ## Test harness (`@ytw/db/testing`)
 
@@ -415,20 +584,25 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
 | Member | Use |
 | --- | --- |
 | `db.name` | `ytw_test_<time>_<random>` |
-| `db.pool(role)` | pool logged in as `ytw_web`, `ytw_mcp` or `ytw_readonly` (lazy, max 4): use it for the code under test |
+| `db.pool(role)` | pool logged in as `ytw_web`, `ytw_mcp` or `ytw_readonly`, made by `createPool` (lazy, max 4): use it for the code under test |
 | `db.admin` | superuser pool on the test database: fixtures and assertions only |
 | `db.url(role \| "admin")` | connection string, e.g. a server under test's `DATABASE_URL` |
 | `db.drop()` | idempotent |
 | `createTestDb({ migrate: false, migrationsDir })` | empty database / other migrations (runner tests) |
 
-- Server: `TEST_DATABASE_URL` (superuser), else `MIGRATION_DATABASE_URL`'s server and credentials
-  (as CI exports it), else `postgres://postgres:postgres@localhost:5432/postgres`
-  (`scripts/pg-local.sh start` or `docker compose up -d`). The maintenance database `postgres`
-  is always the shared lock database.
-- Role passwords: `YTW_*_PASSWORD` when set, else the dev values of `.env.example`, so running
+- Server: `TEST_DATABASE_URL`, a superuser connection, default
+  `postgres://postgres:postgres@localhost:5432/postgres` (what `scripts/pg-local.sh url` prints;
+  docker compose uses the same). `MIGRATION_DATABASE_URL` is never used, so a shell that just
+  migrated a real database cannot point the tests at it. CI sets `TEST_DATABASE_URL` explicitly.
+- The server must be on this machine (`localhost`, `127.x.x.x`, `::1` or a Unix socket). Anything
+  else is refused unless `YTW_DISPOSABLE_TEST_SERVER=1` declares the server disposable.
+- Role passwords: `YTW_*_PASSWORD` when set, else the dev values of `.env.example`. The harness
+  sets a role's password only when the role has none; when it has a different one, `createTestDb`
+  fails with instructions instead of changing it (unless the server is disposable). So running
   tests never changes the passwords a local dev server uses.
-- Migrations of all test databases on a cluster are serialized (roles are shared), so setup may
-  wait: set `hookTimeout: 120_000` in your package's `vitest.config.ts` as `packages/db` does.
+- The database of `TEST_DATABASE_URL` (normally `postgres`) is the shared lock database: the
+  migrations of all test databases on a cluster are serialized (roles are shared), so setup may
+  wait. Set `hookTimeout: 120_000` in your package's `vitest.config.ts` as `packages/db` does.
 - Never mock the database. Create fixtures through the real functions where they exist, or with
   `db.admin` when testing a mechanism (as `test/audit.test.ts` does with a fixture table).
 - A crashed run can leave a `ytw_test_*` database behind; drop only databases you created.
@@ -439,18 +613,30 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   `-search_vector`, `-updated_by` (and `-author` on notes) omitted, `token_hash`, `users.email` and
   `users.oidc_sub` redacted. Entity types: `idea`, `script`, `video`, `video_metric`, `experiment`,
   `experiment_variant`, `note`, `user`, `user_permission`, `api_token`, `api_token_permission`.
+  The two `ytw_private` tables are audited default-deny and record `+id` only (T10 adjusted `0012`
+  for that before anything was deployed).
+- **T12-T15**: besides the rules above, the guard now rolls back a migration that grants
+  `ytw_readonly` a `SECURITY DEFINER` function or a function without an allowlist row, lets an
+  application role read a view over `ytw_private`, or leaves a `SECURITY DEFINER` function with
+  another owner; the loader rejects files with transaction control or `BEGIN ATOMIC` bodies; the
+  application roles cannot call advisory-lock functions, so take locks inside `SECURITY DEFINER`
+  functions only.
 - **T14**: `touch_token_last_used` should update only `last_used_at` (and `updated_at`), so the
   trigger skips it. Functions reading `ytw_private` are `SECURITY DEFINER`, granted to `ytw_web`
-  and/or `ytw_mcp` only.
-- **T15**: views and read functions granted to `ytw_readonly` must not expose `ytw_private` data;
-  read functions are `STABLE`.
+  and/or `ytw_mcp` only. To show more of a token in the audit log than its id, recreate the
+  trigger in your range with more `+col` arguments (never the hash).
+- **T15**: views granted to `ytw_readonly` must not read `ytw_private` (guard), and a function that
+  `query_sql` may call needs `SECURITY INVOKER` and an allowlist row. Functions only the services
+  call (`search_all`, `list_events`) are granted to `ytw_web` and `ytw_mcp`.
+- **T21, T30-T34**: send `toClientError(err)` to clients and log the original; answer version
+  conflicts with `409 {"error": "version_conflict", "latest": err.latestVersion}`.
 - **T23**: `/readyz` can call `migrationStatus(pool)`; `upToDate` false means not ready.
 - **T30**: log every tool call with `ytw_log_event` (payload above).
-- **T33** (`query_sql`): run each statement as `BEGIN READ ONLY; SET LOCAL statement_timeout =
-  '10s'; <statement>; ROLLBACK` on the `ytw_readonly` pool. The role's session defaults can be
-  changed by a `SET` inside the statement; the rollback undoes such changes, so pooled connections
-  stay clean. The real guarantee is that the role holds no write privilege and cannot see
-  `ytw_private`.
+- **T33** (`query_sql`): `createPool({ role: "ytw_readonly", connectionString:
+  env.READONLY_DATABASE_URL })` and `queryReadOnly(pool, sql)` for every statement, nothing else.
+  It runs exactly one statement; cap rows and output size in the tool. For errors use
+  `toClientError`; the driver's message of an error in classes 22 and 42 describes the agent's own
+  statement and may be returned as well.
 
 ## Deviations from PLAN.md
 
@@ -459,9 +645,15 @@ afterAll(async () => { await db.drop(); });               // ends the pools, dro
   caller able to create one could shadow a table the function uses. Application roles also lack
   `TEMPORARY`, so this is defence in depth.
 - Secret-bearing tables live in schema `ytw_private` instead of relying only on per-table grants.
+- `ytw_readonly` may execute only allowlisted functions and never a `SECURITY DEFINER` one (PLAN.md
+  asked only for `STABLE` read functions), and the large-object and advisory-lock built-ins are
+  closed to every application role. A non-superuser migration owner therefore needs
+  `sql/superuser-bootstrap.sql` run once by a superuser.
 - `ytw_set_actor` is `SECURITY DEFINER` (it must be able to raise catalogue errors when an
   application role calls it directly); it touches no table.
-- `@ytw/db` uses `pg` with the `sql` template instead of Drizzle (reason above).
+- `@ytw/db` uses `pg` with the `sql` template instead of Drizzle (ADR 0001 records why).
+- The test harness reads `TEST_DATABASE_URL` only (never `MIGRATION_DATABASE_URL`) and refuses
+  servers on other machines unless they are declared disposable.
 - `events` has no `updated_at`/`created_by` (rows never change; `actor` is the creator).
 - `video_metrics` has no `updated_at`/`updated_by` either (append-only, like `events`), and
   `web_sessions` has exactly the columns PLAN.md lists (`last_seen_at` instead of `updated_at`, no
