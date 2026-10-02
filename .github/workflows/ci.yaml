@@ -137,6 +137,12 @@ jobs:
       - name: Compute build metadata
         id: build-meta
         run: echo "version=0.0.0-ci.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      # Files that exist on a developer machine (apps/<app>/.env, key files, ...) are untracked, so
+      # only .dockerignore stands between them and `COPY . .`. Plant some in the build context;
+      # docker/smoke.sh fails if any of them, or a file with the sentinel, ends up in the image.
+      - name: Plant local files that must not reach the image
+        id: plant
+        run: echo "sentinel=$(docker/plant-local-files.sh)" >> "$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build image (linux/amd64)
@@ -162,7 +168,8 @@ jobs:
           SERVICE: ${{ matrix.service }}
           PORT: ${{ matrix.port }}
           VERSION: ${{ steps.build-meta.outputs.version }}
-        run: docker/smoke.sh "ytw-${TARGET}:ci" "$SERVICE" "$PORT" "$VERSION" "$GITHUB_SHA"
+          SENTINEL: ${{ steps.plant.outputs.sentinel }}
+        run: docker/smoke.sh "ytw-${TARGET}:ci" "$SERVICE" "$PORT" "$VERSION" "$GITHUB_SHA" "$SENTINEL"
       - name: Scan the image (Trivy)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

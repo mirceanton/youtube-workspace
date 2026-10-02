@@ -50,8 +50,10 @@ RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx \
         /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 WORKDIR /app
-# 1000:1000 is the "node" user of the base image. A numeric user lets Kubernetes verify runAsNonRoot.
-COPY --from=build --chown=1000:1000 /out/service ./service
+# The application code stays owned by root: the runtime user can read and run it but not change it,
+# so a compromised process cannot rewrite its own code. Nothing under /app needs to be writable
+# (docker/smoke.sh checks both). Add a directory owned by the runtime user only when a feature needs one.
+COPY --from=build /out/service ./service
 
 # Declared after the copies so a new commit only invalidates the layers below this line.
 ARG APP_VERSION=0.0.0-dev
@@ -65,6 +67,7 @@ LABEL org.opencontainers.image.source="https://github.com/mirceanton/youtube-wor
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}"
 
+# 1000:1000 is the "node" user of the base image. A numeric user lets Kubernetes verify runAsNonRoot.
 USER 1000:1000
 EXPOSE 3001
 
