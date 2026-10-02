@@ -47,12 +47,13 @@ Routes: web `/auth/*`, `/api/*`, SPA fallback; MCP `/mcp`, `/files/scripts/{idea
 | `docs/<area>.md` | per-task doc fragments | the owning task |
 
 ## 2. Dispatch rules (orchestrator)
-- Rolling schedule, **max 6 concurrent workers**. A task starts when all its deps are *merged on the branch* and, for
+- Rolling schedule, **max 3 concurrent workers of any kind** (user decision, to stay inside the account's usage limit; the fleet hit it twice at 5-6 workers). Critical path first: T11 -> T14/T12 -> T21 -> T30, T40. A task starts when all its deps are *merged on the branch* and, for
   deps marked Review tier A, *review-approved*.
 - Every task: implementer (worktree) -> report. Tier A tasks then get a fresh reviewer agent (opus). Blocking findings go
   back to the implementer via SendMessage; max 2 fix rounds, then escalate to the user.
 - Gate tasks (T16, T35, T49, T63) are independent hardening/verification work cards and replace per-task review for that phase.
-- Models: opus for schema, security, authz, MCP core, gates and reviewers; sonnet for UI features, docs, CI.
+- Models (user decision): **every implementer runs on sonnet**. Opus is used only for independent tier A reviewers and the adversarial gate tasks T16, T35, T60; tier B reviews and everything else run on sonnet. (T10 and T11 were started on opus before this decision and finished there.)
+- Review budget: the reviews of T11, T12, T13 and T15 are folded into the independent gate T16; T14 (tokens, permissions, sessions) keeps its own tier A review. Same pattern in phase 2: T31, T32, T33 and T34 are covered by gate T35 unless T35 is delayed.
 - Status table at the bottom is updated by the orchestrator at each gate.
 
 ## 3. Shared conventions every worker follows
@@ -101,7 +102,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 
 ### Phase 0: foundations
 
-**T00 Scaffold, conventions, ADR** · P0 · opus · deps: none · Review tier A
+**T00 Scaffold, conventions, ADR** · P0 · sonnet · deps: none · Review tier A
 *Owns:* everything at repo root not owned elsewhere, all package/app skeletons, `CLAUDE.md`, `docs/adr/`, `scripts/pg-local.sh`, `docker-compose.yml` (postgres only), `.env.example`.
 *PRD:* 3, 9 (+ skim all). Study `/home/user/mirceanton/model-hub` (package.json, pnpm-workspace.yaml, tsconfig.base.json, .mise.toml, vitest/oxlint config) and reuse its conventions.
 *Do:* create the workspace per section 1 with **every** package/app as a buildable, testable stub (`src/index.ts`, `package.json`, `tsconfig`, one trivial test) wired through root `tsc -b` references; `apps/web-server` and `apps/mcp` boot a Fastify server with zod-validated env and `/healthz`; `apps/web-ui` is a Vite+React+Tailwind 4 hello page. `packages/shared` gets the real constants/enums from PRD 4/7 (resources `ideas scripts experiments videos notes activity`, `activity` max level `read`, idea stages + the allowed-transition table as data). Root scripts `dev test lint format format:check migrate build`; `.mise.toml` (node 24, pnpm, actionlint; tasks wrapping the scripts; no lockfile since mise cannot run here); pnpm-workspace hardening copied from model-hub (`minimumReleaseAge`, `allowBuilds`); `packageManager` field set; vitest limited to 2 workers. `scripts/pg-local.sh start|url|status` (idempotent; runs PG16 from `/usr/lib/postgresql/16/bin` as the `postgres` OS user on 5432; prints the admin URL; NO reset/stop for others to misuse beyond `stop`). `docker-compose.yml` with `postgres:16` + healthcheck. `.env.example` (grouped, commented). `CLAUDE.md` = repo conventions for agents (commands, package map, migration ranges, extension points, testing, sandbox notes). ADR `docs/adr/0001-stack.md` with the section 0 table and justification for deviating from PRD 3. README skeleton with headings only.
@@ -121,37 +122,37 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 
 ### Phase 1: data layer (useful on its own; PRD 10)
 
-**T10 DB foundation** · P1 · opus · deps: T00 · Review tier A
+**T10 DB foundation** · P1 · sonnet · deps: T00 · Review tier A
 *Owns:* `packages/db` except business tables/functions/wrappers; migrations `0001-0009`.
 *PRD:* 4 (Integrity), 5 (Database roles, function convention), 9 (migrations, env).
 *Do:* idempotent one-command runner (`pnpm migrate`, `MIGRATION_DATABASE_URL`, `schema_migrations` with checksums, per-file transaction, advisory lock around the whole run so parallel test DBs do not race on cluster-level roles; fails if an applied file changed). `uuid_generate_v7()` SQL function. Fixed roles `ytw_web`, `ytw_mcp`, `ytw_readonly` (created idempotently; passwords applied from env at migrate time, never committed; `ytw_readonly` has `default_transaction_read_only = on` and `statement_timeout = 10s`; **no SELECT on secret-bearing tables** `api_tokens`, `web_sessions`; default privileges such that no app role ever gets table-level INSERT/UPDATE/DELETE). Audit infra: `events` table (insert+select only; trigger blocks UPDATE/DELETE/TRUNCATE), `ytw_set_actor(actor, actor_type, token_id)`, generic `ytw_audit()` trigger function (reads `app.actor`, `app.actor_type`, `app.token_id`; skips updates that only touch `last_used_at`), `ytw_log_event(...)` function for non-DML events (tool calls, denied calls, logins). `errors.ts` with the SQLSTATE catalogue + typed errors + LLM-readable message helpers. `client.ts`: pool factory per role and `withActor(pool, actor, fn)`. Test harness `createTestDb()` (unique DB per test file, runs migrations, per-role connections, drop on teardown, safe in parallel). Pre-create stub files listed in section 3 and `index.ts`. Write `docs/database.md` (conventions the later DB tasks follow).
 *Done when:* migrate twice = no-op; changed applied file is rejected; 8 parallel harness DBs migrate concurrently without role errors; catalog test proves app roles have no DML privileges and `ytw_readonly` cannot read secret tables; audit trigger test.
 
-**T11 Core + auth schema** · P1 · opus · deps: T10 · Review tier A
+**T11 Core + auth schema** · P1 · sonnet · deps: T10 · Review tier A
 *Owns:* migrations `0010-0029`, `packages/db/test/schema.test.ts`.
 *PRD:* 4 (all tables, integrity rules, views are T15), 7 (access model).
 *Do:* all 12 PRD tables + `web_sessions` (id, user_id, encrypted refresh token blob, id-token hint, created_at, last_seen_at, expires_at, absolute_expires_at). PKs `uuid` default v7; `created_at/updated_at/created_by`; CHECK/enum for every status/type; `version int` on `ideas experiments videos`; `ideas.status_changed_at` (needed for "age in stage"); `archived_at` on ideas/videos; FKs `ON DELETE RESTRICT`; unique `(idea_id,kind,version)` on scripts, `(video_id,captured_at)` on video_metrics, `youtube_id`, `(oidc_issuer,oidc_sub)`, `(user_id,resource)`, `(token_id,resource)`; triggers making `scripts` and `video_metrics` append-only; CHECK that `activity` permission is never `write`; script body size CHECK (1 MB); `tsvector` generated columns + GIN on idea title/pitch and script body; indexes for the filters in PRD 6 (status, tags GIN, score, source); notes `entity_type` CHECK; circular `winner_variant_id` FK deferrable. Attach `ytw_audit()` to every business table.
 *Done when:* constraint tests for each integrity rule (append-only, uniques, RESTRICT, CHECKs, direct DML denied for every app role, audit row emitted per insert/update).
 
-**T12 DB functions: ideas, scripts, notes** · P1 · opus · deps: T11 · Review tier A
+**T12 DB functions: ideas, scripts, notes** · P1 · sonnet · deps: T11 · Review tier A
 *Owns:* migrations `0030-0039`, `packages/db/src/{ideas,scripts,notes}.ts`, tests `ideas|scripts|notes.test.ts`.
 *PRD:* 4 (stages, integrity), 5 (write tools create_idea, update_idea, advance_idea, save_script_version, set_script_status, add_note).
 *Do:* functions `create_idea`, `update_idea(expected_version, fields)`, `advance_idea` (forward one stage; back one stage requires a note, written in the same transaction; any -> `dropped`; `dropped` -> `inbox`; everything else rejected with the valid next stages in the message; transition table must come from `@ytw/shared` data and a test must assert the SQL matches it), `archive_idea`, `save_script_version(idea_id, kind, base_version, body_md)` (next version only if base is latest else error carrying latest; first version has base 0; always inserts `draft`), `set_script_status`, `add_note` (validates the entity exists). Typed TS wrappers + error mapping.
 *Done when:* table-driven test over every (from,to) stage pair; concurrent `save_script_version` with the same base -> exactly one wins, other gets the latest version number; stale `expected_version` fails; every call produces an `events` row with the right actor.
 
-**T13 DB functions: videos, metrics, experiments** · P1 · opus · deps: T11 · Review tier A
+**T13 DB functions: videos, metrics, experiments** · P1 · sonnet · deps: T11 · Review tier A
 *Owns:* migrations `0040-0049`, `packages/db/src/{videos,metrics,experiments}.ts`, tests.
 *PRD:* 4, 5 (register_video, log_metrics, create_experiment, record_variant_stats, conclude_experiment).
 *Do:* `register_video` (idea optional, unique youtube_id, clear error on duplicate), `update_video(expected_version)`, `archive_video`, `log_metrics` (append-only, idempotent on `(video_id, captured_at)`: replay of the same snapshot returns the existing row with `created=false`; a conflicting different payload for the same key is rejected with a readable error), `create_experiment` (variants atomic, exactly one control), experiment status machine planned->running->concluded|cancelled, `record_variant_stats`, `conclude_experiment` (winner must belong to the experiment; cannot conclude twice). Typed wrappers.
 *Done when:* tests for idempotency, replay with a different payload, winner-ownership, status machine, optimistic concurrency, audit rows.
 
-**T14 DB functions: identity, permissions, tokens, sessions** · P1 · opus · deps: T11 · Review tier A
+**T14 DB functions: identity, permissions, tokens, sessions** · P1 · sonnet · deps: T11 · Review tier A
 *Owns:* migrations `0050-0059`, `packages/db/src/{identity,permissions,tokens,sessions}.ts`, tests.
 *PRD:* 7 (Access model, Enforcement rules, API tokens), 5 (token auth).
 *Do:* `upsert_user_on_login` (first user ever becomes admin with Write everywhere **in one transaction, race-free** via advisory lock; later users get `none` rows for every resource), `set_user_permission` (acting user must be admin; `activity` max read), `set_user_admin` (last admin cannot be demoted or removed, enforced in the DB), `create_api_token` (secret hash+prefix supplied by caller; every requested level <= the owner's *current* level, enforced in the DB too), `update_token_permissions`, `rotate_api_token`, `revoke_api_token`, `touch_token_last_used`, `lookup_token_by_hash` (returns token, owner, effective levels = min(token, owner), revoked/expired status), list functions for the settings screens, `web_sessions` create/touch/get/delete/purge-expired. Typed wrappers.
 *Done when:* 20 parallel first-logins -> exactly one admin; last-admin guard; ceiling enforced at DB level; lowering the owner's level lowers `lookup_token_by_hash` output immediately; revoked/expired tokens are reported distinctly; session idle/absolute expiry semantics tested.
 
-**T15 Views, search, activity feed** · P1 · opus · deps: T11 · Review tier B
+**T15 Views, search, activity feed** · P1 · sonnet · deps: T11 · Review tier B
 *Owns:* migrations `0060-0069`, `packages/db/src/{views,search,activity}.ts`, `packages/db/test/seed.ts` (reusable seed helper), tests.
 *PRD:* 4 (Views), 6 (Search, Activity, Dashboard).
 *Do:* views `ideas_pipeline` (stage, latest script version per kind, age in stage), `video_performance_summary` (latest metrics + delta vs channel median via `percentile_cont`), `experiment_results` (variants side by side, CTR difference vs control, winner). `search_all(query, limit, resources[])` over idea title/pitch and script bodies (latest revision per idea+kind), returns rank + `ts_headline` snippet, restricted to the resources the caller may read. `list_events(filters, cursor)` with actor/entity_type/date filters and keyset pagination. Grants to the right roles. Typed wrappers.
@@ -162,7 +163,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* independent of the authors. Build a requirement->test traceability table for every PRD 4/5/7 data rule and add missing tests. Try to bypass: direct DML as each role, calling functions without EXECUTE, SQL injection via function args, search_path hijack, stage-machine fuzzing, double-submit races, audit-completeness (every mutation path writes `events`), catalog audit (all SECURITY DEFINER functions pin search_path and revoke PUBLIC; no role has DML), fresh-DB vs incremental migration equivalence. Fix defects with new migrations in `0070-0099`.
 *Done when:* all green; traceability doc shows no gap; findings fixed or filed as follow-ups.
 
-**T20 Policy layer** · P1 · opus · deps: T00 · Review tier A
+**T20 Policy layer** · P1 · sonnet · deps: T00 · Review tier A
 *Owns:* `packages/policy/**`.
 *PRD:* 7 (Access model, Enforcement rules, API tokens).
 *Do:* pure TS, no I/O: `Level` ordering, `effectiveLevel(owner, token?)` = min, `can(principal, resource, level)`, `canGrant(ownerLevels, requestedLevels)` (token level <= owner's, `activity` max read), `hasReadOnEverything` (for `query_sql`), summary helpers, Fastify/MCP adapter *types* only. Resource list comes from `@ytw/shared` so adding an object type is one edit there (document the exact steps in `docs/policy.md`: this is the README's "add a new object type" guide).
@@ -182,13 +183,13 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 
 ### Phase 2: MCP server (useful on its own; PRD 10)
 
-**T21 Token service** · P2 · opus · deps: T14, T20 · Review tier A
+**T21 Token service** · P2 · sonnet · deps: T14, T20 · Review tier A
 *Owns:* `packages/tokens/**`.
 *PRD:* 7 (API tokens), 5 (Transport and auth), 9 (rate limiting).
 *Do:* `generateToken()` (`ytw_` + 32 random bytes base64url; stored prefix + SHA-256 hash; secret returned once), create/rotate/revoke/update services combining `@ytw/policy` ceilings with the T14 functions, `authenticateBearer(header)` -> principal `{tokenId, tokenName, ownerId, ownerUsername, levels}` or a typed failure (missing, malformed, unknown, revoked, expired, owner removed), `touch last_used_at` throttled (<= once/min/token), in-memory failure rate limiter (per IP and per prefix, `Retry-After`), redaction helper. Never logs a secret.
 *Done when:* tests for every failure mode, revocation takes effect on the next call, owner-lowering reflected, limiter behaviour, timing-safe comparison where applicable.
 
-**T30 MCP foundation** · P2 · opus · deps: T21, T23, T20 · Review tier A
+**T30 MCP foundation** · P2 · sonnet · deps: T21, T23, T20 · Review tier A
 *Owns:* `apps/mcp/**` except `src/tools/*.ts` group files and `src/files/**`.
 *PRD:* 5 (Server, Transport and auth, Tool design rules, Database roles), 9.
 *Do:* Fastify + official MCP SDK Streamable HTTP, stateless, bearer auth per request via `@ytw/tokens`, `ytw_mcp` pool, 1 MB body limit, `/healthz /readyz /metrics`, structured logs. `defineTool({name, description, input(zod), requires:{resource, level}, handler})` wrapper that: resolves principal -> checks effective level with `@ytw/policy` -> runs handler -> writes an `events` row for **every** call (success, failure and denied, with token name + id + owner) -> maps typed DB errors to LLM-readable tool errors (say what failed and the valid values / latest version). Auto-discovery of `src/tools/*.ts`. A `whoami` tool (token name, owner, effective levels). Test helper `startTestServer()` + SDK client + `createTestToken(levels)` used by T31-T35.
@@ -204,13 +205,13 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Owns:* `apps/mcp/src/tools/{videos,experiments}.ts` + tests.
 *Do:* `register_video log_metrics create_experiment record_variant_stats conclude_experiment`. Same bar as T31 (log_metrics idempotency visible through the tool).
 
-**T33 MCP read tools + query_sql** · P2 · opus · deps: T30, T15 · Review tier A
+**T33 MCP read tools + query_sql** · P2 · sonnet · deps: T30, T15 · Review tier A
 *Owns:* `apps/mcp/src/tools/{read,sql}.ts` + tests.
 *PRD:* 5 (Read tools).
 *Do:* structured reads, at least `list_ideas(status)`, `get_idea`, `get_script(idea_id, kind, version?)`, `list_videos`, `get_video_performance(video_id)`, `list_experiments`, `get_experiment_results`, `list_notes(entity)`, `search`, each returning only what the token can Read. `query_sql(sql)` only registered/allowed for tokens with Read on **every** object (including activity); runs on the `ytw_readonly` pool in a read-only transaction, 10 s timeout, row cap 500 with an explicit `truncated: true`, single statement, output byte cap.
 *Done when:* tests prove: token with one missing Read is refused; `select * from api_tokens` / `web_sessions` fail; attempts at `pg_read_file`, `COPY ... PROGRAM`, `SET ROLE`, `lo_import`, `dblink`, multi-statement, writes and `pg_sleep(30)` all fail or time out; row cap works.
 
-**T34 MCP file export/import** · P2 · opus · deps: T30, T12, T22 · Review tier A
+**T34 MCP file export/import** · P2 · sonnet · deps: T30, T12, T22 · Review tier A
 *Owns:* `apps/mcp/src/files/**`, `apps/mcp/src/tools/export.ts` + tests.
 *PRD:* 5 (File export and import).
 *Do:* `export_script(idea_id, kind, version?)` tool and `GET /files/scripts/{idea_id}/{kind}` (+`?version=`) returning markdown with front matter; `PUT .../{kind}?base_version=N` with markdown body (`text/markdown`) creating a `draft` revision; same bearer auth/permission/audit path and the same service function as `save_script_version` (no duplicated logic); front-matter mismatch -> 400; stale base -> 409 with `{latest_version}`; > 1 MB -> 413; Read needed for GET, Write for PUT.
@@ -223,7 +224,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 
 ### Phase 3: web UI + authentication
 
-**T40 Web BFF: OIDC, sessions, authz, security** · P3 · opus · deps: T14, T20, T23 · Review tier A
+**T40 Web BFF: OIDC, sessions, authz, security** · P3 · sonnet · deps: T14, T20, T23 · Review tier A
 *Owns:* `apps/web-server/**` except `src/routes/<feature>/` for features (T41-T47).
 *PRD:* 7 (OIDC requirements, Enforcement rules, Settings contract), 9 (Security).
 *Do:* openid-client discovery, Authorization Code + PKCE (S256) + state + nonce, confidential client, ID/access token validation; **group gate** from `OIDC_GROUPS_CLAIM_PATH` (nested path, tolerate Keycloak `/group` paths) -> "access denied" page and no user row; session cookie `HttpOnly; Secure; SameSite=Lax` (Secure relaxed only on localhost), sessions in Postgres (T14) with refresh token encrypted at rest (key derived from `SESSION_SECRET`), silent refresh that re-checks the group each time, idle 8 h / absolute 7 d (configurable), RP-initiated logout that ends the provider session, `Clear-Site-Data: "cache","storage"` on logout; user upsert + first-admin via T14; `requireLevel(resource, level)` route guard reading the user's **current** levels from the DB on every request (no caching), unauthenticated -> redirect (pages) / 401 (API), "access not granted" state when every level is none; CSRF protection (Origin check + custom header/token), strict same-origin CORS, security headers (CSP, nosniff, referrer-policy, frame-ancestors, HSTS on https); `withActor` binding actor = `preferred_username`, type human; `/api/me`; static SPA serving with history fallback; auto-load `src/routes/*/index.ts`; route-authz coverage test (enumerates all Fastify routes; each must declare a guard or be on an explicit public allowlist). Tested with an in-process mock OIDC provider (e.g. `oidc-provider`).
@@ -283,7 +284,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* Playwright project; CI job: compose postgres + keycloak, migrate, start web-server (+SPA) and mcp, run tests. Flows: in-group login succeeds; outsider gets "access denied" and **no `users` row**; first user is admin; second user sees "access not granted" until granted; admin grants levels; group removed in Keycloak (admin API) ends access at next refresh; logout ends the Keycloak session; token created in UI works against the MCP endpoint. `E2E_IDP=mock` mode runs the Keycloak-independent flows in the sandbox.
 *Done when:* workflow green on GitHub Actions (link the run), mock mode green locally.
 
-**T49 Phase 3 gate: end-to-end stories + web review** · P3 gate · opus · deps: T42-T48 · gate
+**T49 Phase 3 gate: end-to-end stories + web review** · P3 gate · sonnet · deps: T42-T48 · gate
 *Owns:* `e2e/stories/**`, `docs/traceability/phase3.md`.
 *Do:* one Playwright story per PRD section 2 user story (board drag to next stage, phone-width script read + comment, experiment compare, agent script round trip via MCP then visible in the UI within 15 s, token creation and revocation, access matrix, audit visibility), conflict UX with two sessions, route-authz coverage (every API route x None/Read/Write), review of the web tier against PRD 6/7. Fix defects across the web tier.
 *Done when:* stories green (CI for Keycloak parts), traceability shows no gap.
@@ -322,7 +323,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* README with setup, one-command local dev, configuration table generated from the zod env schemas, how to create an API token for a new agent, how to add a new object type to the permission matrix (from `docs/policy.md`), architecture diagram (mermaid), MCP agent guide link, deployment notes (images, env, migration job, roles), stack-deviation justification (from the ADR).
 *Done when:* a fresh worker follows the README from a clean clone and reaches a running stack, creates a token and calls the MCP server (docs-as-tests); every command in the README was executed.
 
-**T63 Final acceptance QA** · P5 gate · opus · deps: T60, T61, T62 · gate
+**T63 Final acceptance QA** · P5 gate · sonnet · deps: T60, T61, T62 · gate
 *Owns:* `docs/acceptance.md`.
 *Do:* independent verification. Traceability matrix of **every** PRD requirement (goals G1-G5, stories, section 4 integrity rules, section 5 tools, section 6 rows, section 7 bullets, section 8, section 9) -> evidence (test file/command) or a gap; run the full suite from a clean clone; list what cannot be verified in the sandbox (real Keycloak realm, real iPhone, hosted CI) and what the user must configure.
 *Done when:* every row is pass / not-verifiable-with-reason / gap-with-follow-up-task.
