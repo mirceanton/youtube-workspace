@@ -34,18 +34,18 @@ actionlint versions a developer gets from `mise install`.
 | Workflow | Runs on | Jobs |
 | --- | --- | --- |
 | `ci.yaml` | push (not documentation-only), pull request, manual, **weekly** | `check`, `test` (always), `images`, `scan`, `codeql` (heavy, see "What runs when"), `dependency-review` (pull requests, when the repository allows) |
-| `docker.yaml` | **release published** | `publish` smoke-tests the amd64 image of the release commit, then builds amd64 and arm64 with an SBOM and max-mode provenance and pushes to ghcr.io |
-| `release.yaml` | **manual only** (nightly schedule disabled) | `verify-ci` requires a green `ci.yaml` run for the commit; `release` creates the next semantic version and GitHub release from the conventional commits since the last release |
+| `docker.yaml` | **release published** | `publish` first requires a green `ci.yaml` run on `main` for the release commit (`verify-ci.sh`, so a release made by hand on an arbitrary commit is not published), smoke-tests the amd64 image, then builds amd64 and arm64 with an SBOM and max-mode provenance and pushes to ghcr.io |
+| `release.yaml` | **manual only** (nightly schedule disabled) | `verify-ci` requires a green `ci.yaml` run on `main` for the commit (`verify-ci.sh`); `release` creates the next semantic version and GitHub release from the conventional commits since the last release, with an App token limited to `contents: write` on this repository |
 | `keycloak-smoke.yaml` | its own path filter | Owned by the Keycloak task; not described here |
 
 The jobs of `ci.yaml`:
 
 | Job | What it does |
 | --- | --- |
-| `check` | `actionlint` over the workflows; the tests of the CI helper scripts (`.github/scripts/test-scripts.sh`); `pnpm lint` (`tsc -b` + oxlint); `pnpm format:check`; `pnpm build` (every package and the Vite bundle) and a check that the entry points exist. This is the PRD "lint and build on every pull request" gate. It also decides whether the heavy jobs run |
+| `check` | `actionlint` over the workflows; the tests of the CI helper scripts (`.github/scripts/test-scripts.sh`); a gitleaks scan of the commits the push added (`.github/scripts/scan-new-commits.sh`, a few seconds, so a secret committed in ordinary source is found on the push that adds it); `pnpm lint` (`tsc -b` + oxlint); `pnpm format:check`; `pnpm build` (every package and the Vite bundle) and a check that the entry points exist. This is the PRD "lint and build on every pull request" gate. It also decides whether the heavy jobs run |
 | `test` | Starts a `postgres:16` service (healthcheck `pg_isready`), exports `MIGRATION_DATABASE_URL`, runs `pnpm migrate` twice (the second run must be a no-op), then `pnpm test` (unit and integration, every vitest project) and `pnpm --filter @ytw/policy test`, which runs with `--coverage` and enforces the 100 % gate that the root run cannot (vitest ignores per-package thresholds there) |
-| `images` | Per image (`web`, `mcp`): builds it for linux/amd64, runs `docker/smoke.sh`, scans it with Trivy (HIGH and CRITICAL, fixable only). On `main`, the weekly run and manual runs it also builds linux/arm64 under QEMU without publishing |
-| `scan` | `pnpm audit --audit-level=high`; Trivy filesystem scan (lockfile vulnerabilities, secrets, Dockerfile misconfiguration); gitleaks over the whole git history with `.gitleaks.toml`; a self-test that the secret scan still catches planted secrets. The steps are independent, so one finding does not hide the others |
+| `images` | Per image (`web`, `mcp`): plants local-only files in the build context (`docker/plant-local-files.sh`), builds the image for linux/amd64, runs `docker/smoke.sh`, scans it with Trivy (HIGH and CRITICAL, fixable only). On `main`, the weekly run and manual runs it also builds linux/arm64 under QEMU without publishing |
+| `scan` | `pnpm audit --audit-level=high`; Trivy filesystem scan (secrets and Dockerfile misconfiguration); gitleaks over the whole git history with `.gitleaks.toml`; a self-test that the secret scan still catches planted secrets. The steps are independent, so one finding does not hide the others. Dependency vulnerabilities are found by `pnpm audit` and by the Trivy image scans (their node-pkg targets), not by the Trivy filesystem scan: Trivy does not parse pnpm 12's two-document `pnpm-lock.yaml`, so that scan lists no lockfile (`vuln` stays enabled so it starts to once Trivy does) |
 | `codeql`, `dependency-review` | See step 4 above; skipped while the repository is private without Code Security |
 
 ### What runs when
@@ -59,7 +59,7 @@ matters.
 | Only `docs/**`, `*.md` or `LICENSE` changed | **None** (`paths-ignore` on the push trigger) |
 | Anything else on `claude/**` or `renovate/**` | `check`, `test` |
 | Same, and the **head commit message contains `[ci full]`** (any case) | `check`, `test`, `images` x2, `scan` (`codeql` when allowed) |
-| Same, and the push changed `docker/**`, `.dockerignore`, `.gitleaks.toml`, `.gitleaksignore`, `.github/workflows/**`, `.github/actions/**`, `.github/scripts/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or the root `package.json` | the same full set |
+| Same, and the push changed `docker/**`, `.dockerignore`, `.gitleaks.toml`, `.gitleaksignore`, `.trivyignore`, `trivy.yaml`, any `.npmrc`, `.github/workflows/**`, `.github/actions/**`, `.github/scripts/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, the root `package.json` or `apps/web-server/src/env.ts` / `apps/mcp/src/env.ts` (a new required variable needs a placeholder in `docker/smoke.env`) | the same full set |
 | Push to `main`, pull request, manual run, weekly schedule | the full set, always |
 
 Measured on the integration branch (GitHub bills every runner job rounded up to a whole minute):
@@ -72,12 +72,16 @@ Measured on the integration branch (GitHub bills every runner job rounded up to 
 | Before this restructuring (lint, test, build, security and docker workflows on every push) | 11 | 15 (17 with the arm64 build) | about 2 minutes |
 
 `.github/scripts/ci-gate.sh` makes the decision from the event, the commit message and the file list
-of the push (GitHub compare API, no checkout needed); if the files cannot be listed it runs the
-heavy jobs rather than skipping them. Only the **head** commit message counts, so put the token in
-the last commit of a push. The heavy jobs wait for `check`, so a push that fails lint does not
+of the push (GitHub compare API, no checkout needed). It fails open: the heavy jobs run when the
+files cannot be listed, when the push is not a plain fast-forward (force push, branch moved back) and
+when the comparison lists 300 files, because GitHub truncates the list there. Only the **head**
+commit message counts, so put the token in the last commit of a push. GitHub itself skips every
+workflow for a push whose head commit message contains `[skip ci]`, `[ci skip]`, `[no ci]`,
+`[skip actions]` or `[actions skip]`; on `claude/**` that skips even `check` and `test`, so do not use
+them there (on `main` the release gate still needs a green run). The heavy jobs wait for `check`, so a push that fails lint does not
 spend minutes on images and scans. A normal code push therefore runs the image build, the Trivy
-scans, the history scan and CodeQL only when you ask for them or when `main` or a pull request does:
-use `[ci full]` for gate tasks and before a hand-off. Pull requests are never path filtered.
+scans, the full history scan and CodeQL only when you ask for them or when `main` or a pull request
+does: use `[ci full]` for gate tasks and before a hand-off. Pull requests are never path filtered.
 
 Runs are grouped per commit and are never cancelled by a later push, so every commit of the shared
 branch keeps a result (only a pull request run is cancelled when the pull request gets a newer
@@ -95,14 +99,18 @@ a required check that never reports blocks a merge, so the pull request trigger 
 the five checks above always report on pull requests, and jobs skipped by their own `if` (`images`,
 `scan`, `codeql`) count as passing. Keep it that way if you add branch protection: do not add
 `paths`/`paths-ignore` to the `pull_request` trigger of `ci.yaml`, and do not require a check that
-only some pushes produce. A documentation-only push to `main` therefore has no run of its own;
-`release.yaml` accepts the green run of an older commit only if every commit since then changed
-nothing but documentation (`.github/scripts/verify-ci.sh`).
+only some pushes produce. A documentation-only push to `main` therefore has no run of its own.
+`.github/scripts/verify-ci.sh` (used by `release.yaml` and `docker.yaml`) looks only at runs on
+`main`. The `ci.yaml` push run of the commit itself decides when there is one. Without one, the
+commit inherits the latest run on `main` only if that run is green, the commit descends from it
+(compare status `ahead` or `identical`; a commit that is behind it, such as an old release run that
+is re-run after `main` moved on, or on another line of history is refused), the comparison lists
+fewer than 300 files, and all of them are documentation.
 
 ### Release flow
 
 1. A manual (or, once enabled, nightly) run of `release.yaml` on `main` checks that CI is green for
-   the head commit (`verify-ci.sh`), asks `mirceanton/action-semver-release` for the next version
+   the head commit (`verify-ci.sh`; `docker.yaml` repeats the check), asks `mirceanton/action-semver-release` for the next version
    from the conventional commits (`feat` = minor, `fix` = patch, `!` or `BREAKING CHANGE` = major)
    and, unless it is a dry run, creates the tag `vX.Y.Z` and the GitHub release using the GitHub
    App token.
@@ -119,8 +127,11 @@ nothing but documentation (`.github/scripts/verify-ci.sh`).
 ## Images
 
 `docker/web.Dockerfile` (web server plus the built web UI) and `docker/mcp.Dockerfile` (MCP
-server). The build context is the repository root; `.dockerignore` removes history, secrets,
-dependencies and build output. Both Dockerfiles have the same shape:
+server). The build context is the repository root; `.dockerignore` removes history, agent tooling,
+dependencies, build output and every local-only file at any depth (`**/.env`, `**/.env.*` except
+`**/.env.example`, key files, saved login state, local mise configs): `.dockerignore` patterns are
+anchored at the context root, unlike `.gitignore`, and per-process secrets live in `apps/<app>/.env`.
+Both Dockerfiles have the same shape:
 
 - **build stage** (`node:24.21.0-slim` + corepack): `pnpm fetch` from the lockfile alone (a cached
   layer), `COPY . .`, `pnpm install --offline --frozen-lockfile`, build, then
@@ -128,7 +139,8 @@ dependencies and build output. Both Dockerfiles have the same shape:
   dependencies. Sources and compiled tests are removed from the extracted tree.
 - **runtime stage**: the same Node base, `NODE_ENV=production`, npm/corepack/yarn removed, runs as
   the numeric user `1000:1000`, `HEALTHCHECK` through `node` (the slim image has no curl),
-  `CMD ["node", "service/dist/src/index.js"]`.
+  `CMD ["node", "service/dist/src/index.js"]`. The application code is owned by root, so the
+  runtime user can run it but not change it; nothing under `/app` needs to be writable.
 - Keep the Node version in `.mise.toml` and in both `FROM node:...-slim` lines the same.
 
 Runtime contract with the applications:
@@ -146,22 +158,44 @@ Runtime contract with the applications:
 - **Static files.** The web server must serve the single-page app from the directory in
   `STATIC_WEB_DIR` (the same variable name `model-hub` uses). Until the web server reads it, the
   variable is ignored harmlessly.
-- **Migrations are not run by the images.** Run `pnpm migrate` (with `MIGRATION_DATABASE_URL`) as a
-  separate job or init step before starting new versions.
+- **Migrations are not run when a service starts.** Run them as a separate job or init step before
+  starting new versions. The images have no pnpm; once a service depends on `@ytw/db` its image
+  carries the package with its `migrations/*.sql`, so the same image can be the migration job:
+  `docker run --rm -e MIGRATION_DATABASE_URL=... <image> node service/node_modules/@ytw/db/dist/src/bin/migrate.js`
+  (working directory `/app`; exits 2 without `MIGRATION_DATABASE_URL`). Pass the privileged
+  connection string to that one command only. In development, `pnpm migrate` does the same.
 
 ### Smoke test
 
-`docker/smoke.sh <image> <service> <port> <version> <commit>` (used by `ci.yaml` and `docker.yaml`,
-runnable locally) checks that the image runs as a non-root user, that Docker reports the container
-healthy using the image's own `HEALTHCHECK`, and that `/healthz` returns `status: ok`, the service
-name and the stamped version and commit. The container gets `docker/smoke.env`. When a service
-starts requiring another environment variable at boot, add a placeholder value for it to that file
-in the same change; the failure shows the service's own "Invalid environment" message.
+`docker/smoke.sh <image> <service> <port> <version> <commit> [<sentinel>]` (used by `ci.yaml` and
+`docker.yaml`, runnable locally) checks that
+
+- the image runs as a non-root user, root owns everything under `/app` and the runtime user cannot
+  write to the application directory;
+- no local-only file is in the image: no `.env` or `.env.*` other than `.env.example`, no `*.pem`,
+  `*.key`, `*.p12`, `*.pfx`, local mise config, `.git`, `.claude` or `.auth` anywhere under `/app`
+  (third-party packages in `node_modules/.pnpm` are skipped, workspace packages are not), and, when a
+  sentinel is passed, no file containing it. In CI the `images` job first plants such files at several
+  depths with `docker/plant-local-files.sh` (`apps/<app>/.env`, `packages/*/.env.local`, key files,
+  saved login state, ...) and passes its sentinel, which proves `.dockerignore` end to end. The
+  script refuses to overwrite existing files, so run it only in a clean checkout, and `--remove`
+  deletes what it planted;
+- once the service depends on `@ytw/db` (its `node_modules/@ytw/db` exists; until then the step is
+  skipped on purpose), the package has at least one `migrations/*.sql` file and its migration command
+  starts and exits with 2 without `MIGRATION_DATABASE_URL`;
+- Docker reports the container healthy using the image's own `HEALTHCHECK`, and `/healthz` returns
+  `status: ok`, the service name and the stamped version and commit.
+
+The container gets `docker/smoke.env`. When a service starts requiring another environment variable
+at boot, add a placeholder value for it to that file in the same change; the failure shows the
+service's own "Invalid environment" message.
 
 ## Secret scan and its allowlist
 
 The `scan` job runs the gitleaks CLI (version pinned in `ci.yaml`, installed and verified by mise)
-over the whole git history with `.gitleaks.toml`, which extends gitleaks' default rules. The
+over the whole git history with `.gitleaks.toml`, which extends gitleaks' default rules. The `check`
+job, which runs on every push, scans only the commits that push added (`scan-new-commits.sh`, a few
+seconds; a new branch or rewritten history is scanned in full). The
 gitleaks GitHub Action is not used because it needs a license key for organization-owned
 repositories; the CLI is MIT licensed.
 
@@ -231,6 +265,8 @@ pnpm test && pnpm --filter @ytw/policy test   # ci.yaml, test
 pnpm audit --audit-level=high             # ci.yaml, scan
 docker build -f docker/web.Dockerfile --build-arg APP_VERSION=0.0.0-dev --build-arg GIT_SHA="$(git rev-parse HEAD)" -t ytw-web:dev .
 docker/smoke.sh ytw-web:dev web-server 3000 0.0.0-dev "$(git rev-parse HEAD)"
+# to prove .dockerignore as CI does (clean checkout only): sentinel=$(docker/plant-local-files.sh),
+# build, pass "$sentinel" as the sixth argument of smoke.sh, then docker/plant-local-files.sh --remove
 ```
 
 ## Differences from model-hub
@@ -243,7 +279,7 @@ docker/smoke.sh ytw-web:dev web-server 3000 0.0.0-dev "$(git rev-parse HEAD)"
 | Build gate | none | the `check` job |
 | Scanning | none | pnpm audit, Trivy (filesystem and images), gitleaks CLI with a narrow allowlist, CodeQL and dependency review when the repository allows |
 | Images | one | two (`web`, `mcp`), smoke-tested, SBOM and provenance when published |
-| Release | schedule on, no CI check | schedule off, dry run by default, requires green CI on the commit |
+| Release | schedule on, no CI check | schedule off, dry run by default, requires green CI on the commit (also before images are pushed), scoped App token |
 | Version stamp | not surfaced to the process | `APP_VERSION` / `GIT_SHA` in `ENV`, asserted by the smoke test |
 | Base image | Playwright image (about 4 GB) | `node:24.21.0-slim`, no package managers in the runtime stage |
 | Docker cache | gha | gha, one scope per image |
@@ -260,6 +296,6 @@ docker/smoke.sh ytw-web:dev web-server 3000 0.0.0-dev "$(git rev-parse HEAD)"
   the shared preset; the weekly Trivy scan and the tag bumps cover patch updates.
 - Trivy runs with `--ignore-unfixed` and fails on HIGH and CRITICAL findings only. A finding that
   cannot be fixed can be recorded in a `.trivyignore` file with a comment and an expiry date.
-- Pushes to `claude/**` do not run the image build, the Trivy scans, the history scan or CodeQL
-  unless a relevant path changed or `[ci full]` is used, so a secret committed in ordinary source is
-  found by the next full run (the next `[ci full]` push, `main`, a pull request or the weekly run).
+- Pushes to `claude/**` do not run the image build, the Trivy scans, the full history scan or CodeQL
+  unless a relevant path changed or `[ci full]` is used. A secret committed in ordinary source is
+  still found on the push that adds it, by the per-push scan in `check`.
