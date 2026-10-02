@@ -593,10 +593,13 @@ idea, script revision, video or experiment) and validates the body: not blank, a
 it). `entity_type` is also pre-checked so that a hostile value is not echoed back in full. A note
 on a script belongs to the revision (`scripts.id`).
 
-**Internal helpers** (`ytw_fmt_value`, `ytw_fmt_list`, `ytw_raise_*`, `ytw_idea_stages`,
-`ytw_idea_stage_transitions`, `ytw_check_idea_field`, `ytw_insert_note`) are not executable by any
-application role (tested), so only the functions above reach them. Messages echo caller values
-JSON-quoted and cut after 60 characters.
+**Internal helpers** are not executable by any application role (tested), so only the functions
+above reach them: `ytw_fmt_value(text)`, `ytw_fmt_list(text[])`, `ytw_raise_not_found(entity, id)`,
+`ytw_raise_version_conflict(entity, id, expected, latest)` (0030, free for later migrations to
+call, so messages stay alike), `ytw_raise_idea_archived`, `ytw_raise_script_conflict`,
+`ytw_idea_stages`, `ytw_idea_stage_transitions`, `ytw_check_idea_field` and `ytw_insert_note`
+(taken names: do not define functions with them). Messages echo caller values JSON-quoted and cut
+after 60 characters.
 
 **TypeScript** (`src/ideas.ts`, `src/scripts.ts`, `src/notes.ts`): `createIdea`, `updateIdea`,
 `archiveIdea`, `advanceIdea` (returns `{ idea, noteId }`), `saveScriptVersion`, `setScriptStatus`

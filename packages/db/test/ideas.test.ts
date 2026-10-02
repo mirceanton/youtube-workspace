@@ -946,6 +946,7 @@ describe("advance_idea: the stage machine", () => {
   it("restores a dropped idea to the inbox, with or without a note", async () => {
     for (const note of [undefined, "Changed my mind"]) {
       const dropped = await ideaInStage(db, "dropped");
+      await tick();
       const restored = await act(db, alice, (tx) =>
         advanceIdea(tx, { id: dropped.id, newStatus: "inbox", note }),
       );
