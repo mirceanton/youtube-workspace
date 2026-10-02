@@ -78,7 +78,7 @@ function start(
   return createWebSession(web(), {
     userId: sam.id,
     refreshTokenEncrypted: overrides.refresh === undefined ? randomBytes(64) : overrides.refresh,
-    idTokenHint: overrides.hint === undefined ? "header.payload.signature" : overrides.hint,
+    idTokenHint: overrides.hint === undefined ? "hdr.pay.sig" : overrides.hint,
     idleTimeoutSeconds: overrides.idle ?? IDLE,
     absoluteTimeoutSeconds: overrides.absolute ?? ABSOLUTE,
   });
@@ -263,7 +263,7 @@ describe("get_web_session", () => {
     expect(await getWebSession(web(), idle.id)).toMatchObject({
       status: "idle_expired",
       refreshTokenEncrypted: null,
-      idTokenHint: "header.payload.signature",
+      idTokenHint: "hdr.pay.sig",
     });
 
     const old = await start({ idle: 3600, absolute: 7200 });
