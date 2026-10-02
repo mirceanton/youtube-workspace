@@ -71,7 +71,7 @@ export function Gallery() {
   const sparkValues = useMemo(() => [4, 6, 5, 9, 12, 11, 15, 14, 19, 22], []);
 
   return (
-    <div className="grid gap-8">
+    <div className="flex flex-col gap-8">
       <PageHeader
         title="UI kit"
         description="Every shared component with mock data. Development only."
@@ -87,17 +87,23 @@ export function Gallery() {
             .map(([resource, level]) => `${resource}=${level}`)
             .join(", ")}
         </p>
-        <p className="mt-2 text-sm text-ink-muted">
-          Switch persona with <code>?mock_persona=</code>:{" "}
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-muted">
+          <span>
+            Switch persona with <code>?mock_persona=</code>:
+          </span>
           {Object.keys(PERSONAS).map((name) => (
-            <a key={name} className="me-3 text-link underline" href={`?mock_persona=${name}`}>
+            <a
+              key={name}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center text-link underline"
+              href={`?mock_persona=${name}`}
+            >
               {name}
             </a>
           ))}
-        </p>
+        </div>
       </Card>
 
-      <section className="grid gap-3">
+      <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Buttons, fields, alerts</h2>
         <div className="flex flex-wrap gap-2">
           <Button variant="primary">Primary</Button>
@@ -109,7 +115,7 @@ export function Gallery() {
           </Button>
           <Button disabled>Disabled</Button>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <TextField
             label="Title"
             hint="Shown on the board"
@@ -138,9 +144,9 @@ export function Gallery() {
         <Alert tone="ok">Saved.</Alert>
       </section>
 
-      <section className="grid gap-3">
+      <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">States</h2>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Card>
             <EmptyState
               compact
@@ -157,7 +163,7 @@ export function Gallery() {
         </div>
       </section>
 
-      <section className="grid gap-3">
+      <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Write guard and last changed by</h2>
         <WriteGuard resource="ideas" className="flex flex-wrap gap-2">
           <Button variant="primary">Save idea</Button>
@@ -181,7 +187,7 @@ export function Gallery() {
         />
       </section>
 
-      <section className="grid gap-3">
+      <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Charts</h2>
         <TimeSeriesChart
           title="Daily views and impressions"
@@ -194,7 +200,7 @@ export function Gallery() {
         </p>
       </section>
 
-      <section className="grid gap-3">
+      <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Markdown</h2>
         <Card>
           <MarkdownView markdown={SAMPLE_MARKDOWN} />

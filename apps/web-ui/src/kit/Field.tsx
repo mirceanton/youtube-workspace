@@ -37,7 +37,7 @@ function Frame({
   const errorId = `${id}-error`;
   const describedBy = [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ");
   return (
-    <div className={cx("grid gap-1.5", className)}>
+    <div className={cx("flex min-w-0 flex-col gap-1.5", className)}>
       <label htmlFor={id} className={cx("text-sm font-medium", hideLabel && "sr-only")}>
         {label}
         {required ? (

@@ -108,7 +108,7 @@ export function TimeSeriesChart({
   );
 
   return (
-    <figure className={cx("grid gap-2", className)}>
+    <figure className={cx("flex min-w-0 flex-col gap-2", className)}>
       <figcaption id={captionId} className="font-medium">
         {title}
       </figcaption>
@@ -122,7 +122,7 @@ export function TimeSeriesChart({
             role="img"
             aria-labelledby={captionId}
             aria-describedby={summaryId}
-            className="relative w-full"
+            className="relative w-full min-w-0 overflow-hidden"
             style={{ minHeight: height }}
           >
             <Suspense

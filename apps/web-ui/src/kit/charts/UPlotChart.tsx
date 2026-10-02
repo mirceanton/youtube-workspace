@@ -156,11 +156,11 @@ function buildOptions(params: BuildParams): uPlot.Options {
     axes: compact
       ? [{ show: false }, { show: false }]
       : [
-          {
-            ...axisBase,
-            values:
-              xKind === "time" ? undefined : (_u, splits) => splits.map((v) => formatNumber(v)),
-          },
+          // Time axes keep uPlot's own date formatting. An explicit `values: undefined` would
+          // override it and leave the axis without labels, so the key is only set for linear x.
+          xKind === "time"
+            ? { ...axisBase }
+            : { ...axisBase, values: (_u, splits) => splits.map((v) => formatNumber(v)) },
           { ...axisBase, size: 64, values: (_u, splits) => splits.map((v) => format(v)) },
         ],
     series: [
@@ -188,18 +188,22 @@ function buildOptions(params: BuildParams): uPlot.Options {
   };
 }
 
+const NO_MARKERS: readonly PlotMarker[] = [];
+
 export default function UPlotChart(props: UPlotChartProps) {
   const { xs, columns, labels, xKind, height, width, compact = false, yMin, markers } = props;
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLSpanElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const dark = useDarkMode();
   const labelsKey = labels.join("\u0000");
 
   const live = useRef<Live>({
-    markers: markers ?? [],
+    markers: markers ?? NO_MARKERS,
     valueFormat: props.valueFormat ?? formatNumber,
   });
   const latestData = useRef({ xs, columns });
+  // What the plot currently shows, so an effect pass right after (re)building it does not repeat the work.
+  const drawn = useRef<{ xs: typeof xs; columns: typeof columns; xKind: XKind } | null>(null);
   useLayoutEffect(() => {
     live.current.valueFormat = props.valueFormat ?? formatNumber;
     latestData.current = { xs, columns };
@@ -222,6 +226,7 @@ export default function UPlotChart(props: UPlotChartProps) {
     const { xs: x0, columns: c0 } = latestData.current;
     const plot = new uPlot(options, toPlotData(x0, c0, xKind), el);
     plotRef.current = plot;
+    drawn.current = { xs: x0, columns: c0, xKind };
 
     let observer: ResizeObserver | undefined;
     if (width === undefined && typeof ResizeObserver !== "undefined") {
@@ -234,18 +239,32 @@ export default function UPlotChart(props: UPlotChartProps) {
       observer?.disconnect();
       plot.destroy();
       plotRef.current = null;
+      drawn.current = null;
     };
   }, [labelsKey, xKind, height, width, compact, yMin, dark]);
 
   // New data (the 15 s refresh) updates the existing plot instead of rebuilding it.
   useEffect(() => {
-    plotRef.current?.setData(toPlotData(xs, columns, xKind));
+    const shown = drawn.current;
+    if (
+      !plotRef.current ||
+      (shown && shown.xs === xs && shown.columns === columns && shown.xKind === xKind)
+    ) {
+      return;
+    }
+    plotRef.current.setData(toPlotData(xs, columns, xKind));
+    drawn.current = { xs, columns, xKind };
   }, [xs, columns, xKind]);
 
-  // Markers are drawn from `live`; a change only needs a repaint.
+  // Markers are drawn from `live` in the draw hook, so a change only needs a repaint. Never call
+  // `redraw()` with its default here: it re-applies the x scale's *current* range, and before the
+  // plot's first paint that range is still empty, which would wipe the autoscaled one (an empty
+  // chart). `redraw(false)` repaints without touching any scale.
   useEffect(() => {
-    live.current.markers = markers ?? [];
-    plotRef.current?.redraw();
+    const next = markers ?? NO_MARKERS;
+    if (live.current.markers === next) return;
+    live.current.markers = next;
+    plotRef.current?.redraw(false);
   }, [markers]);
 
   // A span, so a sparkline can sit inside a paragraph; uPlot builds its own elements inside it.

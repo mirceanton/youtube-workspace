@@ -118,7 +118,7 @@ export function NotesPanel({
   const notes = query.data ? sortOldestFirst(query.data.notes) : [];
 
   return (
-    <section aria-labelledby={headingId} className={cx("grid gap-4", className)}>
+    <section aria-labelledby={headingId} className={cx("flex min-w-0 flex-col gap-4", className)}>
       <Heading id={headingId} className="flex items-center gap-2 text-lg font-semibold">
         <MessageSquare aria-hidden="true" className="size-5 text-ink-muted" />
         {title}
@@ -145,7 +145,7 @@ export function NotesPanel({
           description="Notes added by you or by agents show up here."
         />
       ) : (
-        <ol className="grid gap-3">
+        <ol className="flex flex-col gap-3">
           {notes.map((note) => (
             <li key={note.id} className="rounded-lg border border-line bg-surface p-3">
               <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
@@ -167,7 +167,7 @@ export function NotesPanel({
 
       {readLevel !== "none" ? (
         <WriteGuard resource="notes">
-          <form onSubmit={submit} className="grid gap-2" noValidate>
+          <form onSubmit={submit} className="flex flex-col gap-2" noValidate>
             <TextAreaField
               ref={textareaRef}
               label={`Add to ${title.toLowerCase()}`}

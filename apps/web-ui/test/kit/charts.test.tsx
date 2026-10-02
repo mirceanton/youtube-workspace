@@ -17,7 +17,8 @@ const fake = vi.hoisted(() => {
     destroyed: boolean;
     setDataCalls: unknown[][][];
     setSizeCalls: { width: number; height: number }[];
-    redraws: number;
+    /** The argument of every redraw() call, in order. */
+    redraws: (boolean | undefined)[];
   }
   const instances: Instance[] = [];
   class FakePlot {
@@ -30,7 +31,7 @@ const fake = vi.hoisted(() => {
         destroyed: false,
         setDataCalls: [],
         setSizeCalls: [],
-        redraws: 0,
+        redraws: [],
       };
       instances.push(this.instance);
       el.setAttribute("data-fake-uplot", "");
@@ -42,8 +43,8 @@ const fake = vi.hoisted(() => {
     setSize(size: { width: number; height: number }) {
       this.instance.setSizeCalls.push(size);
     }
-    redraw() {
-      this.instance.redraws += 1;
+    redraw(rebuildPaths?: boolean) {
+      this.instance.redraws.push(rebuildPaths);
     }
     destroy() {
       this.instance.destroyed = true;
@@ -274,6 +275,39 @@ describe("TimeSeriesChart", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
     expect(list).toHaveTextContent("Experiment started:");
     expect(typeof last().opts.hooks?.draw?.[0]).toBe("function");
+  });
+
+  it("repaints changed markers with redraw(false), never with the default redraw()", async () => {
+    // uPlot's redraw() re-applies the x scale's *current* range; right after the plot is built that
+    // range is still empty, and the default call replaces the autoscaled range with it: the chart
+    // paints axes and no lines (found in a real browser, invisible to jsdom). redraw(false)
+    // repaints without touching any scale.
+    const { rerender } = render(
+      <TimeSeriesChart title="CTR" series={[views()]} markers={[{ x: T0, label: "Start" }]} />,
+    );
+    await waitFor(() => expect(fake.instances).toHaveLength(1));
+    expect(last().redraws).toEqual([]); // nothing to repaint right after building the plot
+
+    rerender(
+      <TimeSeriesChart
+        title="CTR"
+        series={[views()]}
+        markers={[
+          { x: T0, label: "Start" },
+          { x: T0 + DAY, label: "End" },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(last().redraws.length).toBeGreaterThan(0));
+    expect(last().redraws.every((argument) => argument === false)).toBe(true);
+    expect(fake.instances).toHaveLength(1);
+  });
+
+  it("does not repeat work right after building the plot (no setData, no redraw on mount)", async () => {
+    render(<TimeSeriesChart title="Views" series={[views()]} />);
+    await waitFor(() => expect(fake.instances).toHaveLength(1));
+    expect(last().setDataCalls).toEqual([]);
+    expect(last().redraws).toEqual([]);
   });
 
   it("offers the data as a table that can be shown and hidden, with null values as dashes", async () => {

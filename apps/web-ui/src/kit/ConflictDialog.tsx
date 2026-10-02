@@ -73,7 +73,7 @@ export function ConflictDialog({
         </>
       }
     >
-      <div className="grid gap-4">
+      <div className="flex flex-col gap-4">
         {changedBy ? <div>{changedBy}</div> : null}
         {latest || yours ? (
           <div className="grid gap-4 sm:grid-cols-2">

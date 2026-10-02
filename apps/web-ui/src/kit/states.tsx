@@ -58,7 +58,11 @@ export function LoadingState({ label = "Loading", lines, compact, className }: L
   return (
     <output
       aria-live="polite"
-      className={cx(lines ? "grid gap-3" : FRAME, compact ? "px-4 py-6" : "px-4 py-16", className)}
+      className={cx(
+        lines ? "flex flex-col gap-3" : FRAME,
+        compact ? "px-4 py-6" : "px-4 py-16",
+        className,
+      )}
     >
       {lines ? (
         Array.from({ length: lines }, (_, index) => (
