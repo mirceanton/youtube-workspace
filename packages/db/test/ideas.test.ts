@@ -69,6 +69,30 @@ async function rejectedWith<T extends DbError>(
   return err as T;
 }
 
+function edit(actor: Actor, id: string, expectedVersion: number, fields: IdeaFields) {
+  return act(db, actor, (tx) => updateIdea(tx, { id, expectedVersion, fields }));
+}
+
+/** An idea sitting in `from`, and the move to `to` by a person or an agent. */
+async function stageMove(from: IdeaStage, to: IdeaStage) {
+  const actor: Actor = IDEA_STAGES.indexOf(from) % 2 === 0 ? alice : newAgent();
+  const idea = await ideaInStage(db, from);
+  await tick();
+  return {
+    actor,
+    idea,
+    move: (note?: string) =>
+      act(db, actor, (tx) => advanceIdea(tx, { id: idea.id, newStatus: to, note: note ?? null })),
+    /** The idea and its notes are exactly as they were. */
+    async untouched() {
+      return {
+        idea: await getIdea(db.admin, idea.id),
+        notes: await listNotes(db.admin, { entityType: "idea", entityId: idea.id }),
+      };
+    },
+  };
+}
+
 async function ideaCount(): Promise<number> {
   const { rows } = await db.admin.query<{ n: number }>("SELECT count(*)::int AS n FROM ideas");
   return rows[0]?.n ?? -1;
@@ -305,9 +329,6 @@ describe("create_idea", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("update_idea", () => {
-  const edit = (actor: Actor, id: string, expectedVersion: number, fields: IdeaFields) =>
-    act(db, actor, (tx) => updateIdea(tx, { id, expectedVersion, fields }));
-
   it("edits the named fields, bumps the version and leaves the rest alone", async () => {
     const idea = await newIdea(db, {
       title: "Old",
@@ -464,7 +485,11 @@ describe("update_idea", () => {
   it("checks the version even when nothing would change", async () => {
     const idea = await newIdea(db, { title: "Quiet" });
     await edit(alice, idea.id, 1, { title: "Loud" });
-    await rejectedWith(edit(alice, idea.id, 1, { title: "Loud" }), VersionConflictError);
+    const err = await rejectedWith(
+      edit(alice, idea.id, 1, { title: "Loud" }),
+      VersionConflictError,
+    );
+    expect(err.latestVersion).toBe(2);
   });
 
   it("refuses to change the stage and points to advance_idea", async () => {
@@ -747,28 +772,31 @@ describe("advance_idea: the stage machine", () => {
     }
   });
 
+  /** Every (from, to) pair of the seven stages, whether the table allows it or not. */
   const pairs = IDEA_STAGES.flatMap((from) => IDEA_STAGES.map((to) => [from, to] as const));
+  const forbidden = pairs.filter(([from, to]) => findIdeaStageTransition(from, to) === undefined);
+  const needsNote = pairs.filter(
+    ([from, to]) => findIdeaStageTransition(from, to)?.requiresNote === true,
+  );
+  const plain = pairs.filter(
+    ([from, to]) => findIdeaStageTransition(from, to)?.requiresNote === false,
+  );
 
-  it("tries every (from, to) pair of the stages, the same number as the shared table implies", () => {
+  it("splits the seven by seven pairs into the moves the shared table forbids, allows and gates", () => {
     expect(pairs).toHaveLength(IDEA_STAGES.length * IDEA_STAGES.length);
-    const allowed = pairs.filter(([from, to]) => findIdeaStageTransition(from, to) !== undefined);
-    expect(allowed).toHaveLength(IDEA_STAGE_TRANSITIONS.length);
+    expect(forbidden.length + needsNote.length + plain.length).toBe(pairs.length);
+    expect(needsNote.length + plain.length).toBe(IDEA_STAGE_TRANSITIONS.length);
+    expect(needsNote).toHaveLength(
+      IDEA_STAGE_TRANSITIONS.filter((t) => t.kind === "backward").length,
+    );
   });
 
-  it.each(pairs)("%s -> %s behaves as IDEA_STAGE_TRANSITIONS says", async (from, to) => {
-    const rule = findIdeaStageTransition(from, to);
-    const actor: Actor = IDEA_STAGES.indexOf(from) % 2 === 0 ? alice : newAgent();
-    const idea = await ideaInStage(db, from);
-    await tick();
-    const move = (note?: string) =>
-      act(db, actor, (tx) => advanceIdea(tx, { id: idea.id, newStatus: to, note: note ?? null }));
-    const unchanged = async () => {
-      expect(await getIdea(db.admin, idea.id)).toEqual(idea);
-      expect(await listNotes(db.admin, { entityType: "idea", entityId: idea.id })).toEqual([]);
-    };
-
-    if (rule === undefined) {
-      // Not in the table: rejected, whatever the caller says, and the message lists what is valid.
+  it.each(forbidden)(
+    "%s -> %s is refused, with the valid next stages in the message",
+    async (from, to) => {
+      expect(findIdeaStageTransition(from, to)).toBeUndefined();
+      const { idea, move, untouched } = await stageMove(from, to);
+      // Whatever the caller adds, a move the table does not list stays refused.
       for (const note of [undefined, "A very good reason"]) {
         const err = await rejectedWith(move(note), InvalidTransitionError);
         expect(err.allowed).toEqual(allowedNextStages(from));
@@ -780,44 +808,50 @@ describe("advance_idea: the stage machine", () => {
         );
         expect(err.hint).toContain("back one stage with a note");
         expect(err.status).toBe(422);
-        await unchanged();
+        expect(await untouched()).toEqual({ idea, notes: [] });
       }
-      return;
-    }
+    },
+  );
 
-    if (rule.requiresNote) {
-      // A move back: a missing, empty or blank note fails; nothing is written.
-      for (const note of [undefined, "", "   \n\t "]) {
-        const err = await rejectedWith(move(note), ValidationError);
-        expect(err.field).toBe("note");
-        expect(err.details).toMatchObject({ from, to, requires_note: true, kind: "backward" });
-        expect(err.message).toBe(
-          `moving an idea back from "${from}" to "${to}" requires a note explaining why: pass note`,
-        );
-        await unchanged();
-      }
-      const moved = await move("It needs another pass");
-      expect(moved.idea).toMatchObject({ status: to, version: idea.version + 1 });
-      expect(moved.noteId).toEqual(expect.any(String));
-      const notes = await listNotes(db.admin, { entityType: "idea", entityId: idea.id });
-      expect(notes).toEqual([
-        expect.objectContaining({
-          id: moved.noteId,
-          bodyMd: "It needs another pass",
-          author: actor.name,
-          actorType: actor.type,
-        }),
-      ]);
-      return;
+  it.each(needsNote)("%s -> %s needs a note, and links it to the idea", async (from, to) => {
+    expect(findIdeaStageTransition(from, to)).toMatchObject({
+      kind: "backward",
+      requiresNote: true,
+    });
+    const { actor, idea, move, untouched } = await stageMove(from, to);
+    // A missing, empty or blank note fails and nothing is written.
+    for (const note of [undefined, "", "   \n\t "]) {
+      const err = await rejectedWith(move(note), ValidationError);
+      expect(err.field).toBe("note");
+      expect(err.details).toMatchObject({ from, to, requires_note: true, kind: "backward" });
+      expect(err.message).toBe(
+        `moving an idea back from "${from}" to "${to}" requires a note explaining why: pass note`,
+      );
+      expect(await untouched()).toEqual({ idea, notes: [] });
     }
+    const moved = await move("It needs another pass");
+    expect(moved.idea).toMatchObject({ status: to, version: idea.version + 1 });
+    expect(moved.noteId).toEqual(expect.any(String));
+    expect((await untouched()).notes).toEqual([
+      expect.objectContaining({
+        id: moved.noteId,
+        entityType: "idea",
+        entityId: idea.id,
+        bodyMd: "It needs another pass",
+        author: actor.name,
+        actorType: actor.type,
+      }),
+    ]);
+  });
 
-    // Allowed without a note.
+  it.each(plain)("%s -> %s is allowed without a note", async (from, to) => {
+    expect(findIdeaStageTransition(from, to)?.requiresNote).toBe(false);
+    const { idea, move, untouched } = await stageMove(from, to);
     const moved = await move();
     expect(moved.idea).toMatchObject({ status: to, version: idea.version + 1, archivedAt: null });
     expect(moved.idea.statusChangedAt.getTime()).toBeGreaterThan(idea.statusChangedAt.getTime());
     expect(moved.noteId).toBeNull();
-    expect(await listNotes(db.admin, { entityType: "idea", entityId: idea.id })).toEqual([]);
-    expect(await getIdea(db.admin, idea.id)).toEqual(moved.idea);
+    expect(await untouched()).toEqual({ idea: moved.idea, notes: [] });
   });
 
   it("rejects a stage that does not exist and lists the real ones", async () => {
@@ -903,12 +937,13 @@ describe("advance_idea: the stage machine", () => {
   it("only restores a dropped idea to the inbox, not further", async () => {
     const dropped = await ideaInStage(db, "dropped");
     for (const stage of IDEA_STAGES.filter((s) => s !== "inbox")) {
-      await rejectedWith(
+      const err = await rejectedWith(
         act(db, alice, (tx) =>
           advanceIdea(tx, { id: dropped.id, newStatus: stage, note: "please" }),
         ),
         InvalidTransitionError,
       );
+      expect(err.allowed).toEqual(["inbox"]);
     }
   });
 

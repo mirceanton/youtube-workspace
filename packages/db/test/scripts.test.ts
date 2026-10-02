@@ -76,6 +76,25 @@ function save(
   return act(db, actor, (tx) => saveScriptVersion(tx, { ideaId, kind, baseVersion, bodyMd }));
 }
 
+function setStatus(actor: Actor, scriptId: string, status: ScriptStatus) {
+  return act(db, actor, (tx) => setScriptStatus(tx, { scriptId, status }));
+}
+
+/** A saved revision already in status `from`, with its row before the call. */
+async function revisionIn(from: ScriptStatus) {
+  const idea = await newIdea(db);
+  const saved = await save(alice, idea.id, 0, "Body text");
+  if (from !== "draft") {
+    await setStatus(alice, saved.id, from);
+  }
+  const before = (await getScriptVersion(db.admin, {
+    ideaId: idea.id,
+    kind: "script",
+  })) as ScriptRecordWithBody;
+  await tick();
+  return { idea, saved, before, eventsBefore: await eventCount(db, saved.id) };
+}
+
 async function scriptRows(ideaId: string, kind: ScriptKind = "script") {
   const { rows } = await db.admin.query<{ version: number; body_md: string; created_by: string }>(
     "SELECT version, body_md, created_by FROM scripts WHERE idea_id = $1 AND kind = $2 ORDER BY version",
@@ -654,54 +673,52 @@ describe("save_script_version", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("set_script_status", () => {
-  const setStatus = (actor: Actor, scriptId: string, status: ScriptStatus) =>
-    act(db, actor, (tx) => setScriptStatus(tx, { scriptId, status }));
-
   const transitions = SCRIPT_STATUSES.flatMap((from) =>
     SCRIPT_STATUSES.map((to) => [from, to] as const),
   );
+  const unchanged = transitions.filter(([from, to]) => from === to);
+  const changing = transitions.filter(([from, to]) => from !== to);
 
-  it.each(transitions)("%s -> %s", async (from, to) => {
-    const idea = await newIdea(db);
-    const saved = await save(alice, idea.id, 0, "Body text");
-    if (from !== "draft") {
-      await setStatus(alice, saved.id, from);
-    }
-    const before = (await getScriptVersion(db.admin, {
-      ideaId: idea.id,
-      kind: "script",
-    })) as ScriptRecordWithBody;
-    const eventsBefore = await eventCount(db, saved.id);
+  it("covers all nine pairs of statuses", () => {
+    expect(transitions).toHaveLength(SCRIPT_STATUSES.length ** 2);
+    expect(unchanged.length + changing.length).toBe(transitions.length);
+  });
+
+  it.each(changing)("%s -> %s changes the status and nothing else", async (from, to) => {
+    const { idea, saved, before } = await revisionIn(from);
     const agent = newAgent("reviewer");
-    await tick();
     const after = await setStatus(agent, saved.id, to);
     expect(after).toMatchObject({
       id: saved.id,
       ideaId: idea.id,
+      kind: "script",
       version: 1,
       status: to,
       sizeBytes: before.sizeBytes,
       createdBy: "alice",
+      updatedBy: "reviewer",
     });
-    const stored = await getScriptVersion(db.admin, { ideaId: idea.id, kind: "script" });
-    expect(stored?.bodyMd).toBe("Body text");
-    if (from === to) {
-      // Nothing to change: same row, same audit trail.
-      expect(after).toEqual({ ...before, bodyMd: undefined });
-      expect(await eventCount(db, saved.id)).toBe(eventsBefore);
-    } else {
-      expect(after.updatedBy).toBe("reviewer");
-      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
-      const trail = await eventsFor(db, saved.id);
-      expect(trail.at(-1)).toMatchObject({
-        actor: "reviewer",
-        actor_type: "agent",
-        token_id: agent.tokenId,
-        action: "update",
-        entity_type: "script",
-        payload: { old: { status: from }, new: { status: to } },
-      });
-    }
+    expect(after.createdAt).toEqual(before.createdAt);
+    expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+    expect((await getScriptVersion(db.admin, { ideaId: idea.id, kind: "script" }))?.bodyMd).toBe(
+      "Body text",
+    );
+    const trail = await eventsFor(db, saved.id);
+    expect(trail.at(-1)).toMatchObject({
+      actor: "reviewer",
+      actor_type: "agent",
+      token_id: agent.tokenId,
+      action: "update",
+      entity_type: "script",
+      payload: { old: { status: from }, new: { status: to } },
+    });
+  });
+
+  it.each(unchanged)("%s -> %s is a no-op: same row, no audit row", async (status) => {
+    const { saved, before, eventsBefore } = await revisionIn(status);
+    const after = await setStatus(newAgent("reviewer"), saved.id, status);
+    expect(after).toEqual({ ...before, bodyMd: undefined });
+    expect(await eventCount(db, saved.id)).toBe(eventsBefore);
   });
 
   it("can set any revision, not only the latest", async () => {

@@ -80,6 +80,13 @@ function note(
   return act(db, actor, (tx) => addNote(tx, { entityType, entityId, bodyMd }));
 }
 
+/** add_note called directly as the MCP role, for arguments the wrapper's types would not allow. */
+function rawAddNote(type: string | null, id: string | null, body: string | null) {
+  return db
+    .pool("ytw_mcp")
+    .query(sql`SELECT * FROM add_note('bot', 'agent', NULL, ${type}, ${id}::uuid, ${body})`);
+}
+
 async function noteCount(): Promise<number> {
   const { rows } = await db.admin.query<{ n: number }>("SELECT count(*)::int AS n FROM notes");
   return rows[0]?.n ?? -1;
@@ -338,17 +345,13 @@ describe("add_note", () => {
 
     it("rejects a missing target or body, and a malformed id", async () => {
       const entityId = await makeEntity.idea();
-      const call = (type: string | null, id: string | null, body: string | null) =>
-        db
-          .pool("ytw_mcp")
-          .query(sql`SELECT * FROM add_note('bot', 'agent', NULL, ${type}, ${id}::uuid, ${body})`);
-      expect((await rejectedWith(call("idea", null, "x"), ValidationError)).field).toBe(
+      expect((await rejectedWith(rawAddNote("idea", null, "x"), ValidationError)).field).toBe(
         "entity_id",
       );
-      expect((await rejectedWith(call(null, entityId, "x"), ValidationError)).field).toBe(
+      expect((await rejectedWith(rawAddNote(null, entityId, "x"), ValidationError)).field).toBe(
         "entity_type",
       );
-      expect((await rejectedWith(call("idea", entityId, null), ValidationError)).field).toBe(
+      expect((await rejectedWith(rawAddNote("idea", entityId, null), ValidationError)).field).toBe(
         "body_md",
       );
       const malformed = await rejectedWith(note(alice, "idea", "not-a-uuid", "x"), ValidationError);
