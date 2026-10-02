@@ -825,7 +825,12 @@ Actor, `actor_type` and `token_id` of every event are the caller's (the person; 
 user, not an admin, last admin, an admin's levels, above the owner's level, no access to any object),
 `not_found` (unknown user; a token that is not the caller's), `invalid_transition` (changing or
 rotating a revoked token), `duplicate` (a token hash in use). Wrappers throw the typed classes of
-`errors.ts`; reads on a plain pool map catalogue errors too.
+`errors.ts`; reads on a plain pool map catalogue errors too. A NULL where a value is required is a
+`validation` error that names the argument (`test/identity-arguments.test.ts` calls every function
+once per argument with exactly that argument NULL); a message repeats at most 60 characters of a
+caller's value (`ytw_fmt_value`, `ytw_fmt_json`) and a permission map with a flood of keys is refused
+before it is described; the wrappers reject malformed UUIDs and NUL characters (`args.ts`) before
+the driver sees them.
 
 **From the services.**
 

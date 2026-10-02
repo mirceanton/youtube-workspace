@@ -67,6 +67,10 @@ interface Spec {
 
 const WEB = () => db.pool("ytw_web");
 
+/** Runs `fn` in a transaction acting as the ordinary user `owner`. */
+const asOwner = <T>(fn: Parameters<typeof withActor<T>>[2]) =>
+  withActor(WEB(), person("owner"), fn);
+
 /** What each call came to when exactly one argument was NULL: `ok` or the database error kind. */
 async function nullOutcomes(spec: Spec): Promise<Record<number, string>> {
   const outcomes: Record<number, string> = {};
@@ -262,17 +266,14 @@ describe("arguments that are NULL", () => {
 describe("arguments Postgres cannot receive, caught by the wrappers", () => {
   const NOT_A_UUID = "not-a-uuid";
   const NUL = "bad\u0000value";
-  const web = () => WEB();
-  const as = (name: string) => person(name);
-  const asOwner = <T>(fn: Parameters<typeof withActor<T>>[2]) => withActor(web(), as("owner"), fn);
 
   const malformed: [string, () => Promise<unknown>, string][] = [
-    ["getUserAccess: id", () => getUserAccess(web(), NOT_A_UUID), "user_id"],
-    ["listUserAccess: acting user", () => listUserAccess(web(), NOT_A_UUID), "acting_user_id"],
+    ["getUserAccess: id", () => getUserAccess(WEB(), NOT_A_UUID), "user_id"],
+    ["listUserAccess: acting user", () => listUserAccess(WEB(), NOT_A_UUID), "acting_user_id"],
     [
       "setUserPermission: acting user",
       () =>
-        withActor(web(), as("root"), (tx) =>
+        withActor(WEB(), person("root"), (tx) =>
           setUserPermission(tx, {
             actingUserId: NOT_A_UUID,
             userId: owner.id,
@@ -285,7 +286,7 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
     [
       "setUserPermission: user",
       () =>
-        withActor(web(), as("root"), (tx) =>
+        withActor(WEB(), person("root"), (tx) =>
           setUserPermission(tx, {
             actingUserId: root.id,
             userId: NOT_A_UUID,
@@ -298,7 +299,7 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
     [
       "setUserPermission: NUL in the object",
       () =>
-        withActor(web(), as("root"), (tx) =>
+        withActor(WEB(), person("root"), (tx) =>
           setUserPermission(tx, {
             actingUserId: root.id,
             userId: owner.id,
@@ -311,7 +312,7 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
     [
       "setUserAdmin: user",
       () =>
-        withActor(web(), as("root"), (tx) =>
+        withActor(WEB(), person("root"), (tx) =>
           setUserAdmin(tx, { actingUserId: root.id, userId: NOT_A_UUID, isAdmin: true }),
         ),
       "user_id",
@@ -319,7 +320,7 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
     [
       "upsertUserOnLogin: NUL in the username",
       () =>
-        withActor(web(), as("x"), (tx) =>
+        withActor(WEB(), person("x"), (tx) =>
           upsertUserOnLogin(tx, { issuer: ISSUER, sub: "s", username: NUL }),
         ),
       "username",
@@ -327,7 +328,7 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
     [
       "upsertUserOnLogin: NUL in the display name",
       () =>
-        withActor(web(), as("x"), (tx) =>
+        withActor(WEB(), person("x"), (tx) =>
           upsertUserOnLogin(tx, { issuer: ISSUER, sub: "s", username: "x", displayName: NUL }),
         ),
       "display_name",
@@ -422,32 +423,32 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
       () => asOwner((tx) => revokeApiToken(tx, { actingUserId: owner.id, apiTokenId: NOT_A_UUID })),
       "api_token_id",
     ],
-    ["listApiTokens: owner", () => listApiTokens(web(), NOT_A_UUID), "owner_user_id"],
-    ["getApiToken: token", () => getApiToken(web(), owner.id, NOT_A_UUID), "api_token_id"],
-    ["lookupTokenByHash: NUL", () => lookupTokenByHash(web(), NUL), "token_hash"],
+    ["listApiTokens: owner", () => listApiTokens(WEB(), NOT_A_UUID), "owner_user_id"],
+    ["getApiToken: token", () => getApiToken(WEB(), owner.id, NOT_A_UUID), "api_token_id"],
+    ["lookupTokenByHash: NUL", () => lookupTokenByHash(WEB(), NUL), "token_hash"],
     [
       "touchTokenLastUsed: token id",
-      () => touchTokenLastUsed(web(), { id: NOT_A_UUID, name: "n" }),
+      () => touchTokenLastUsed(WEB(), { id: NOT_A_UUID, name: "n" }),
       "token_id",
     ],
     [
       "createWebSession: user",
       () =>
-        createWebSession(web(), {
+        createWebSession(WEB(), {
           userId: NOT_A_UUID,
           idleTimeoutSeconds: 3600,
           absoluteTimeoutSeconds: 86_400,
         }),
       "user_id",
     ],
-    ["touchWebSession: session", () => touchWebSession(web(), NOT_A_UUID, 3600), "session_id"],
-    ["getWebSession: session", () => getWebSession(web(), NOT_A_UUID), "session_id"],
+    ["touchWebSession: session", () => touchWebSession(WEB(), NOT_A_UUID, 3600), "session_id"],
+    ["getWebSession: session", () => getWebSession(WEB(), NOT_A_UUID), "session_id"],
     [
       "updateWebSessionTokens: NUL in the hint",
-      () => updateWebSessionTokens(web(), owner.id, { idTokenHint: NUL }),
+      () => updateWebSessionTokens(WEB(), owner.id, { idTokenHint: NUL }),
       "id_token_hint",
     ],
-    ["deleteWebSession: session", () => deleteWebSession(web(), NOT_A_UUID), "session_id"],
+    ["deleteWebSession: session", () => deleteWebSession(WEB(), NOT_A_UUID), "session_id"],
   ];
 
   it.each(malformed)("%s", async (_label, attempt, field) => {
