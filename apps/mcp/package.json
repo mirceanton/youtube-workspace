@@ -28,6 +28,7 @@
     "@ytw/db": "workspace:*",
     "@ytw/observability": "workspace:*",
     "@ytw/policy": "workspace:*",
+    "@ytw/script-md": "workspace:*",
     "@ytw/shared": "workspace:*",
     "@ytw/tokens": "workspace:*",
     "fastify": "catalog:",

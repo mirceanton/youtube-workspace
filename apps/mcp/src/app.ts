@@ -10,6 +10,7 @@ import { createAuthenticator, FailureLimiter, type Authenticator } from "@ytw/to
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { Env } from "./env.js";
+import { filesPlugin } from "./files/routes.js";
 import { createMcpServer } from "./server.js";
 import { loadTools, type ToolDefinition } from "./tools.js";
 
@@ -86,6 +87,11 @@ export async function buildApp(env: Env, options: BuildAppOptions = {}): Promise
       limiter: options.limiter ?? new FailureLimiter(),
       onTouchError: (err) => app.log.warn({ err }, "failed to touch token last_used_at"),
     });
+
+  await app.register(filesPlugin, {
+    pool,
+    authenticator,
+  });
 
   const tools = options.tools ?? (await loadTools());
 
