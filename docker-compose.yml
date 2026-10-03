@@ -6,7 +6,7 @@ name: youtube-workspace
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:18
     command: ["postgres", "-c", "max_connections=300"]
     environment:
       # Dev-only credentials, also used by scripts/pg-local.sh and .env.example.
