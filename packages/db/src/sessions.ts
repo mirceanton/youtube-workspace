@@ -81,7 +81,8 @@ export interface CreateWebSessionInput {
 /**
  * Starts a session for a user who just signed in: idle expiry now plus the idle timeout (capped at
  * the absolute expiry), absolute expiry now plus the absolute timeout. `NotFoundError` for an unknown
- * user, `ValidationError` for timeouts or blobs out of range.
+ * user, `ForbiddenError` (`reason: access_revoked`) for a person whose access is revoked (they sign
+ * in again with access first), `ValidationError` for timeouts or blobs out of range.
  */
 export async function createWebSession(
   db: Queryable,

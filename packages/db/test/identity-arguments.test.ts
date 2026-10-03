@@ -1,4 +1,4 @@
-// Arguments that are NULL or malformed, for every function of migrations 0050-0054 (T14).
+// Arguments that are NULL or malformed, for every function of migrations 0050-0058 (T14).
 //
 // In SQL a required argument that is NULL must be answered with a `validation` error that names it,
 // never with a not_found about "NULL", a bare driver error or silent success. In the wrappers a
@@ -9,8 +9,13 @@ import { RESOURCES } from "@ytw/shared/constants";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withActor } from "../src/client.js";
 import { ValidationError, toDbError } from "../src/errors.js";
-import { getUserAccess, setUserAdmin, upsertUserOnLogin } from "../src/identity.js";
-import { listUserAccess, setUserPermission } from "../src/permissions.js";
+import {
+  getUserAccess,
+  markUserOutsideAccessGroup,
+  setUserAdmin,
+  upsertUserOnLogin,
+} from "../src/identity.js";
+import { listUserAccess, setUserAccessRevoked, setUserPermission } from "../src/permissions.js";
 import {
   createWebSession,
   deleteWebSession,
@@ -63,9 +68,12 @@ interface Spec {
   valid: () => Promise<unknown[]>;
   /** Positions where NULL is a legitimate value. */
   optional: readonly number[];
+  /** The role that may call the function; the web server unless said otherwise. */
+  role?: "ytw_mcp";
 }
 
 const WEB = () => db.pool("ytw_web");
+const MCP = () => db.pool("ytw_mcp");
 
 /** Runs `fn` in a transaction acting as the ordinary user `owner`. */
 const asOwner = <T>(fn: Parameters<typeof withActor<T>>[2]) =>
@@ -79,7 +87,10 @@ async function nullOutcomes(spec: Spec): Promise<Record<number, string>> {
     const values = await spec.valid();
     values[position] = null;
     try {
-      await WEB().query(`SELECT * FROM public.${spec.name}(${placeholders})`, values);
+      await (spec.role === "ytw_mcp" ? MCP() : WEB()).query(
+        `SELECT * FROM public.${spec.name}(${placeholders})`,
+        values,
+      );
       outcomes[position] = "ok";
     } catch (err) {
       const kind: unknown = Reflect.get(toDbError(err) as object, "kind");
@@ -121,6 +132,18 @@ const SPECS: Spec[] = [
     types: ["text", "text", "uuid", "uuid", "uuid", "boolean", "boolean"],
     valid: async () => ["root", "human", null, root.id, (await freshUser()).id, true, false],
     optional: [2, 6],
+  },
+  {
+    name: "set_user_access_revoked",
+    types: ["text", "text", "uuid", "uuid", "uuid", "boolean"],
+    valid: async () => ["root", "human", null, root.id, (await freshUser()).id, false],
+    optional: [2],
+  },
+  {
+    name: "mark_user_outside_access_group",
+    types: ["text", "text", "uuid", "text", "text"],
+    valid: async () => ["someone", "human", null, ISSUER, `sub-${unique()}`],
+    optional: [2],
   },
   {
     name: "create_api_token",
@@ -193,12 +216,14 @@ const SPECS: Spec[] = [
       return [made.token.name, "agent", made.token.id];
     },
     optional: [],
+    role: "ytw_mcp",
   },
   {
     name: "lookup_token_by_hash",
     types: ["text"],
     valid: async () => [newSecret().hash],
     optional: [],
+    role: "ytw_mcp",
   },
   {
     name: "create_web_session",
@@ -249,6 +274,8 @@ describe("arguments that are NULL", () => {
         "upsert_user_on_login",
         "set_user_permission",
         "set_user_admin",
+        "set_user_access_revoked",
+        "mark_user_outside_access_group",
         "create_api_token",
         "update_token_permissions",
         "rotate_api_token",
@@ -332,6 +359,38 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
           upsertUserOnLogin(tx, { issuer: ISSUER, sub: "s", username: "x", displayName: NUL }),
         ),
       "display_name",
+    ],
+    [
+      "markUserOutsideAccessGroup: NUL in the issuer",
+      () =>
+        withActor(WEB(), person("x"), (tx) =>
+          markUserOutsideAccessGroup(tx, { issuer: NUL, sub: "s" }),
+        ),
+      "issuer",
+    ],
+    [
+      "markUserOutsideAccessGroup: NUL in the subject",
+      () =>
+        withActor(WEB(), person("x"), (tx) =>
+          markUserOutsideAccessGroup(tx, { issuer: ISSUER, sub: NUL }),
+        ),
+      "sub",
+    ],
+    [
+      "setUserAccessRevoked: acting user",
+      () =>
+        withActor(WEB(), person("root"), (tx) =>
+          setUserAccessRevoked(tx, { actingUserId: NOT_A_UUID, userId: owner.id, revoked: true }),
+        ),
+      "acting_user_id",
+    ],
+    [
+      "setUserAccessRevoked: user",
+      () =>
+        withActor(WEB(), person("root"), (tx) =>
+          setUserAccessRevoked(tx, { actingUserId: root.id, userId: NOT_A_UUID, revoked: true }),
+        ),
+      "user_id",
     ],
     [
       "createApiToken: owner",
@@ -425,10 +484,10 @@ describe("arguments Postgres cannot receive, caught by the wrappers", () => {
     ],
     ["listApiTokens: owner", () => listApiTokens(WEB(), NOT_A_UUID), "owner_user_id"],
     ["getApiToken: token", () => getApiToken(WEB(), owner.id, NOT_A_UUID), "api_token_id"],
-    ["lookupTokenByHash: NUL", () => lookupTokenByHash(WEB(), NUL), "token_hash"],
+    ["lookupTokenByHash: NUL", () => lookupTokenByHash(MCP(), NUL), "token_hash"],
     [
       "touchTokenLastUsed: token id",
-      () => touchTokenLastUsed(WEB(), { id: NOT_A_UUID, name: "n" }),
+      () => touchTokenLastUsed(MCP(), { id: NOT_A_UUID, name: "n" }),
       "token_id",
     ],
     [

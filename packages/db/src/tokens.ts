@@ -16,8 +16,13 @@ import {
   rejectNulInJson,
 } from "./internal/identity-rows.js";
 
-/** `revoked` wins over `expired` when both hold. */
-export type ApiTokenStatus = "active" | "revoked" | "expired";
+/**
+ * `active` is the only status that may act. `revoked` and `expired` are facts about the token
+ * (`revoked` wins when both hold); `owner_revoked` says the token itself is fine but its owner's access
+ * is revoked (outside the access group, or locked out by an admin): it works again, unchanged, when the
+ * owner's access is restored. They are reported in that order of precedence.
+ */
+export type ApiTokenStatus = "active" | "revoked" | "expired" | "owner_revoked";
 
 /** A token as the settings screens show it. It never carries the hash. */
 export interface ApiTokenInfo {
@@ -37,7 +42,7 @@ export interface ApiTokenInfo {
   levels: ResourceLevels;
   /**
    * What the token may do right now: per object the lower of its own level and its owner's current
-   * level, and none while it is revoked or expired.
+   * level, and none unless the token is active.
    */
   effectiveLevels: ResourceLevels;
 }
@@ -234,7 +239,10 @@ export async function getApiToken(
 
 /** A token found by the hash of its secret, with its owner. */
 export interface FoundToken {
-  /** `active`: usable. `revoked` and `expired` are reported distinctly (revoked wins). */
+  /**
+   * `active`: usable. `revoked`, `expired` and `owner_revoked` are reported distinctly and never act;
+   * a caller must not tell the client which one it was.
+   */
   status: ApiTokenStatus;
   id: string;
   name: string;
@@ -246,8 +254,9 @@ export interface FoundToken {
   owner: {
     id: string;
     username: string;
+    /** The owner's EFFECTIVE admin flag: false while their access is revoked. */
     isAdmin: boolean;
-    /** The owner's EFFECTIVE levels right now (admins: the maximum everywhere). */
+    /** The owner's EFFECTIVE levels right now (admins: the maximum everywhere; revoked access: none). */
     levels: ResourceLevels;
   };
   /** The token's own stored levels. */
@@ -260,8 +269,8 @@ export interface FoundToken {
 export type TokenLookup = FoundToken | { status: "unknown" };
 
 /**
- * The shape of `@ytw/policy`'s `TokenPrincipal`, built from a found token. Build it only for an
- * `active` token; `principalLevels` of it equals `effectiveLevels`.
+ * The shape of `@ytw/policy`'s `TokenPrincipal`, built from an active token: `principalLevels` of it
+ * equals `effectiveLevels`.
  */
 export interface TokenPrincipalData {
   kind: "token";
@@ -271,7 +280,17 @@ export interface TokenPrincipalData {
   owner: { userId: string; username: string; isAdmin: boolean; levels: ResourceLevels };
 }
 
+/**
+ * Builds the principal of an ACTIVE token. Throws a plain `Error` for any other status: a revoked,
+ * expired or owner-revoked token has no principal, and `@ytw/policy` would grant the token's own
+ * levels to one built from it. Check `status === "active"` first and answer 401 otherwise.
+ */
 export function toTokenPrincipal(token: FoundToken): TokenPrincipalData {
+  if (token.status !== "active") {
+    throw new Error(
+      `toTokenPrincipal: token ${token.id} is ${token.status}, and only an active token has a principal: check status first`,
+    );
+  }
   return {
     kind: "token",
     tokenId: token.id,
@@ -289,9 +308,10 @@ export function toTokenPrincipal(token: FoundToken): TokenPrincipalData {
 /**
  * The authentication lookup: finds a token by the SHA-256 of its secret (64 lower-case hex digits;
  * `ValidationError` otherwise, so a secret passed by mistake is never searched for) and reads its
- * owner's levels in the same statement, so lowering a user lowers their tokens at once. An unknown
- * hash gives `{ status: "unknown" }`; revoked and expired tokens come back with their facts and
- * `status`, and all-none `effectiveLevels`.
+ * owner's levels in the same statement, so lowering a user (or revoking their access) lowers their
+ * tokens at once. An unknown hash gives `{ status: "unknown" }`; revoked, expired and owner-revoked
+ * tokens come back with their facts and `status`, and all-none `effectiveLevels`. Only the MCP role
+ * may execute the function (the web server never authenticates a token).
  */
 export async function lookupTokenByHash(db: Queryable, tokenHash: string): Promise<TokenLookup> {
   rejectNul("token_hash", tokenHash);
@@ -340,8 +360,10 @@ export async function lookupTokenByHash(db: Queryable, tokenHash: string): Promi
 
 /**
  * Records that an authenticated token was just used (`last_used_at` only: no audit event, no
- * `updated_at` change). Called as the token itself; a single statement, so a pool is enough. Revoked
- * and expired tokens are left alone. Returns whether a token was updated.
+ * `updated_at` change). Called as the token itself; a single statement, so a pool is enough. Only an
+ * active token is touched (not revoked, not expired, owner's access not revoked), and only under its
+ * own name: that check is defence in depth, not authentication, because a token's id and name appear
+ * in the readable audit log. Returns whether a token was updated. MCP role only.
  */
 export async function touchTokenLastUsed(
   db: Queryable,

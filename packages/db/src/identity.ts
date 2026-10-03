@@ -9,10 +9,13 @@ import type { ResourceLevels } from "@ytw/shared/constants";
 import { rejectNul, requireUuid } from "./args.js";
 import { sql, type ActorTx, type Queryable } from "./client.js";
 import {
+  accessRevocationFromRow,
   onlyRow,
   parseResourceLevels,
   queryRows,
   userAccessFromRow,
+  type AccessRevocation,
+  type AccessRevocationRow,
   type UserAccess,
   type UserAccessRow,
 } from "./internal/identity-rows.js";
@@ -42,8 +45,13 @@ export interface LoginResult extends UserAccess {
  * `lastLoginAt` moves. Throws `ValidationError` for a missing issuer, sub or username and
  * `ForbiddenError` when the actor is an API token or not the signing-in user.
  *
+ * Call it only AFTER the identity provider's access group check passed: signing in lifts a revoked
+ * access (`accessRevokedAt` of the result is always null), so a person who is outside the group goes
+ * to `markUserOutsideAccessGroup` instead and never reaches this function.
+ *
  * The transaction holds a lock that serialises logins until it ends: keep it short (do not call the
- * identity provider inside it).
+ * identity provider inside it), and leave its isolation level at READ COMMITTED (SERIALIZABLE works;
+ * REPEATABLE READ is refused with a `ValidationError`).
  */
 export async function upsertUserOnLogin(
   tx: ActorTx,
@@ -65,14 +73,50 @@ export async function upsertUserOnLogin(
 }
 
 /**
- * The user and the levels they hold right now (admins: the maximum everywhere), or null for an
- * unknown id. Read it on every request that needs a decision; never cache the levels (PRD 7).
+ * The user and the levels they hold right now (admins: the maximum everywhere; a person whose access
+ * is revoked: none, and not an admin, with `accessRevokedAt`), or null for an unknown id. Read it on
+ * every request that needs a decision; never cache the levels (PRD 7).
  */
 export async function getUserAccess(db: Queryable, userId: string): Promise<UserAccess | null> {
   requireUuid("user_id", userId);
   const rows = await queryRows<UserAccessRow>(db, sql`SELECT * FROM get_user_access(${userId})`);
   const row = rows[0];
   return row === undefined ? null : userAccessFromRow(row);
+}
+
+export interface MarkOutsideAccessGroupInput {
+  /** OIDC issuer URL (`iss`) of the person who failed the access group check. */
+  issuer: string;
+  /** OIDC subject (`sub`) of that person. */
+  sub: string;
+}
+
+/**
+ * The identity provider says this person is outside the required access group (the check PRD 7
+ * repeats on every token refresh): revokes their access (levels none, not an admin, every token they
+ * own dead) and ends all their browser sessions on every device. Run it in
+ * `withActor(pool, { name: <their preferred_username>, type: "human" }, ...)`.
+ *
+ * Never creates a user: it returns null for an identity that never signed in (nothing to revoke;
+ * "no user record is created" for someone without the group). Calling it again for a person whose
+ * access is already revoked changes nothing and writes no event (`changed` false). It is not subject
+ * to the last-admin guard: the identity provider outranks it, so the workspace may be left without an
+ * admin whose access is active; that person signs in again once they are back in the group.
+ */
+export async function markUserOutsideAccessGroup(
+  tx: ActorTx,
+  input: MarkOutsideAccessGroupInput,
+): Promise<AccessRevocation | null> {
+  rejectNul("issuer", input.issuer);
+  rejectNul("sub", input.sub);
+  const rows = await queryRows<AccessRevocationRow>(
+    tx,
+    sql`SELECT * FROM mark_user_outside_access_group(${tx.actor.name}, ${tx.actor.type},
+                                                     ${tx.actor.tokenId}, ${input.issuer},
+                                                     ${input.sub})`,
+  );
+  const row = rows[0];
+  return row === undefined ? null : accessRevocationFromRow(row);
 }
 
 export interface SetUserAdminInput {
@@ -89,7 +133,12 @@ export interface SetUserAdminInput {
   keepLevels?: boolean;
 }
 
-/** What `setUserAdmin` did. `changed` is false when the user already was (or was not) an admin. */
+/**
+ * What `setUserAdmin` did. `changed` is false when the user already was (or was not) an admin.
+ * `isAdmin` and `previousIsAdmin` are the STORED flag this call decided; for someone whose access is
+ * revoked it does not count until the access returns (`getUserAccess` reports the effective flag), and
+ * `levels` are the effective levels (none while revoked).
+ */
 export interface AdminChange {
   userId: string;
   username: string;
@@ -101,10 +150,14 @@ export interface AdminChange {
 
 /**
  * Promotes or demotes a user (admins only). Promoting raises the user's stored levels to the
- * maximum in the same transaction. The last admin cannot be demoted (`ForbiddenError` naming the
- * rule), also when two admins demote each other at the same moment. Throws `ForbiddenError` when
- * the acting user is not an admin or the actor is an API token, and `NotFoundError` for an unknown
+ * maximum in the same transaction. The last admin whose access is active cannot be demoted
+ * (`ForbiddenError` naming the rule; admins whose access is revoked do not count), also when two
+ * admins demote each other at the same moment. Throws `ForbiddenError` when the acting user is not an
+ * admin, has no access (revoked) or the actor is an API token, and `NotFoundError` for an unknown
  * user.
+ *
+ * Demoting resets the user's levels to none unless `keepLevels`: a confirmation dialog must say so
+ * (the person loses their access, and every token they own loses it with them).
  */
 export async function setUserAdmin(tx: ActorTx, input: SetUserAdminInput): Promise<AdminChange> {
   requireUuid("acting_user_id", input.actingUserId);

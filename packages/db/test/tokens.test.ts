@@ -670,7 +670,7 @@ describe("lookup_token_by_hash", () => {
       [active, revoked, expired, both].map(async (made) => (await lookup(made.hash)).status),
     );
     expect(statuses).toEqual(["active", "revoked", "expired", "revoked"]);
-    expect((await lookupTokenByHash(web(), newSecret().hash)).status).toBe("unknown");
+    expect((await lookupTokenByHash(db.pool("ytw_mcp"), newSecret().hash)).status).toBe("unknown");
 
     const revokedFound = await lookup(revoked.hash);
     expect(revokedFound.revokedAt).toBeInstanceOf(Date);
@@ -978,7 +978,7 @@ describe("rotate_api_token", () => {
           expect(rejection.reason).toBeInstanceOf(InvalidTransitionError);
         }
         for (const hash of [made.hash, fresh.hash]) {
-          expect((await lookupTokenByHash(web(), hash)).status).not.toBe("active");
+          expect((await lookupTokenByHash(db.pool("ytw_mcp"), hash)).status).not.toBe("active");
         }
       }
     } finally {
@@ -1067,12 +1067,11 @@ describe("touch_token_last_used", () => {
     expect(first?.updated_by).toBe(initial?.updated_by);
 
     expect(await touchTokenLastUsed(db.pool("ytw_mcp"), token)).toBe(true);
-    expect(await touchTokenLastUsed(web(), token)).toBe(true);
     const later = await row();
     expect((later?.last_used_at?.getTime() ?? 0) >= (first?.last_used_at?.getTime() ?? 1)).toBe(
       true,
     );
-    // No audit spam: 3 touches, 0 events.
+    // No audit spam: 2 touches, 0 events.
     expect(await eventCount(db)).toBe(events);
     expect((await lookup(made.hash)).lastUsedAt).toEqual(later?.last_used_at);
   });

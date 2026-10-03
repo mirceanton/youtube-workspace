@@ -93,7 +93,9 @@ export function parseResourceLevels(value: unknown, what = "levels"): ResourceLe
 /**
  * A user with the levels they hold right now. `levels` is the EFFECTIVE level on every object (what
  * `@ytw/policy` `userLevels` computes): admins hold the maximum everywhere, everyone else the stored
- * level. It is therefore safe to pass `{ isAdmin, levels }` to every `@ytw/policy` function.
+ * level, and nobody anything while their access is revoked. `isAdmin` is the EFFECTIVE flag too (an
+ * admin whose access is revoked is not one). It is therefore safe to pass `{ isAdmin, levels }` to
+ * every `@ytw/policy` function.
  */
 export interface UserAccess {
   id: string;
@@ -109,6 +111,12 @@ export interface UserAccess {
   lastLoginAt: Date | null;
   createdAt: Date;
   levels: ResourceLevels;
+  /**
+   * Set while the person has no access at all: outside the identity provider's access group, or
+   * locked out by an admin. `levels` are none and `isAdmin` is false then; signing in again with
+   * access (or an admin) restores them. Always null in the result of a sign-in.
+   */
+  accessRevokedAt: Date | null;
 }
 
 /** Row shape of `public.ytw_user_access` (and the head of `upsert_user_on_login`'s result). */
@@ -123,6 +131,39 @@ export interface UserAccessRow extends Record<string, unknown> {
   last_login_at: Date | null;
   created_at: Date;
   levels: unknown;
+  /** Absent from the result of `upsert_user_on_login`: signing in always lifts a revocation. */
+  access_revoked_at?: Date | null;
+}
+
+/** What an access revocation or restoration did (`mark_user_outside_access_group`, `set_user_access_revoked`). */
+export interface AccessRevocation {
+  userId: string;
+  username: string;
+  /** When the access was revoked; null when it is not (after a restoration). */
+  accessRevokedAt: Date | null;
+  /** False when the access already was in the requested state: nothing was logged then. */
+  changed: boolean;
+  /** Browser sessions ended by the call, on every device. */
+  sessionsEnded: number;
+}
+
+/** Row shape of the result of the two revocation functions. */
+export interface AccessRevocationRow extends Record<string, unknown> {
+  user_id: string;
+  username: string;
+  access_revoked_at: Date | null;
+  changed: boolean;
+  sessions_ended: number;
+}
+
+export function accessRevocationFromRow(row: AccessRevocationRow): AccessRevocation {
+  return {
+    userId: row.user_id,
+    username: row.username,
+    accessRevokedAt: row.access_revoked_at,
+    changed: row.changed,
+    sessionsEnded: row.sessions_ended,
+  };
 }
 
 export function userAccessFromRow(row: UserAccessRow): UserAccess {
@@ -137,5 +178,6 @@ export function userAccessFromRow(row: UserAccessRow): UserAccess {
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
     levels: parseResourceLevels(row.levels, `the levels of user ${row.username}`),
+    accessRevokedAt: row.access_revoked_at ?? null,
   };
 }
