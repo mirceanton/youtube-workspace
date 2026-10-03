@@ -56,8 +56,9 @@ export interface SearchHit {
    */
   title: string | null;
   /**
-   * `ts_rank` with length normalisation: higher is better and only comparable within one result.
-   * A match in an idea's title outranks one in its pitch, which outranks one in a script body.
+   * `ts_rank` scaled into [0, 1): higher is better and only comparable within one result. A match
+   * in an idea's title outranks one in its pitch, which outranks any number of matches in a script
+   * body; within one field more occurrences rank higher.
    */
   rank: number;
   /** Plain text of at most {@link SEARCH_SNIPPET_MAX_CHARS} characters with the match markers. */

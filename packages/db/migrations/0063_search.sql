@@ -8,6 +8,12 @@
 -- saved, and what was removed from the latest text cannot be found any more. The query goes through
 -- websearch_to_tsquery('english', ...), the configuration the vectors were built with.
 --
+-- Rank. ts_rank scaled into [0, 1) (flag 32: rank / (rank + 1)), without length normalisation, so
+-- that the field weights decide: a match in a title (weight A) outranks one in a pitch (B), which
+-- outranks any number of matches in a script body (D); within one field more occurrences rank
+-- higher. Ties are ordered by entity type, then id, so the order is the same every time. Ranks are
+-- only comparable within one result.
+--
 -- Permissions. The function cannot know what the caller's token may read, so the SERVICE passes the
 -- resources it may read ('ideas', 'scripts'; PRD 7) and the function searches exactly those: no
 -- default, NULL or an unknown name is a validation error, an empty list finds nothing. A script hit
@@ -98,12 +104,12 @@ BEGIN
   FOR v_hit IN
     WITH hits AS (
       SELECT 'idea'::text AS entity_type, i.id, i.id AS idea_id, NULL::text AS kind,
-             NULL::integer AS version, i.title, ts_rank(i.search_vector, v_query, 1) AS rank
+             NULL::integer AS version, i.title, ts_rank(i.search_vector, v_query, 32) AS rank
       FROM public.ideas i
       WHERE v_ideas AND i.archived_at IS NULL AND i.search_vector @@ v_query
       UNION ALL
       SELECT 'script'::text, s.id, s.idea_id, s.kind, s.version,
-             CASE WHEN v_ideas THEN i.title END, ts_rank(s.search_vector, v_query, 1)
+             CASE WHEN v_ideas THEN i.title END, ts_rank(s.search_vector, v_query, 32)
       FROM public.scripts s
       JOIN public.ideas i ON i.id = s.idea_id
       WHERE v_scripts AND i.archived_at IS NULL AND s.search_vector @@ v_query
