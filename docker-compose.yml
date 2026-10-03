@@ -30,7 +30,7 @@ services:
     # without access to the registry (newest 26.7.x patch release according to the matching
     # @keycloak/keycloak-admin-client versions on npm; 26.8.0 was published the day this was
     # written), so the keycloak-smoke workflow is what proves that it pulls and runs.
-    image: quay.io/keycloak/keycloak:26.7.5
+    image: quay.io/keycloak/keycloak:26.8.0
     command: ["start-dev", "--import-realm"]
     environment:
       # Dev-only master-realm admin (http://localhost:8080/admin), not part of the youtube-workspace realm.
