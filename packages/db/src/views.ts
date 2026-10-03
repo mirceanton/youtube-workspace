@@ -170,6 +170,26 @@ export async function listIdeaPipeline(
   });
 }
 
+/**
+ * How many ideas are in each stage (the "ideas per stage" row of the dashboard, PRD 6). Archived
+ * ideas are not counted; every stage is present, with 0 when it holds no idea.
+ */
+export async function countIdeasByStage(db: Queryable): Promise<Record<IdeaStage, number>> {
+  const rows = await select<{ status: IdeaStage; count: number }>(
+    db,
+    "SELECT status, count(*)::int AS count FROM public.ideas_pipeline GROUP BY status",
+    [],
+  );
+  const counts = Object.fromEntries(IDEA_STAGES.map((stage) => [stage, 0])) as Record<
+    IdeaStage,
+    number
+  >;
+  for (const row of rows) {
+    counts[row.status] = row.count;
+  }
+  return counts;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Video performance
 

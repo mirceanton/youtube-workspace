@@ -7,6 +7,7 @@ import { EXPERIMENT_STATUSES, IDEA_STAGES, SCRIPT_KINDS } from "@ytw/shared/cons
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { APP_ROLES, withActor, type AppRole } from "../src/client.js";
 import { ValidationError } from "../src/errors.js";
+import { listEvents } from "../src/activity.js";
 import { concludeExperiment, recordVariantStats } from "../src/experiments.js";
 import { advanceIdea, archiveIdea, updateIdea } from "../src/ideas.js";
 import { logMetrics, type MetricValues } from "../src/metrics.js";
@@ -14,6 +15,7 @@ import { saveScriptVersion, setScriptStatus } from "../src/scripts.js";
 import { createTestDb, type TestDb } from "../src/testing.js";
 import { archiveVideo } from "../src/videos.js";
 import {
+  countIdeasByStage,
   listExperimentResults,
   listIdeaPipeline,
   listVideoPerformance,
@@ -106,6 +108,9 @@ describe("empty database", () => {
     expect(await listIdeaPipeline(web, { includeArchived: true })).toEqual([]);
     expect(await listVideoPerformance(web)).toEqual([]);
     expect(await listExperimentResults(web)).toEqual([]);
+    expect(await countIdeasByStage(web)).toEqual(
+      Object.fromEntries(IDEA_STAGES.map((stage) => [stage, 0])),
+    );
   });
 
   it("a channel with no snapshot at all has NULL medians (and a sample size of 0), not an error", async () => {
@@ -256,6 +261,35 @@ describe("ideas_pipeline on the small seed", () => {
       2,
     );
     expect(await listIdeaPipeline(web, { stages: [] })).toHaveLength(7);
+  });
+
+  it("answers the dashboard rows of PRD 6: ideas per stage, running experiments, latest videos, last events", async () => {
+    const web = db.pool("ytw_web");
+    // The archived idea sits in the inbox but is not counted.
+    expect(await countIdeasByStage(web)).toEqual({
+      inbox: 1,
+      shortlisted: 1,
+      scripting: 1,
+      filming: 1,
+      editing: 1,
+      published: 1,
+      dropped: 1,
+    });
+    const running = await listExperimentResults(web, { statuses: ["running"] });
+    expect(running.map((experiment) => experiment.experimentId)).toEqual([
+      seed.experiments.running.id,
+    ]);
+    // Newest publication first; the scheduled video (in the future) leads, the archived one is absent.
+    const latest = await listVideoPerformance(web, { limit: 3 });
+    expect(latest.map((video) => video.id)).toEqual([
+      seed.videos.scheduled.id,
+      seed.videos.editing.id,
+      seed.videos.gear.id,
+    ]);
+    expect(latest[1]?.latest?.views).toBe("8000");
+    const feed = await listEvents(web, { limit: 20 });
+    expect(feed.events).toHaveLength(20);
+    expect(feed.nextCursor).not.toBeNull();
   });
 
   it("answers the same through every application role", async () => {

@@ -948,6 +948,13 @@ records: numbers that are `bigint` or `numeric` in the database are strings, dat
 are validated before the query. A test compares each constant with the database (the limits through the
 DETAIL of the error, the markers and the snippet cap through real hits).
 
+The dashboard rows of PRD 6 need no function of their own: ideas per stage is
+`countIdeasByStage(db)` (every stage present, 0 when empty, archived ideas not counted), running
+experiments `listExperimentResults(db, { statuses: ["running"] })`, the latest videos with headline
+metrics `listVideoPerformance(db, { limit })` (a scheduled video has a `publishedAt` in the future:
+skip those to show published videos only) and the last 20 events `listEvents(db, { limit: 20 })`; a
+test runs all four on the small seed.
+
 `test/seed.ts` builds data for tests and later performance work: `seedSmall(db)` (documented
 records, backdated stage clocks, scripts, videos with snapshots, experiments, a few real audit events
 of a person and two agents, built through the real functions where time does not matter) and
