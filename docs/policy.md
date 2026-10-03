@@ -57,13 +57,18 @@ for a jsonb object such as `{ "ideas": "write" }`.
 `@ytw/db` hands these inputs over ready-made (docs/database.md, "Identity, permissions, tokens,
 sessions"). `getUserAccess(db, userId)` returns `{ id, username, isAdmin, levels }` whose `levels`
 are already effective, so `{ kind: "user", userId: id, username, isAdmin, levels }` needs no
-`levelsFromRows`. `lookupTokenByHash(db, hash)` returns the token's own levels, the owner (id,
-username, admin flag, effective levels) and the database's own `effectiveLevels`;
+`levelsFromRows`. Both `isAdmin` and `levels` are the EFFECTIVE values: a person whose access is
+revoked (outside the Keycloak access group, or locked out by an admin) comes back as
+`isAdmin: false` with every level None, because `userLevels` would otherwise give a revoked admin
+full access. `lookupTokenByHash(db, hash)` returns the token's own levels, the owner (id, username,
+effective admin flag, effective levels) and the database's own `effectiveLevels`;
 `toTokenPrincipal(found)` turns an `active` token into the `TokenPrincipal` above, and
 `principalLevels` of it equals `effectiveLevels` (a test compares both for owners and tokens at every
-level). A revoked or expired token comes back with `effectiveLevels` all None, so a caller that
-forgets to look at `status` still grants nothing. Objects the build does not know are ignored when
-the levels are read, and objects the database does not list yet are None.
+level). For any other status (`revoked`, `expired`, `owner_revoked`) `toTokenPrincipal` throws,
+because a principal built from a dead token would carry the token's own levels; `effectiveLevels` is
+all None for them, so a caller that reads that instead of `status` still grants nothing. Objects the
+build does not know are ignored when the levels are read, and objects the database does not list yet
+are None.
 
 ## Using it
 

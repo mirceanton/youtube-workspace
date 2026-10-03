@@ -1,10 +1,12 @@
 // parseResourceLevels: how the wrappers read the `jsonb` level maps the identity functions return.
 // It follows @ytw/policy levelsFromRecord, so a migration that adds an object type can run before
 // the services that know it are deployed (docs/policy.md, "Verify and ship").
+// toTokenPrincipal: only an active token has a principal.
 import { RESOURCES } from "@ytw/shared/constants";
-import { levelsFromRecord } from "@ytw/policy";
+import { levelsFromRecord, principalLevels } from "@ytw/policy";
 import { describe, expect, it } from "vitest";
 import { parseResourceLevels } from "../src/permissions.js";
+import { toTokenPrincipal, type ApiTokenStatus, type FoundToken } from "../src/tokens.js";
 
 const FULL = {
   ideas: "write",
@@ -59,5 +61,52 @@ describe("parseResourceLevels", () => {
     for (const record of records) {
       expect(parseResourceLevels(record)).toEqual(levelsFromRecord(record));
     }
+  });
+});
+
+const NONE = parseResourceLevels({});
+const READ_IDEAS = parseResourceLevels({ ideas: "read" });
+
+function found(status: ApiTokenStatus): FoundToken {
+  return {
+    status,
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "bot",
+    prefix: "ytw_abcdefgh",
+    createdAt: new Date(0),
+    expiresAt: null,
+    revokedAt: null,
+    lastUsedAt: null,
+    owner: {
+      id: "00000000-0000-4000-8000-000000000002",
+      username: "owner",
+      isAdmin: false,
+      levels: READ_IDEAS,
+    },
+    levels: READ_IDEAS,
+    effectiveLevels: status === "active" ? READ_IDEAS : NONE,
+  };
+}
+
+describe("toTokenPrincipal", () => {
+  it("builds the principal of an active token: its levels are the effective levels", () => {
+    const active = found("active");
+    const principal = toTokenPrincipal(active);
+    expect(principal).toMatchObject({ kind: "token", tokenId: active.id, tokenName: "bot" });
+    expect(principalLevels({ ...principal })).toEqual(active.effectiveLevels);
+  });
+
+  it.each(["revoked", "expired", "owner_revoked"] as const)(
+    "throws for a %s token instead of granting its own levels",
+    (status) => {
+      expect(() => toTokenPrincipal(found(status))).toThrow(
+        new RegExp(`is ${status}, and only an active token has a principal`),
+      );
+    },
+  );
+
+  it("never puts the secret-derived values of the token into the message", () => {
+    const token = { ...found("revoked"), prefix: "ytw_SECRETABC" };
+    expect(() => toTokenPrincipal(token)).toThrow(/^(?!.*SECRETABC)/);
   });
 });
