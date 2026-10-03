@@ -9,6 +9,7 @@ describe("mcp env", () => {
       LOG_LEVEL: "info",
       APP_VERSION: "0.0.0-dev",
       GIT_SHA: "unknown",
+      DATABASE_URL: "postgres://ytw_mcp:ytw_mcp@localhost:5432/youtube_workspace",
     });
   });
 

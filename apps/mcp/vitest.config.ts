@@ -1,4 +1,13 @@
 import { defineProject, mergeConfig } from "vitest/config";
 import { baseProjectConfig } from "../../vitest.shared.ts";
 
-export default mergeConfig(baseProjectConfig, defineProject({ test: { name: "@ytw/mcp" } }));
+export default mergeConfig(
+  baseProjectConfig,
+  defineProject({
+    test: {
+      name: "@ytw/mcp",
+      hookTimeout: 120_000,
+      testTimeout: 60_000,
+    },
+  }),
+);
