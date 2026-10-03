@@ -356,7 +356,17 @@ importers:
         specifier: 'catalog:'
         version: 4.6.5
 
-  packages/tokens: {}
+  packages/tokens:
+    dependencies:
+      '@ytw/db':
+        specifier: workspace:*
+        version: link:../db
+      '@ytw/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@ytw/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   tests:
     devDependencies:

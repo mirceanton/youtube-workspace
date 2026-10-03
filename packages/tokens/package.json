@@ -14,5 +14,10 @@
     "build": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@ytw/db": "workspace:*",
+    "@ytw/policy": "workspace:*",
+    "@ytw/shared": "workspace:*"
   }
 }
