@@ -95,7 +95,9 @@ export interface SmallSeed {
   experiments: Record<"concluded" | "running" | "planned", ExperimentWithVariants>;
 }
 
-const DAY = "1 day";
+// Hours, not days: an interval of days follows the calendar of the session time zone (a day can have 23
+// or 25 hours around a clock change), so a stage clock set in days is not an exact number of days.
+const DAY = "24 hours";
 
 /** Inserts an idea with a backdated stage clock (the functions cannot: ytw_touch owns it). */
 async function insertIdea(
@@ -149,41 +151,41 @@ export async function seedSmall(db: TestDb): Promise<SmallSeed> {
       pitch:
         "Five thumbnails I tested and what the click-through rate told me. Retention is only a side effect.",
       status: "shortlisted",
-      inStage: "3 days",
+      inStage: "72 hours",
       score: 70,
     }),
     scripting: await insertIdea(db, alice, {
       title: "How I plan a video from idea to upload",
       pitch: "My planning workflow: research, outline, script, packaging.",
       status: "scripting",
-      inStage: "5 days 3 hours",
+      inStage: "123 hours",
       score: 85,
     }),
     filming: await insertIdea(db, alice, {
       title: "Camera gear after two years",
       pitch: "Cameras, microphones and lights I still use, and what I would skip.",
       status: "filming",
-      inStage: "12 days",
+      inStage: "288 hours",
     }),
     editing: await insertIdea(db, alice, {
       title: "Editing workflow with AI",
       pitch: "Cutting a video faster with AI assisted editing, step by step.",
       status: "editing",
-      inStage: "20 days",
+      inStage: "480 hours",
       score: 60,
     }),
     published: await insertIdea(db, alice, {
       title: "The audience retention curve explained",
       pitch: "How to read the audience retention graph in YouTube Studio.",
       status: "published",
-      inStage: "40 days",
+      inStage: "960 hours",
       score: 90,
     }),
     dropped: await insertIdea(db, alice, {
       title: "A dropped idea about gear",
       pitch: "Not worth a video.",
       status: "dropped",
-      inStage: "60 days",
+      inStage: "1440 hours",
     }),
     archived: await insertIdea(db, alice, {
       title: "An archived retention idea",

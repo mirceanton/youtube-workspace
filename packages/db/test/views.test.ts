@@ -468,7 +468,7 @@ describe("ideas_pipeline edge cases and experiment_results", () => {
       const expected = SCRIPT_KINDS.flatMap((kind) =>
         ["id", "version", "status", "at"].map((part) => `latest_${kind}_${part}`),
       ).toSorted();
-      expect(rows.map((row) => row.column_name)).toEqual(expected);
+      expect(rows.map((row) => row.column_name).toSorted()).toEqual(expected);
     });
   });
 
@@ -479,7 +479,7 @@ describe("ideas_pipeline edge cases and experiment_results", () => {
       const old = await withActor(db.admin, alice, async (tx) => {
         const { rows } = await tx.query<{ id: string }>(
           `INSERT INTO ideas (title, status, status_changed_at, created_at)
-           VALUES ('Aged idea', 'scripting', now() - interval '9 days 5 hours', now() - interval '30 days')
+           VALUES ('Aged idea', 'scripting', now() - interval '221 hours', now() - interval '720 hours')
            RETURNING id`,
         );
         return rows[0]?.id as string;
@@ -507,7 +507,7 @@ describe("ideas_pipeline edge cases and experiment_results", () => {
     it("is never negative, even for a stage clock in the future", async () => {
       const id = await withActor(db.admin, alice, async (tx) => {
         const { rows } = await tx.query<{ id: string }>(
-          `INSERT INTO ideas (title, status_changed_at) VALUES ('From the future', now() + interval '2 days')
+          `INSERT INTO ideas (title, status_changed_at) VALUES ('From the future', now() + interval '48 hours')
            RETURNING id`,
         );
         return rows[0]?.id as string;
@@ -1242,7 +1242,7 @@ describe("access: grants, invoker rights and what the views must never expose", 
         ORDER BY c.relname`,
       [[...VIEWS]],
     );
-    expect(rows.map((row) => row.relname)).toEqual([...VIEWS].toSorted());
+    expect(rows.map((row) => row.relname).toSorted()).toEqual([...VIEWS].toSorted());
     for (const row of rows) {
       expect(row.options).toContain("security_invoker=true");
       expect((row.comment ?? "").length).toBeGreaterThan(20);
@@ -1287,7 +1287,7 @@ describe("access: grants, invoker rights and what the views must never expose", 
         ORDER BY 1`,
       [[...VIEWS]],
     );
-    expect(rows.map((row) => row.name)).toEqual(
+    expect(rows.map((row) => row.name).toSorted()).toEqual(
       [
         "public.experiment_results",
         "public.experiment_variants",
