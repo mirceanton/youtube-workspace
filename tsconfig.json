@@ -10,6 +10,7 @@
     { "path": "apps/mcp" },
     { "path": "apps/web-server" },
     { "path": "apps/web-ui" },
+    { "path": "apps/admin-cli" },
     { "path": "e2e" },
     { "path": "tests" }
   ]
