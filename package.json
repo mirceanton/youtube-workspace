@@ -16,7 +16,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "migrate": "pnpm --filter @ytw/db run migrate",
-    "ytw-admin": "pnpm --filter @ytw/admin-cli run ytw-admin"
+    "ytw-admin": "pnpm --filter @ytw/admin-cli run ytw-admin",
+    "docs:mcp": "pnpm --filter @ytw/mcp run docs:mcp"
   },
   "devDependencies": {
     "@types/node": "^24.19.0",

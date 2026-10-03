@@ -21,7 +21,8 @@
     "build": "tsc -b",
     "start": "node dist/src/index.js",
     "lint": "tsc -b && oxlint --deny-warnings",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docs:mcp": "tsx scripts/generate-docs.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",

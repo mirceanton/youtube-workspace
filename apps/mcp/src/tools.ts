@@ -74,9 +74,9 @@ export function defineTool<TArgs extends z.ZodTypeAny = z.ZodTypeAny>(
 }
 
 /**
- * Discovers and registers all tools from `src/tools/*.ts` (or `dist/src/tools/*.js`).
+ * Creates and populates an InMemoryToolRegistry with all tools discovered in `src/tools/*.ts`.
  */
-export async function loadTools(dirUrl?: URL | string): Promise<ToolDefinition[]> {
+export async function createToolRegistry(dirUrl?: URL | string): Promise<InMemoryToolRegistry> {
   const registry = new InMemoryToolRegistry();
   const dir = dirUrl instanceof URL ? dirUrl : new URL(dirUrl ?? "./tools/", import.meta.url);
 
@@ -84,8 +84,8 @@ export async function loadTools(dirUrl?: URL | string): Promise<ToolDefinition[]
   try {
     filenames = await readdir(fileURLToPath(dir));
   } catch {
-    // If tools directory doesn't exist, return empty
-    return [];
+    // If tools directory doesn't exist, return empty registry
+    return registry;
   }
 
   for (const filename of filenames.toSorted()) {
@@ -113,5 +113,13 @@ export async function loadTools(dirUrl?: URL | string): Promise<ToolDefinition[]
     }
   }
 
+  return registry;
+}
+
+/**
+ * Discovers and registers all tools from `src/tools/*.ts` (or `dist/src/tools/*.js`).
+ */
+export async function loadTools(dirUrl?: URL | string): Promise<ToolDefinition[]> {
+  const registry = await createToolRegistry(dirUrl);
   return registry.getTools() as ToolDefinition[];
 }
