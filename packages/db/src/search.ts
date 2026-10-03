@@ -33,9 +33,9 @@ export const SEARCH_QUERY_MAX_CHARS = 1000;
 /** The longest snippet, in characters, markers included. */
 export const SEARCH_SNIPPET_MAX_CHARS = 400;
 /** Opens a highlighted match in a snippet (U+27E6). Never occurs in a snippet otherwise. */
-export const SEARCH_HIGHLIGHT_START = "⟦";
+export const SEARCH_HIGHLIGHT_START = String.fromCodePoint(0x27e6);
 /** Closes a highlighted match in a snippet (U+27E7). */
-export const SEARCH_HIGHLIGHT_STOP = "⟧";
+export const SEARCH_HIGHLIGHT_STOP = String.fromCodePoint(0x27e7);
 
 /** What kind of record a hit is, as `events.entity_type` names it. */
 export type SearchEntityType = "idea" | "script";
