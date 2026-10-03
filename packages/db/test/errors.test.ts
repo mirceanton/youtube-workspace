@@ -225,6 +225,7 @@ describe("toClientError", () => {
   it.each([
     ["23505", "duplicate", 422, false],
     ["23503", "invalid_reference", 422, false],
+    ["23001", "invalid_reference", 422, false],
     ["23514", "validation", 400, false],
     ["23502", "validation", 400, false],
     ["22P02", "validation", 400, false],

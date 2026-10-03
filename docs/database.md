@@ -521,7 +521,7 @@ layer to `{ error, message, status, retryable, hint?, details? }`; log the origi
 | catalogue error with status below 500 | its kind (message, hint and details kept) | its status | no |
 | `missing_actor`, anything unrecognised | `internal` | 500 | no |
 | 23505 (unique) | `duplicate` | 422 | no |
-| 23503 (foreign key) | `invalid_reference` | 422 | no |
+| 23503, 23001 (foreign key, restrict) | `invalid_reference` | 422 | no |
 | other 22xxx, 23xxx (bad value, CHECK, NOT NULL) | `validation` | 400 | no |
 | 40001, 40P01 (serialization failure, deadlock) | `retry` | 503 | yes |
 | 57014, 55P03 (statement or lock timeout) | `timeout` | 503 | yes |
