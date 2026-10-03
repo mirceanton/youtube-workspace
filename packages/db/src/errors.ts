@@ -282,7 +282,7 @@ const SQLSTATE_CLIENT_ERRORS: readonly (readonly [RegExp, ClientError])[] = [
     },
   ],
   [
-    /^23503$/,
+    /^(23503|23001)$/,
     {
       error: "invalid_reference",
       message: "the request refers to a record that does not exist, or one that is still in use",

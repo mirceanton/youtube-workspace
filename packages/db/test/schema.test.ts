@@ -770,12 +770,14 @@ describe("foreign keys", () => {
     ],
   ];
 
-  // Postgres reports RESTRICT (like NO ACTION) as foreign_key_violation, 23503; the catalog test
-  // above pins the action itself (confdeltype 'r').
+  // Postgres reports RESTRICT (like NO ACTION) as foreign_key_violation, 23503; in PG18+, as
+  // restrict_violation, 23001. The catalog test above pins the action itself (confdeltype 'r').
   it.each(restricted)("refuse to delete %s (ON DELETE RESTRICT)", async (_label, attempt) => {
     const err = await pgFailure(actAs(alice, attempt));
-    expect(err.code).toBe("23503");
-    expect(err.message).toMatch(/^update or delete on table .* violates foreign key constraint/);
+    expect(["23503", "23001"]).toContain(err.code);
+    expect(err.message).toMatch(
+      /^update or delete on table .* violates (?:RESTRICT setting of )?foreign key constraint/,
+    );
   });
 
   it("refuse rows that point at nothing", async () => {
