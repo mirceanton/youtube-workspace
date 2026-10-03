@@ -584,8 +584,8 @@ describe("ideas_pipeline edge cases and experiment_results", () => {
     it("lists the variants side by side, the control first, with nothing computed before stats exist", async () => {
       const experiment = await newExperiment(db, {
         variants: [
-          { label: "Zeta", content: "z" },
-          { label: "Alpha", content: "a", isControl: true },
+          { label: "Alpha", content: "a" },
+          { label: "Zeta", content: "z", isControl: true },
           { label: "Beta", content: "b" },
         ],
       });
@@ -599,9 +599,9 @@ describe("ideas_pipeline edge cases and experiment_results", () => {
         hypothesis: "A bolder title raises the CTR",
         winnerVariantId: null,
         conclusion: null,
-        controlVariantId: byLabel(result, "Alpha").variantId,
+        controlVariantId: byLabel(result, "Zeta").variantId,
       });
-      expect(result.variants.map((variant) => variant.label)).toEqual(["Alpha", "Beta", "Zeta"]);
+      expect(result.variants.map((variant) => variant.label)).toEqual(["Zeta", "Alpha", "Beta"]);
       for (const variant of result.variants) {
         expect(variant).toMatchObject({
           impressions: null,
@@ -612,7 +612,7 @@ describe("ideas_pipeline edge cases and experiment_results", () => {
         });
       }
       expect(result.variants.map((variant) => variant.isControl)).toEqual([true, false, false]);
-      expect(result.variants.map((variant) => variant.content)).toEqual(["a", "b", "z"]);
+      expect(result.variants.map((variant) => variant.content)).toEqual(["z", "a", "b"]);
     });
 
     it("computes the CTR difference and lift against the control, for every variant", async () => {

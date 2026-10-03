@@ -894,7 +894,8 @@ Returns `entity_type` (`idea` or `script`), `id` (the idea, or the script revisi
   `ytw_mcp` only; it reads `ideas` and `scripts` with the caller's own privileges.
 - **Cost**: ranking is proportional to the number of matching documents (the GIN indexes of T11 find
   them), `ts_headline` runs only for the returned hits: 5 to 90 ms on the 10 000-idea seed, the slowest
-  for a word that occurs in every one of 20 000 script bodies.
+  for a word that occurs in every one of 20 000 script bodies (a 1000-character query that ORs forty
+  common words took 0.2 to 0.3 s, which is the bound the query cap gives).
 
 ### Activity feed: `list_events(...)`
 
