@@ -15,7 +15,6 @@ import {
   type GrantOwner,
   type TokenPrincipal,
 } from "@ytw/policy";
-import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql, withActor, type Actor } from "../src/client.js";
 import {
@@ -951,7 +950,7 @@ describe("rotate_api_token", () => {
   });
 
   it("rotating and revoking at the same moment never leaves a usable token", async () => {
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: 4 });
+    const pool = db.createPool("ytw_web", { max: 4 });
     try {
       for (let round = 0; round < 8; round += 1) {
         const made = await makeToken(db, collaborator, { permissions: { ideas: "read" } });

@@ -462,7 +462,7 @@ describe("the last admin under concurrency", () => {
 
   it(`${ROUNDS} rounds of two admins demoting each other at the same moment leave exactly one admin`, async () => {
     const db = await createTestDb();
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: 4 });
+    const pool = db.createPool("ytw_web", { max: 4 });
     try {
       const root = await login(db, "root");
       const other = await login(db, "other");
@@ -493,7 +493,7 @@ describe("the last admin under concurrency", () => {
 
   it("six admins demoting themselves in parallel: exactly five succeed, the last one is refused", async () => {
     const db = await createTestDb();
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: 8 });
+    const pool = db.createPool("ytw_web", { max: 8 });
     try {
       const root = await login(db, "root");
       const admins: TestUser[] = [root];
@@ -545,7 +545,7 @@ describe("the last admin under concurrency", () => {
 
   it("many admins demoting each other in a ring never leave the system without an admin", async () => {
     const db = await createTestDb();
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: 8 });
+    const pool = db.createPool("ytw_web", { max: 8 });
     try {
       const root = await login(db, "root");
       const admins: TestUser[] = [root];
@@ -577,7 +577,7 @@ describe("the last admin under concurrency", () => {
 describe("promotion racing with changes to the same user's levels", () => {
   it("never leaves an admin whose stored rows are below the maximum", async () => {
     const db = await createTestDb();
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: 12 });
+    const pool = db.createPool("ytw_web", { max: 12 });
     try {
       const root = await login(db, "root");
       for (let round = 0; round < 12; round += 1) {

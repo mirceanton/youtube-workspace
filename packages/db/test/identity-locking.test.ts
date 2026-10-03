@@ -24,10 +24,8 @@ type Isolation = "repeatable read" | "serializable";
 
 /** A pool whose transactions start at `isolation`: what a misconfigured service would have. */
 function isolatedPool(db: TestDb, isolation: Isolation, applicationName = "ytw-isolated"): Pool {
-  return new Pool({
-    connectionString: db.url("ytw_web"),
-    max: 4,
-    application_name: applicationName,
+  return db.createPool("ytw_web", {
+    applicationName,
     options: `-c default_transaction_isolation=${isolation.replace(" ", "\\ ")}`,
   });
 }
@@ -305,11 +303,10 @@ describe("one lock order: the advisory lock first, then rows", () => {
   it("an access change followed by a promotion in one transaction does not deadlock with the target's sign-in", async () => {
     const u0 = await login(db, "u0");
     const u1 = await login(db, "u1");
-    const poolA = new Pool({ connectionString: db.url("ytw_web"), max: 2 });
-    const poolB = new Pool({
-      connectionString: db.url("ytw_web"),
+    const poolA = db.createPool("ytw_web", { max: 2 });
+    const poolB = db.createPool("ytw_web", {
       max: 2,
-      application_name: "ytw-late-login",
+      applicationName: "ytw-late-login",
     });
     try {
       let levelChanged!: () => void;
@@ -352,7 +349,7 @@ describe("one lock order: the advisory lock first, then rows", () => {
       people.push(await login(db, name));
     }
     await promote(db, root, people[0] as TestUser);
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: 12 });
+    const pool = db.createPool("ytw_web", { max: 12 });
     try {
       const operations: Promise<unknown>[] = [];
       for (let round = 0; round < 6; round += 1) {

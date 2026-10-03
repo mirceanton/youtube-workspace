@@ -4,7 +4,6 @@
 // that only one user can claim it; every later user starts with none everywhere. The race tests
 // need a database without users, so they (and the first-login tests) get databases of their own.
 import { GRANTABLE_LEVELS, RESOURCES, type Level, type Resource } from "@ytw/shared/constants";
-import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withActor, type Actor } from "../src/client.js";
 import { ForbiddenError, ValidationError } from "../src/errors.js";
@@ -94,7 +93,7 @@ describe("first logins racing", () => {
   for (let round = 1; round <= ROUNDS; round += 1) {
     it(`round ${round}: ${RACERS} parallel first logins of different people produce exactly one admin`, async () => {
       const db = await createTestDb();
-      const pool = new Pool({ connectionString: db.url("ytw_web"), max: RACERS });
+      const pool = db.createPool("ytw_web", { max: RACERS });
       try {
         const results = await Promise.all(
           Array.from({ length: RACERS }, (_, index) =>
@@ -131,7 +130,7 @@ describe("first logins racing", () => {
 
   it("parallel logins of the SAME new identity create one user and one admin", async () => {
     const db = await createTestDb();
-    const pool = new Pool({ connectionString: db.url("ytw_web"), max: RACERS });
+    const pool = db.createPool("ytw_web", { max: RACERS });
     try {
       const results = await Promise.all(
         Array.from({ length: RACERS }, () =>

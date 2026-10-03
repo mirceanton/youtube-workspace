@@ -54,6 +54,15 @@ export interface CreateTestDbOptions {
   migrationsDir?: string;
 }
 
+export interface CreateTestPoolOptions {
+  /** Maximum connections in the pool (default 4). */
+  max?: number;
+  /** Overrides application_name in pg_stat_activity. */
+  applicationName?: string;
+  /** Connection startup options, e.g. -c default_transaction_isolation=... */
+  options?: string;
+}
+
 export interface TestDb {
   /** The database name, unique per call (`ytw_test_...`). */
   readonly name: string;
@@ -61,6 +70,13 @@ export interface TestDb {
   readonly admin: Pool;
   /** Pool that logs in as an application role, created like the services' pools (lazily, max 4). */
   pool(role: AppRole): Pool;
+  /**
+   * Creates an auxiliary pool for this test database with an idle error handler attached,
+   * tracked so that `drop()` ends it automatically without leaking connections or errors.
+   */
+  createPool(role: AppRole, options?: CreateTestPoolOptions): Pool;
+  /** Registers an externally created pool so that errors are caught and `drop()` ends it. */
+  registerPool(pool: Pool): Pool;
   /** Connection string for an application role or the superuser, e.g. for a server under test. */
   url(role: AppRole | "admin"): string;
   /** Ends every pool and drops the database. Safe to call more than once. */
@@ -155,6 +171,7 @@ class TestDatabase implements TestDb {
   readonly #serverUrl: string;
   readonly #passwords: Record<AppRole, string>;
   readonly #pools = new Map<AppRole | "admin", Pool>();
+  readonly #extraPools: Pool[] = [];
   #dropped = false;
 
   constructor(serverUrl: string, name: string, passwords: Record<AppRole, string>) {
@@ -174,6 +191,29 @@ class TestDatabase implements TestDb {
     return this.#poolFor(role);
   }
 
+  registerPool(pool: Pool): Pool {
+    pool.on("error", ignoreIdleError);
+    this.#extraPools.push(pool);
+    return pool;
+  }
+
+  createPool(role: AppRole, options: CreateTestPoolOptions = {}): Pool {
+    if (this.#dropped) {
+      throw new Error(`test database ${this.name} was already dropped`);
+    }
+    if (!(APP_ROLES as readonly string[]).includes(role)) {
+      throw new TypeError(`unknown application role: ${String(role)}`);
+    }
+    const pool = new Pool({
+      connectionString: this.url(role),
+      application_name: options.applicationName ?? `ytw-test-${role}`,
+      max: options.max ?? 4,
+      idleTimeoutMillis: 5_000,
+      ...(options.options === undefined ? {} : { options: options.options }),
+    });
+    return this.registerPool(pool);
+  }
+
   url(role: AppRole | "admin"): string {
     const url = new URL(this.#serverUrl);
     url.pathname = `/${this.name}`;
@@ -189,8 +229,9 @@ class TestDatabase implements TestDb {
       return;
     }
     this.#dropped = true;
-    const pools = [...this.#pools.values()];
+    const pools = [...this.#pools.values(), ...this.#extraPools];
     this.#pools.clear();
+    this.#extraPools.length = 0;
     await Promise.allSettled(pools.map((pool) => pool.end()));
     await withAdminClient(this.#serverUrl, async (client) => {
       await client.query(
@@ -227,7 +268,7 @@ class TestDatabase implements TestDb {
 }
 
 /** Idle connections are terminated when the database is dropped; that is expected here. */
-function ignoreIdleError(): void {
+export function ignoreIdleError(): void {
   // Nothing to do.
 }
 
@@ -280,6 +321,7 @@ async function withAdminClient(
   fn: (client: Client) => Promise<void>,
 ): Promise<void> {
   const client = new Client({ connectionString: serverUrl, application_name: "ytw-test-admin" });
+  client.on("error", ignoreIdleError);
   try {
     await client.connect();
   } catch (err) {
