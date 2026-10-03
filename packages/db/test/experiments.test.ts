@@ -1301,7 +1301,7 @@ describe("a whole experiment", () => {
 
     const { rows } = await db.admin.query<{ actor: string; entity_type: string; action: string }>(
       `SELECT actor, entity_type, action FROM events
-        WHERE entity_id = ANY($1) ORDER BY created_at, id`,
+        WHERE entity_id = ANY($1) ORDER BY created_at, CASE entity_type WHEN 'experiment' THEN 1 ELSE 2 END, id`,
       [[planned.id, control?.id, challenger?.id]],
     );
     expect(rows.map((row) => `${row.actor}:${row.entity_type}:${row.action}`)).toEqual([
