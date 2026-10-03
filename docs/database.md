@@ -28,6 +28,9 @@ experiments; see "Videos, metrics and experiments"). T14 owns `0050-0059`: `0050
 `0055_identity_lock_discipline`, `0056_access_revocation`, `0057_access_revocation_functions`,
 `0058_token_owner_revocation` (see "Identity, permissions, tokens, sessions").
 
+T15 owns `0060-0069`: `0060_ideas_pipeline`, `0061_video_performance`, `0062_experiment_results`,
+`0063_search`, `0064_activity` (see "Views, search and activity (T15)").
+
 ## Running migrations
 
 ```bash
@@ -762,6 +765,199 @@ that could not reach the database intact (a malformed UUID, NaN or infinity, a t
 NUL character, a decimal that is not a decimal) are refused in TypeScript with a `ValidationError`
 naming the field (`src/value-args.ts` next to `src/args.ts`); every domain rule stays in the function.
 
+## Views, search and activity (T15)
+
+Migrations `0060-0064`; `test/views.test.ts`, `test/search.test.ts`, `test/activity.test.ts` and
+`test/seed.test.ts` cover every rule below, and `test/seed.ts` is the seed helper. Nothing here
+writes: the objects only read, so none takes an actor or logs an event.
+
+| Object (wrapper in `src/`) | Kind | Executable / selectable by | Migration |
+| --- | --- | --- | --- |
+| `ideas_pipeline`, `ideas_pipeline_all` (`listIdeaPipeline`, `views.ts`) | views | `ytw_web`, `ytw_mcp`, `ytw_readonly` | `0060_ideas_pipeline` |
+| `video_performance_summary` (`listVideoPerformance`) | view | the same three | `0061_video_performance` |
+| `experiment_results` (`listExperimentResults`) | view | the same three | `0062_experiment_results` |
+| `search_all(query, limit, resources)` (`searchAll`, `search.ts`) | function | `ytw_web`, `ytw_mcp` | `0063_search` |
+| `list_events(...)` (`listEvents`, `activity.ts`) | function | `ytw_web`, `ytw_mcp` | `0064_activity` |
+
+### The views
+
+**Rules shared by all four** (each is tested):
+
+- `security_invoker = true`: a view reads its tables with the privileges of whoever selects from it,
+  so it can never show more than that role could select from the tables (the test revokes `SELECT`
+  on a table and watches the view fail with 42501).
+- They read only `ideas`, `scripts`, `videos`, `video_metrics`, `experiments`, `experiment_variants`
+  (and `ideas_pipeline` reads `ideas_pipeline_all`): never `users`, `user_permissions` or anything in
+  `ytw_private`, and no column holds identity or secret data (the test walks `pg_depend` and the
+  column names). They use built-in functions only, so `ytw_readonly` needs no function grant and
+  the migrations add no allowlist row; the guard is clean.
+- `SELECT` for `ytw_web`, `ytw_mcp` and `ytw_readonly`, nothing else, not even to `PUBLIC`. Each view
+  and its main columns carry a comment (`obj_description`, `col_description`) for `query_sql` agents.
+- A view has no order of its own; the wrappers order their rows (below).
+
+**`ideas_pipeline` / `ideas_pipeline_all`**: one row per idea. A view cannot take a parameter, so
+"archived ideas only when asked for" is two views over one definition: `ideas_pipeline` leaves
+archived ideas out, `ideas_pipeline_all` keeps them (`listIdeaPipeline(db, { includeArchived })`
+chooses). Columns: every `ideas` column except `search_vector`, with the same names and types
+(`status` is the stage); `age_in_stage` (an `interval`, `greatest(now() - status_changed_at, 0)`:
+never negative) and `days_in_stage` (whole days); and for each script kind the latest revision:
+`latest_script_id|version|status|at` and `latest_packaging_id|version|status|at`, NULL when the idea
+has no revision of that kind. The latest is the highest version (touching an old revision's status
+changes nothing); `status` is that revision's review status and `at` when it was saved. The stage
+clock is `status_changed_at`, which only a stage change moves (T11). A test checks the columns
+against `SCRIPT_KINDS`. The wrapper returns `IdeaRecord` plus `ageInStageSeconds`, `daysInStage`,
+`latestScript` and `latestPackaging` (`{ id, version, status, savedAt }` or `null`), most recently
+moved first, optionally only some `stages`, at most `limit` rows (1 to 1000, default 500).
+
+**`video_performance_summary`**: one row per video that is not archived: `id`, `idea_id`,
+`youtube_id`, `title`, `published_at`, `thumbnail_url`; the latest snapshot (`snapshot_id`,
+`captured_at`, `views`, `impressions`, `ctr`, `avg_view_duration_s`, `avg_view_pct`,
+`watch_time_min`, `subs_gained`; no `retention`, read it with `listMetricSnapshots`); then for each
+of the seven metrics `median_<metric>` and `<metric>_vs_median`, plus `median_sample_size`.
+
+- *Latest snapshot* = the greatest `captured_at` of the video, **as stored**: a metric that snapshot
+  did not measure is NULL even if an older snapshot had it.
+- *Channel median* = `percentile_cont(0.5)` of that metric over the latest snapshots of all videos
+  that are not archived and measured it, **the video itself included**. An even count interpolates
+  between the two middle values; ties are fine. `percentile_cont` works in double precision and the
+  result is cast back to `numeric`, so a median of values beyond 2^53 is approximate; the per-video
+  values stay exact. `<metric>_vs_median` = value minus median, `numeric`, NULL when either is NULL.
+  `ctr` is a percentage, so its difference is in percentage points.
+- A video **without a snapshot** keeps its row with NULL metrics and differences. A **channel with one
+  measured video** has that video's own values as medians (every difference is 0); with **no snapshot
+  at all** the medians are NULL and `median_sample_size` is 0. `median_sample_size` counts the videos
+  that have a snapshot (a metric's own population can be smaller).
+- **Archived videos** are out of the rows and out of the medians: they are frozen and would skew the
+  baseline of the live ones (the PRD does not say; see "Deviations from PLAN.md").
+- Cost: every query computes the medians over all live videos, even for one video (about 30 ms at
+  10 000 videos). The wrapper returns `{ latest, median: { sampleSize, ... }, vsMedian }` with
+  decimal strings, newest `published_at` first (unscheduled videos last), optionally one `videoId`.
+
+**`experiment_results`**: one row per variant, the experiment's columns repeated on each of its rows
+(`experiment_id`, `video_id`, `video_title`, `type`, `status`, `hypothesis`, `starts_at`, `ends_at`,
+`conclusion`, `winner_variant_id`, `experiment_created_at`), then the variant (`variant_id`, `label`,
+`content`, `is_control`, `impressions`, `ctr`) and the comparison: `control_variant_id`,
+`control_ctr`, `ctr_vs_control` (the variant's ctr minus the control's, in percentage points; 0 for
+the control itself), `ctr_lift_pct` (that as a percentage of the control's ctr, rounded to 4
+decimals: control 4.0, variant 5.0 gives 25) and `is_winner`. Both comparisons are NULL when a ctr is
+not recorded yet, and the lift also when the control's ctr is 0. `is_winner` is true only for the
+variant `conclude_experiment` named, never inferred from the numbers. Experiments of archived videos
+are included (they can still be concluded). An experiment without a control (impossible through the
+functions) keeps its rows with NULL comparisons. The wrapper groups the rows into experiments, newest
+first, each with its `variants` (control first, then by label); its `limit` counts experiments, and it
+filters by `experimentId`, `videoId` and `statuses`.
+
+### Search: `search_all(query, limit, resources)`
+
+Returns `entity_type` (`idea` or `script`), `id` (the idea, or the script revision), `idea_id`,
+`kind` and `version` (script hits only), `title`, `rank` and `snippet`.
+
+- **What is searched**: the title (weight A) and pitch (B) of ideas that are not archived, via the
+  stored `search_vector` of T11, and the **latest revision of each (idea, kind)** of those ideas'
+  scripts (body, weight D). Old revisions are never searched, so a document is one hit however often
+  it was saved and text that was removed from the latest revision cannot be found. The query goes
+  through `websearch_to_tsquery('english', ...)` (quoted phrases, `or`, `-exclusion`).
+- **What the caller may read**: the function cannot know the token's levels, so the service passes
+  the searchable resources it may read (`SEARCH_RESOURCES`: `ideas`, `scripts`) and exactly those are
+  searched. There is no default: NULL, an unknown name, a wrong case or a NULL element is a
+  `validation` error (`field: "resources"`, `allowed`), an empty list finds nothing. A script hit
+  carries the idea's title only when `ideas` is in the list (a title is idea data), else `title` is
+  NULL.
+- **Never an error for query text**: empty, NULL, only stop words, operator soup, unbalanced quotes,
+  SQL, emoji, 10 MB of noise all answer with rows or none (`websearch_to_tsquery` accepts any text; a
+  query without a searchable word finds nothing; only the first 1000 characters are used,
+  `SEARCH_QUERY_MAX_CHARS`). The TypeScript wrapper refuses only what the driver cannot carry (a NUL
+  character, a non-string).
+- **Limit**: 1 to 50 (`SEARCH_LIMIT_MAX`), NULL means 20 (`SEARCH_LIMIT_DEFAULT`); anything else is a
+  `validation` error naming the range (a clamp would hide an agent's mistake).
+- **Rank** is `ts_rank` scaled into [0, 1) (`rank / (rank + 1)`, no length normalisation): the field
+  weights decide, so a title match outranks a pitch match, which outranks any number of matches in a
+  script body; within a field more occurrences rank higher. Ties are ordered by entity type, then id,
+  so the order is the same every time (also at the limit). Ranks are only comparable within one result.
+- **Snippet** (`ts_headline`, at most `SEARCH_SNIPPET_MAX_CHARS` = 400 characters): plain text, the
+  matched words wrapped in **U+27E6 (start) and U+27E7 (stop)**, exported as
+  `SEARCH_HIGHLIGHT_START` and `SEARCH_HIGHLIGHT_STOP`. Rules for UIs and agents:
+  1. Those two characters are removed from the author's text before highlighting, so every marker in a
+     snippet was put there by the database and markers always come in pairs without nesting (a cut at
+     400 characters inside a highlight appends the missing stop marker).
+  2. Everything else is the author's text from agent-written markdown: it can contain `<`, `&`,
+     quotes or markdown, so it must be escaped before it is shown as HTML. `snippetSegments(snippet)`
+     splits a snippet into `{ text, highlight }` pieces: render each `text` as a text node (or
+     escape it) and wrap the `highlight` ones in `<mark>`; never insert the snippet as HTML. (The
+     parser behind `ts_headline` drops HTML-looking tags, which is not a guarantee to rely on.)
+  3. Whitespace and control characters are collapsed to single spaces: a snippet is one line.
+  4. A script body is highlighted only up to its first 100 000 characters (`ts_headline` costs time
+     in proportion to the text it parses, about 130 ms for 1 MiB): a match further in is still found
+     and ranked, but its snippet is the start of the body without markers. An idea's snippet is its
+     title and pitch.
+- **Rights**: `SECURITY INVOKER` (with pinned `search_path`), `STABLE`, executable by `ytw_web` and
+  `ytw_mcp` only; it reads `ideas` and `scripts` with the caller's own privileges.
+- **Cost**: ranking is proportional to the number of matching documents (the GIN indexes of T11 find
+  them), `ts_headline` runs only for the returned hits: 5 to 90 ms on the 10 000-idea seed, the slowest
+  for a word that occurs in every one of 20 000 script bodies.
+
+### Activity feed: `list_events(...)`
+
+`list_events(p_actor, p_actor_type, p_entity_type, p_entity_id, p_action_prefix, p_from, p_to,
+p_limit, p_cursor)`, every argument optional (`DEFAULT NULL`), returns `id`, `created_at`, `actor`,
+`actor_type`, `token_id`, `action`, `entity_type`, `entity_id`, `payload` and `next_cursor`. The
+payload is returned **as stored**: the audit layer redacted it when it wrote it (a test shows a
+user's e-mail as `[redacted]`). The service checks the `activity` level before calling; the function
+cannot, like `search_all`.
+
+- **Filters**, combined with AND: `actor` (exact name, case-sensitive), `actor_type` (`human` or
+  `agent`, else `validation`), `entity_type` (exact), `entity_id`, `action_prefix` (`starts_with`: a
+  plain prefix, `%` and `_` mean themselves, so `tool.` finds `tool.call` and not `tools.list`; `''` is no
+  filter), and a time range on `created_at` that **includes `from` and excludes `to`** (`from` after
+  `to` is a `validation` error, equal bounds an empty range; the wrappers take a `Date` or ISO text with
+  a time zone, the session's `TimeZone` never matters). Values nothing matches answer an empty page.
+- **Order and cursor**: newest first by `(created_at DESC, id DESC)`, a total order (the index of T10
+  serves it). `next_cursor` is NULL on the last page (no empty trailing page: the function reads
+  one row beyond the limit), else an **opaque string** (base64url of the page's last position, exact to
+  the microsecond; a JavaScript `Date` is not, which is why the database makes it) to pass as
+  `p_cursor` with the same filters (other filters continue from the same position). `NULL` or `''`
+  starts at the top. A cursor that does not decode (any garbage, a wrong date, 100 000 characters) is a
+  `validation` error with `field: "cursor"`, never a driver error; a well-formed one that someone made up
+  just continues from that position.
+- **Stable under inserts**: new events carry a later `created_at` than every cursor, so they sort in
+  front of it: pages already read neither repeat nor skip rows when events arrive, and a walk never
+  shifts. One limit is inherent in ordering by commit time: `created_at` is the *start* of the writing
+  transaction (`now()`), so an event of a transaction that started before the cursor's position and
+  commits after a running walk has passed that position is missed by that walk (a new walk sees it);
+  if the walk has not reached the position yet, the event simply appears in its place (tested).
+- **Limit**: 1 to 100 (`EVENTS_LIMIT_MAX`), NULL means 50 (`EVENTS_LIMIT_DEFAULT`); a payload can be
+  64 KiB, so the page is capped.
+- **Rights**: `SECURITY INVOKER`, `STABLE`, `plan_cache_mode = force_custom_plan` (a generic plan for
+  `(arg IS NULL OR column = arg)` cannot use the right index), executable by `ytw_web` and `ytw_mcp`
+  only. On the 10 000-row seed (40 000 events) a page takes 2 to 5 ms, any filter combination about
+  the same, and a walk of all 400 pages 0.7 s.
+
+**Errors.** Both functions are `SECURITY INVOKER`, so they cannot call the internal `ytw_raise`
+(application roles may not execute it): they `RAISE` the catalogue SQLSTATE `YT001` (validation)
+directly with the same MESSAGE and DETAIL shape (`field`, `allowed`, `min`, `max`, `value`), which
+`toDbError` maps to `ValidationError`. The wrappers check the same rules first and throw the same
+errors, and map any driver error with `toDbError`.
+
+### TypeScript and the seed helper
+
+`listIdeaPipeline`, `listVideoPerformance`, `listExperimentResults` (limits `VIEW_LIST_LIMIT_DEFAULT`
+and `VIEW_LIST_LIMIT_MAX`), `searchAll` with `SEARCH_*` constants and `snippetSegments`, and
+`listEvents` with `EVENTS_LIMIT_*` take any `Queryable` (a pool or a transaction) and return camelCase
+records: numbers that are `bigint` or `numeric` in the database are strings, dates are `Date`s, ids
+are validated before the query. A test compares each constant with the database (the limits through the
+DETAIL of the error, the markers and the snippet cap through real hits).
+
+`test/seed.ts` builds data for tests and later performance work: `seedSmall(db)` (documented
+records, backdated stage clocks, scripts, videos with snapshots, experiments, a few real audit events
+of a person and two agents, built through the real functions where time does not matter) and
+`seedLarge(db, { ideas, videos, snapshotsPerVideo, events })`, defaulting to 10 000 ideas and
+videos, about 20 000 scripts, 27 000 snapshots, 1 000 experiments and 40 000 events in about 4 s: one
+transaction of `INSERT ... SELECT generate_series(...)` as the superuser with the row triggers and
+foreign key checks off (`session_replication_role = replica`; the rows are consistent by
+construction, the events synthetic) and an `ANALYZE` afterwards. Fixed ids (`seedUuid`), fixed
+vocabulary (`SEED_WORDS`), so `zq77` finds idea 77 alone. `test/seed.test.ts` asserts each view and
+function answers in under 2 s on it (measured 2 to 90 ms; the whole walk of the events 0.7 s).
+
 ## TypeScript API
 
 ```ts
@@ -1132,9 +1328,12 @@ removed from the group stays in until their session refreshes or an admin calls
   `api_tokens` and `api_token_permissions` stay default-deny as T10 left them; the readable record of
   a token change is the `token.*` event of the function that made it. Functions reading
   `ytw_private` are `SECURITY DEFINER`, granted to `ytw_web` and/or `ytw_mcp` only.
-- **T15**: views granted to `ytw_readonly` must not read `ytw_private` (guard), and a function that
-  `query_sql` may call needs `SECURITY INVOKER` and an allowlist row. Functions only the services
-  call (`search_all`, `list_events`) are granted to `ytw_web` and `ytw_mcp`.
+- **T15** (done, see "Views, search and activity (T15)"): the views are `security_invoker`, read no
+  `ytw_private`, `users` or `user_permissions` object and are granted to all three roles, so
+  `query_sql` agents can use them; a function that `query_sql` may call would need `SECURITY INVOKER`
+  and an allowlist row (none does). The functions only the services call (`search_all`, `list_events`)
+  are `SECURITY INVOKER` and granted to `ytw_web` and `ytw_mcp`; the caller passes what the token may
+  read (`search_all`) or has checked the `activity` level (`list_events`).
 - **T21, T30-T34**: send `toClientError(err)` to clients and log the original; answer version
   conflicts with `409 {"error": "version_conflict", "latest": err.latestVersion}`.
 - **T23**: `/readyz` can call `migrationStatus(pool)`; `upToDate` false means not ready.
@@ -1186,3 +1385,15 @@ removed from the group stays in until their session refreshes or an admin calls
   says leaving the Keycloak group "ends their access" and a token is at most its owner's current
   level. `lookup_token_by_hash` and `touch_token_last_used` are granted to `ytw_mcp` only (PLAN.md
   also named the web role): the web server never authenticates a token.
+- T15 adds `ideas_pipeline_all` next to the three views of PRD 4: a view takes no parameter, so
+  "archived ideas only when asked for" needs a second view. `video_performance_summary` leaves archived
+  videos out of its rows and its medians (PRD 4 does not say; they are frozen and would skew the
+  baseline).
+- `search_all` takes the resources the caller may read as a required argument (the function cannot
+  know the token's levels; PLAN.md says "restricted to the resources the caller may read") and
+  `search_all` and `list_events` refuse an out-of-range limit instead of clamping it, so an agent
+  learns the valid range. Their snippet markers are U+27E6 and U+27E7 rather than `<b>`, so that no
+  markup is ever produced by the database and a UI cannot mistake the author's `<b>` for a highlight.
+- The two read functions are `SECURITY INVOKER` and raise `YT001` directly instead of calling
+  `ytw_raise` (application roles may not execute the internal helper); `list_events` returns its
+  `next_cursor` as a column on every row of the page.
