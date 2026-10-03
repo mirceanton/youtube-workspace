@@ -6,3 +6,7 @@
 # A UUID used as a fixture API-token id in the @ytw/db audit tests (generic-api-key matched the
 # "tokenId" key). Not a credential; later commits generate the id at run time.
 e887a8abe21aeb00999e7e6e61e30de7ef13a6a4:packages/db/test/audit.test.ts:generic-api-key:94
+
+# A 64-character dummy hex string in the SQL injection test for create_api_token.
+# Not a credential; generated at runtime in later commits.
+fbb927ecafc6f0eb0b3df6c7e60680060244937a:packages/db/test/gate/sql-injection.test.ts:generic-api-key:410

@@ -407,7 +407,7 @@ describe("gate: SQL injection hardening", () => {
             ownerUserId: owner.id,
             name: `Token ${payload}`,
             tokenPrefix: "ytw_test",
-            tokenHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            tokenHash: randomBytes(32).toString("hex"),
             expiresAt: null,
             permissions: {},
           }),
