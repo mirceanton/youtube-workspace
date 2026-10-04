@@ -9,7 +9,9 @@ the bundle small and the screens accessible.
 - Requirements: PRD sections 6 (web UI), 7 (access states), 8 (mobile). The PRD wins over this page.
 - The contract with the web server (`/api/me`, CSRF, 401, 409, `/api/notes`) is in
   [`packages/shared/src/api/session.ts`](../packages/shared/src/api/session.ts) and
-  [`notes.ts`](../packages/shared/src/api/notes.ts); the policy vocabulary is in [`policy.md`](policy.md).
+  [`notes.ts`](../packages/shared/src/api/notes.ts); experiment contracts are in
+  [`experiments.ts`](../packages/shared/src/api/experiments.ts); the policy vocabulary is in
+  [`policy.md`](policy.md).
 
 ## Run it
 
@@ -137,6 +139,19 @@ await api.patch(`/api/ideas/${id}`, { title, expected_version: idea.version });
   redirect has started), `ForbiddenError`, `NotFoundError`, **`ConflictError`** (409; `.latest` is
   what the server sent next to `error`), `ApiError` (anything else, `.status`), `NetworkError`
   (offline), `ResponseShapeError`. Use `isConflictError`, `describeError` from `@/lib/errors.ts`.
+
+### Experiments and CTR history
+
+Experiment screens use `/api/experiments` and the request/response schemas in
+[`packages/shared/src/api/experiments.ts`](../packages/shared/src/api/experiments.ts). Viewing
+experiment details and variant comparisons requires Read on experiments. Planning requires Write on
+experiments and Read on videos to choose a video. CTR history also requires Read on videos; a user
+without that level can still see experiment details and receives an explanation in the chart area.
+
+The CTR-over-time line uses the video's overall `video_metrics.ctr` snapshots. Those snapshots are
+not attributable to individual variants. The chart marks `starts_at` and `ends_at` as the experiment
+window; it does not calculate or infer a winner. The owner records the winner and conclusion
+explicitly through the database function.
 
 ### Queries and live updates
 
