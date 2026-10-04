@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ScriptDiff } from "../../../src/features/scripts/ScriptDiff.tsx";
 
@@ -41,5 +41,27 @@ describe("ScriptDiff", () => {
     expect(within(unified).getByText("line 350")).toBeInTheDocument();
     expect(within(unified).getByText("edited line 350")).toBeInTheDocument();
     expect(within(unified).getAllByRole("listitem")).toHaveLength(16);
+  });
+
+  it("opens complete version text so sparse changes outside the preview remain inspectable", () => {
+    const before = Array.from({ length: 700 }, (_, index) => `line ${index}`).join("\n");
+    const afterLines = before.split("\n");
+    afterLines[0] = "changed first";
+    afterLines[350] = "changed middle";
+    render(
+      <ScriptDiff
+        before={before}
+        after={afterLines.join("\n")}
+        beforeLabel="Version 1"
+        afterLabel="Version 2"
+      />,
+    );
+
+    const unified = screen.getByRole("list", { name: "Unified script diff" });
+    expect(within(unified).queryByText("changed middle")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show complete versions"));
+    expect(screen.getByRole("region", { name: "Version 2 complete text" })).toHaveTextContent(
+      "changed middle",
+    );
   });
 });
