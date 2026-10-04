@@ -1,10 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import type { ReactNode } from "react";
 import {
   EXPERIMENTS_PATH,
+  EXPERIMENTS_LIST_LIMIT,
   EXPERIMENT_VIDEOS_PATH,
   type Experiment,
   type ExperimentVariant,
@@ -94,22 +95,50 @@ function renderRoute(
     ],
     { initialEntries: [path] },
   );
-  return render(
-    <QueryClientProvider client={createTestQueryClient()}>
+  const queryClient = createTestQueryClient();
+  const rendered = render(
+    <QueryClientProvider client={queryClient}>
       <SessionContext value={personaSession(persona)}>
         <RouterProvider router={router} />
       </SessionContext>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 function detailApi(initial = experiment(), persona: "owner" | "collaborator" | "reader" = "owner") {
   const api = createMockApi({ persona });
   let current = structuredClone(initial);
+  let conflictOnConclude = false;
   api.router.get(`${EXPERIMENTS_PATH}/:experiment_id`, () => ({ json: { experiment: current } }));
   api.router.get(`${EXPERIMENTS_PATH}/:experiment_id/ctr-history`, () => ({
     json: { history: [] },
   }));
+  api.router.patch(`${EXPERIMENTS_PATH}/:experiment_id/status`, (request) => {
+    const body = request.body as { status: "running" | "cancelled" };
+    current = {
+      ...current,
+      status: body.status,
+      starts_at: body.status === "running" ? NOW : current.starts_at,
+      ends_at: body.status === "cancelled" ? NOW : current.ends_at,
+      version: current.version + 1,
+      updated_at: NOW,
+      updated_by: persona,
+    };
+    return {
+      json: {
+        experiment: {
+          id: current.id,
+          status: current.status,
+          starts_at: current.starts_at,
+          ends_at: current.ends_at,
+          version: current.version,
+          updated_at: current.updated_at,
+          updated_by: current.updated_by,
+        },
+      },
+    };
+  });
   api.router.patch(`${EXPERIMENTS_PATH}/:experiment_id/variants/:variant_id/stats`, (request) => {
     const variantId = request.params.variant_id;
     const target = current.variants.find((item) => item.id === variantId);
@@ -119,6 +148,12 @@ function detailApi(initial = experiment(), persona: "owner" | "collaborator" | "
     return { json: { variant: { ...target, experiment_id: current.id } } };
   });
   api.router.post(`${EXPERIMENTS_PATH}/:experiment_id/conclude`, (request) => {
+    if (conflictOnConclude) {
+      return {
+        status: 409,
+        json: { error: "Experiment version changed.", latest: { version: current.version } },
+      };
+    }
     const body = request.body as {
       winner_variant_id: string | null;
       conclusion: string;
@@ -153,7 +188,27 @@ function detailApi(initial = experiment(), persona: "owner" | "collaborator" | "
       },
     };
   });
-  return { api, getCurrent: () => current };
+  return {
+    api,
+    getCurrent: () => current,
+    setVariantStats(variantId: string, stats: Partial<ExperimentVariant>) {
+      const target = current.variants.find((item) => item.id === variantId);
+      if (target) Object.assign(target, stats);
+    },
+    prepareConclusionConflict() {
+      current = {
+        ...current,
+        status: "concluded",
+        version: current.version + 1,
+        winner_variant_id: CONTROL_ID,
+        conclusion: "Agent conclusion.",
+        ends_at: NOW,
+        updated_at: NOW,
+        updated_by: "agent",
+      };
+      conflictOnConclude = true;
+    },
+  };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -206,21 +261,41 @@ describe("Experiments feature", () => {
   it("records stats and concludes with the chosen winner", async () => {
     const mock = detailApi(experiment(), "collaborator");
     vi.stubGlobal("fetch", mock.api.fetch);
-    renderRoute(<ExperimentDetailPage />, `/experiments/${EXPERIMENT_ID}`, "collaborator");
+    const rendered = renderRoute(
+      <ExperimentDetailPage />,
+      `/experiments/${EXPERIMENT_ID}`,
+      "collaborator",
+    );
     await screen.findByRole("heading", { name: "Variants" });
     expect(screen.getByText("+1.00 percentage points")).toBeInTheDocument();
     expect(screen.getByText(/not attributed to individual variants/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Last recorded by owner")).toHaveLength(2);
+
+    mock.setVariantStats(CONTROL_ID, { impressions: "2400", updated_by: "agent" });
+    await rendered.queryClient.invalidateQueries({
+      queryKey: ["experiments", "detail", EXPERIMENT_ID],
+    });
 
     const cards = screen.getAllByRole("heading", { name: /Current|Specific/ });
     const currentCard = cards[0]?.closest("div.rounded-xl");
     expect(currentCard).toBeTruthy();
     const user = userEvent.setup();
+    await waitFor(() =>
+      expect(within(currentCard as HTMLElement).getByLabelText("Impressions")).toHaveValue(2400),
+    );
     await user.clear(within(currentCard as HTMLElement).getByLabelText("CTR (%)"));
     await user.type(within(currentCard as HTMLElement).getByLabelText("CTR (%)"), "4.2");
     await user.click(
       within(currentCard as HTMLElement).getByRole("button", { name: "Record stats" }),
     );
     expect(within(currentCard as HTMLElement).getByLabelText("CTR (%)")).toHaveValue(4.2);
+    const statsRequest = mock.api.requests.find(
+      (request) => request.method === "PATCH" && request.path.includes("/variants/"),
+    );
+    expect(statsRequest?.body).toEqual({ ctr: "4.2" });
+    expect(mock.getCurrent().variants[0]?.impressions).toBe("2400");
+    expect(await screen.findByText("Last recorded by collaborator")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel experiment" })).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("Winning variant"), TEST_ID);
     await user.type(screen.getByLabelText(/^Conclusion/), "The specific title won.");
@@ -258,6 +333,26 @@ describe("Experiments feature", () => {
     expect(await screen.findByText("No experiments yet")).toBeInTheDocument();
   });
 
+  it("warns when the experiment list reaches the API result limit", async () => {
+    const api = createMockApi({ persona: "owner" });
+    const experiments = Array.from({ length: EXPERIMENTS_LIST_LIMIT }, (_, index) =>
+      experiment({
+        id: `0199c2a4-7b1e-7c3a-9d2f-${String(index + 1000).padStart(12, "0")}`,
+        video_title: `Video experiment ${index + 1}`,
+      }),
+    );
+    api.router.get(EXPERIMENTS_PATH, () => ({ json: { experiments } }));
+    vi.stubGlobal("fetch", api.fetch);
+    renderRoute(<ExperimentsPage />, "/experiments");
+
+    expect(
+      await screen.findByRole("heading", { name: "Video experiment 500" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Showing up to 500 experiments; additional experiments may not be shown.",
+    );
+  });
+
   it("disables mutations for a reader even when the detail is visible", async () => {
     const mock = detailApi(experiment(), "reader");
     vi.stubGlobal("fetch", mock.api.fetch);
@@ -266,5 +361,61 @@ describe("Experiments feature", () => {
     expect(screen.getAllByRole("button", { name: "Record stats" })[0]).toBeDisabled();
     expect(screen.getByRole("button", { name: "Save conclusion" })).toBeDisabled();
     expect(mock.api.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+
+  it("preserves a conclusion draft until the user reloads after a version conflict", async () => {
+    const mock = detailApi(experiment(), "collaborator");
+    vi.stubGlobal("fetch", mock.api.fetch);
+    const rendered = renderRoute(
+      <ExperimentDetailPage />,
+      `/experiments/${EXPERIMENT_ID}`,
+      "collaborator",
+    );
+    await screen.findByRole("heading", { name: "Variants" });
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Winning variant"), TEST_ID);
+    await user.type(screen.getByLabelText(/^Conclusion/), "My careful conclusion draft.");
+    mock.prepareConclusionConflict();
+    await user.click(screen.getByRole("button", { name: "Save conclusion" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Experiment version changed.");
+    expect(screen.getByLabelText("Winning variant")).toHaveValue(TEST_ID);
+    expect(screen.getByLabelText(/^Conclusion/)).toHaveValue("My careful conclusion draft.");
+    expect(screen.getAllByText("My careful conclusion draft.")).toHaveLength(2);
+    expect(
+      mock.api.requests.filter(
+        (request) =>
+          request.method === "GET" && request.path === `${EXPERIMENTS_PATH}/${EXPERIMENT_ID}`,
+      ),
+    ).toHaveLength(1);
+
+    await user.click(
+      screen.getByRole("button", { name: "Reload latest experiment and discard draft" }),
+    );
+    expect(await screen.findByText("Agent conclusion.")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Conclusion/)).not.toBeInTheDocument();
+    expect(
+      rendered.queryClient.getQueryData(["experiments", "detail", EXPERIMENT_ID]),
+    ).toBeTruthy();
+  });
+
+  it("lets a writer cancel a planned experiment", async () => {
+    const mock = detailApi(experiment({ status: "planned", starts_at: null, version: 1 }));
+    vi.stubGlobal("fetch", mock.api.fetch);
+    renderRoute(<ExperimentDetailPage />, `/experiments/${EXPERIMENT_ID}`);
+    await screen.findByRole("heading", { name: "Variants" });
+    expect(screen.getByRole("button", { name: "Start experiment" })).toBeInTheDocument();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Cancel experiment" }));
+    expect(await screen.findByText("cancelled")).toBeInTheDocument();
+    expect(mock.getCurrent().status).toBe("cancelled");
+    expect(
+      mock.api.requests.some(
+        (request) =>
+          request.method === "PATCH" &&
+          (request.body as { status?: string } | undefined)?.status === "cancelled",
+      ),
+    ).toBe(true);
   });
 });

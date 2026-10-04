@@ -5,6 +5,7 @@ import {
   createExperimentRequestSchema,
   createExperimentResponseSchema,
   EXPERIMENTS_PATH,
+  EXPERIMENTS_LIST_LIMIT,
   EXPERIMENT_VIDEOS_PATH,
   listExperimentVideosResponseSchema,
   listExperimentsResponseSchema,
@@ -252,37 +253,45 @@ export function Component() {
           description="Plan a packaging experiment to compare titles, thumbnails, or descriptions."
         />
       ) : (
-        <ul className="grid min-w-0 gap-3">
-          {query.data.experiments.map((experiment) => (
-            <li key={experiment.id}>
-              <Card className="p-0">
-                <Link
-                  to={`/experiments/${experiment.id}`}
-                  className="block min-h-11 rounded-xl p-4 outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="min-w-0 flex-1 text-lg font-semibold">
-                      {experiment.video_title}
-                    </h2>
-                    <Badge tone={experiment.status === "concluded" ? "ok" : "info"}>
-                      {experiment.status}
-                    </Badge>
-                    <Badge>{typeLabel(experiment.type)}</Badge>
-                  </div>
-                  <p className="mt-1 text-sm text-ink-muted">
-                    {experiment.variants.length} variants ·{" "}
-                    {experiment.starts_at
-                      ? `Started ${formatDateTime(experiment.starts_at)}`
-                      : `Planned ${formatDateTime(experiment.created_at)}`}
-                  </p>
-                  {experiment.hypothesis ? (
-                    <p className="mt-2 line-clamp-2 text-sm">{experiment.hypothesis}</p>
-                  ) : null}
-                </Link>
-              </Card>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="grid min-w-0 gap-3">
+            {query.data.experiments.map((experiment) => (
+              <li key={experiment.id}>
+                <Card className="p-0">
+                  <Link
+                    to={`/experiments/${experiment.id}`}
+                    className="block min-h-11 rounded-xl p-4 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="min-w-0 flex-1 text-lg font-semibold">
+                        {experiment.video_title}
+                      </h2>
+                      <Badge tone={experiment.status === "concluded" ? "ok" : "info"}>
+                        {experiment.status}
+                      </Badge>
+                      <Badge>{typeLabel(experiment.type)}</Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-ink-muted">
+                      {experiment.variants.length} variants ·{" "}
+                      {experiment.starts_at
+                        ? `Started ${formatDateTime(experiment.starts_at)}`
+                        : `Planned ${formatDateTime(experiment.created_at)}`}
+                    </p>
+                    {experiment.hypothesis ? (
+                      <p className="mt-2 line-clamp-2 text-sm">{experiment.hypothesis}</p>
+                    ) : null}
+                  </Link>
+                </Card>
+              </li>
+            ))}
+          </ul>
+          {query.data.experiments.length >= EXPERIMENTS_LIST_LIMIT ? (
+            <Alert tone="info" className="mt-3" title="Experiment list limit reached">
+              Showing up to {EXPERIMENTS_LIST_LIMIT} experiments; additional experiments may not be
+              shown.
+            </Alert>
+          ) : null}
+        </>
       )}
     </>
   );

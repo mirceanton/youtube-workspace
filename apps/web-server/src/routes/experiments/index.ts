@@ -22,6 +22,7 @@ import {
   EXPERIMENT_STATUS_PATH,
   EXPERIMENT_VARIANT_STATS_PATH,
   EXPERIMENTS_PATH,
+  EXPERIMENTS_LIST_LIMIT,
   experimentCtrHistoryResponseSchema,
   getExperimentResponseSchema,
   listExperimentVideosResponseSchema,
@@ -155,8 +156,10 @@ export default async function experimentsRoutes(server: FastifyInstance): Promis
       if (!parsed.success)
         return invalid(reply, parsed.error.issues[0]?.message ?? "Invalid query");
       const status = parsed.data.status;
-      const options =
-        status === undefined ? {} : { statuses: Array.isArray(status) ? status : [status] };
+      const options = {
+        limit: EXPERIMENTS_LIST_LIMIT,
+        ...(status === undefined ? {} : { statuses: Array.isArray(status) ? status : [status] }),
+      };
       const results = await listExperimentResults(app.db.pool, options);
       const response = listExperimentsResponseSchema.safeParse({
         experiments: results.map(toListItem),

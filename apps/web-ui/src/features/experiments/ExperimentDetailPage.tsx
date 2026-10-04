@@ -26,7 +26,7 @@ import type { ChartMarker, ChartSeries } from "@/kit/charts/series.ts";
 import { EmptyState, ErrorState, LoadingState } from "@/kit/states.tsx";
 import { WriteGuard } from "@/kit/WriteGuard.tsx";
 import { api } from "@/lib/api.ts";
-import { describeError } from "@/lib/errors.ts";
+import { describeError, isConflictError } from "@/lib/errors.ts";
 import { formatDateTime } from "@/lib/format.ts";
 import { useCan } from "@/lib/session.ts";
 
@@ -72,19 +72,29 @@ function VariantStatsForm({
 }: {
   variant: ExperimentVariant;
   pending: boolean;
-  onSave: (input: { variantId: string; impressions?: string; ctr?: string }) => void;
+  onSave: (input: { variantId: string; impressions?: string; ctr?: string }) => Promise<void>;
 }) {
-  const [impressions, setImpressions] = useState(variant.impressions ?? "");
-  const [ctr, setCtr] = useState(variant.ctr ?? "");
+  const [impressionsDraft, setImpressionsDraft] = useState<string | null>(null);
+  const [ctrDraft, setCtrDraft] = useState<string | null>(null);
+  const impressions = impressionsDraft ?? variant.impressions ?? "";
+  const ctr = ctrDraft ?? variant.ctr ?? "";
 
-  function submit(event: FormEvent) {
+  const changedStats = {
+    ...(impressions === "" || impressions === (variant.impressions ?? "") ? {} : { impressions }),
+    ...(ctr === "" || ctr === (variant.ctr ?? "") ? {} : { ctr }),
+  };
+  const hasChanges = Object.keys(changedStats).length > 0;
+
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (impressions === "" && ctr === "") return;
-    onSave({
-      variantId: variant.id,
-      ...(impressions === "" ? {} : { impressions }),
-      ...(ctr === "" ? {} : { ctr }),
-    });
+    if (!hasChanges) return;
+    try {
+      await onSave({ variantId: variant.id, ...changedStats });
+      setImpressionsDraft(null);
+      setCtrDraft(null);
+    } catch {
+      // Keep the edited fields in place so the user can correct or retry the failed save.
+    }
   }
 
   return (
@@ -97,7 +107,7 @@ function VariantStatsForm({
             min="0"
             step="1"
             value={impressions}
-            onChange={(event) => setImpressions(event.target.value)}
+            onChange={(event) => setImpressionsDraft(event.target.value)}
           />
           <TextField
             label="CTR (%)"
@@ -106,10 +116,10 @@ function VariantStatsForm({
             max="100"
             step="any"
             value={ctr}
-            onChange={(event) => setCtr(event.target.value)}
+            onChange={(event) => setCtrDraft(event.target.value)}
           />
         </div>
-        <Button type="submit" busy={pending} disabled={impressions === "" && ctr === ""}>
+        <Button type="submit" busy={pending} disabled={!hasChanges}>
           Record stats
         </Button>
       </form>
@@ -122,6 +132,7 @@ export function Component() {
   const validId = zUuid(experimentId);
   const canReadVideoMetrics = useCan("videos", "read");
   const queryClient = useQueryClient();
+  const [conclusionDraft, setConclusionDraft] = useState({ winnerVariantId: "", conclusion: "" });
   const detailKey = ["experiments", "detail", experimentId] as const;
   const query = useQuery({
     queryKey: detailKey,
@@ -178,9 +189,11 @@ export function Component() {
         { parse: concludeExperimentResponseSchema },
       ),
     onSuccess: async () => {
+      setConclusionDraft({ winnerVariantId: "", conclusion: "" });
       await invalidateExperiment(queryClient, experimentId, detailKey);
     },
-    onError: async () => {
+    onError: async (error) => {
+      if (isConflictError(error)) return;
       await queryClient.invalidateQueries({ queryKey: detailKey });
     },
   });
@@ -235,11 +248,18 @@ export function Component() {
 
   function submitConclusion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const winner = String(form.get("winner_variant_id") ?? "");
-    const conclusion = String(form.get("conclusion") ?? "").trim();
+    const winner = conclusionDraft.winnerVariantId;
+    const conclusion = conclusionDraft.conclusion.trim();
     if (conclusion) {
       concludeMutation.mutate({ winnerVariantId: winner || null, conclusion });
+    }
+  }
+
+  async function reloadAfterConclusionConflict() {
+    const result = await query.refetch();
+    if (!result.isError) {
+      setConclusionDraft({ winnerVariantId: "", conclusion: "" });
+      concludeMutation.reset();
     }
   }
 
@@ -286,6 +306,7 @@ export function Component() {
                 {variant.is_winner ? <Badge tone="ok">Winner</Badge> : null}
               </div>
               <p className="mt-2 whitespace-pre-wrap break-words">{variant.content}</p>
+              <p className="mt-2 text-sm text-ink-muted">Last recorded by {variant.updated_by}</p>
               <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
                 <div>
                   <dt className="text-ink-muted">Impressions</dt>
@@ -308,11 +329,9 @@ export function Component() {
                 <VariantStatsForm
                   variant={variant}
                   pending={statsMutation.isPending}
-                  onSave={(input) => statsMutation.mutate(input)}
+                  onSave={(input) => statsMutation.mutateAsync(input).then(() => undefined)}
                 />
-              ) : (
-                <p className="mt-3 text-sm text-ink-muted">Last recorded by {variant.updated_by}</p>
-              )}
+              ) : null}
             </Card>
           ))}
         </div>
@@ -386,7 +405,8 @@ export function Component() {
                   Start experiment
                 </Button>
               </WriteGuard>
-            ) : (
+            ) : null}
+            {experiment.status === "planned" || experiment.status === "running" ? (
               <WriteGuard resource="experiments">
                 <Button
                   variant="secondary"
@@ -396,7 +416,7 @@ export function Component() {
                   Cancel experiment
                 </Button>
               </WriteGuard>
-            )}
+            ) : null}
           </div>
           {statusMutation.isError ? (
             <Alert tone="danger" className="mt-3" title="Could not update experiment status">
@@ -406,7 +426,17 @@ export function Component() {
           {experiment.status === "running" ? (
             <form className="mt-5 grid gap-3 border-t border-line pt-4" onSubmit={submitConclusion}>
               <h3 className="font-semibold">Conclude experiment</h3>
-              <SelectField label="Winning variant" name="winner_variant_id" defaultValue="">
+              <SelectField
+                label="Winning variant"
+                name="winner_variant_id"
+                value={conclusionDraft.winnerVariantId}
+                onChange={(event) =>
+                  setConclusionDraft((current) => ({
+                    ...current,
+                    winnerVariantId: event.target.value,
+                  }))
+                }
+              >
                 <option value="">No winner</option>
                 {experiment.variants.map((variant) => (
                   <option key={variant.id} value={variant.id}>
@@ -419,19 +449,55 @@ export function Component() {
                 name="conclusion"
                 required
                 rows={4}
+                value={conclusionDraft.conclusion}
+                onChange={(event) =>
+                  setConclusionDraft((current) => ({
+                    ...current,
+                    conclusion: event.target.value,
+                  }))
+                }
                 hint="Summarize the result. Choose No winner if the experiment was inconclusive."
               />
-              {concludeMutation.isError ? (
-                <Alert tone="danger" title="Could not conclude experiment">
-                  {describeError(concludeMutation.error)}
-                </Alert>
-              ) : null}
               <WriteGuard resource="experiments" explain={false}>
                 <Button type="submit" variant="primary" busy={concludeMutation.isPending}>
                   Save conclusion
                 </Button>
               </WriteGuard>
             </form>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {concludeMutation.isError ? (
+        <Card className="mt-6">
+          <Alert tone="danger" title="Could not conclude experiment">
+            {describeError(concludeMutation.error)}
+          </Alert>
+          {isConflictError(concludeMutation.error) ? (
+            <div className="mt-3 space-y-3 text-sm">
+              <p>
+                Your draft is preserved. Review it before choosing to reload the latest experiment.
+              </p>
+              <dl className="grid gap-2 sm:grid-cols-[max-content_1fr]">
+                <dt className="font-medium">Draft winner</dt>
+                <dd>
+                  {experiment.variants.find(
+                    (variant) => variant.id === conclusionDraft.winnerVariantId,
+                  )?.label ?? "No winner"}
+                </dd>
+                <dt className="font-medium">Draft conclusion</dt>
+                <dd className="whitespace-pre-wrap">
+                  {conclusionDraft.conclusion || "No conclusion entered"}
+                </dd>
+              </dl>
+              <Button
+                variant="secondary"
+                busy={query.isFetching}
+                onClick={() => void reloadAfterConclusionConflict()}
+              >
+                Reload latest experiment and discard draft
+              </Button>
+            </div>
           ) : null}
         </Card>
       ) : null}
