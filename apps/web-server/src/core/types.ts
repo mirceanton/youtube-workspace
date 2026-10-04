@@ -35,6 +35,8 @@ declare module "fastify" {
   interface FastifyInstance {
     db: WebDatabase;
     requireLevel(resource: Resource, level: "read" | "write"): preHandlerHookHandler;
+    /** Require a level on at least one resource, using this request's current database-backed auth. */
+    requireAnyLevel(level: "read" | "write"): preHandlerHookHandler;
     /** Snapshot used by the authorization coverage test; feature plugins are included. */
     securityRoutes(): readonly SecurityRouteRecord[];
   }

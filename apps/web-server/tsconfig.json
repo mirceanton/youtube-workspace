@@ -10,6 +10,7 @@
     { "path": "../../packages/db" },
     { "path": "../../packages/observability" },
     { "path": "../../packages/policy" },
-    { "path": "../../packages/script-md" }
+    { "path": "../../packages/script-md" },
+    { "path": "../../packages/tokens" }
   ]
 }
