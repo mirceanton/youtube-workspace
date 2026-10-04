@@ -8,6 +8,7 @@ import type {
 import { useEffect, useId, useState, type FormEvent } from "react";
 import {
   Alert,
+  Badge,
   Button,
   ConflictDialog,
   Dialog,
@@ -37,21 +38,60 @@ function initialValues(idea?: Idea) {
   };
 }
 
+type EditorValues = ReturnType<typeof initialValues>;
+type EditorField = keyof EditorValues;
+
+const EDITOR_FIELDS: ReadonlyArray<{ key: EditorField; label: string }> = [
+  { key: "title", label: "Title" },
+  { key: "pitch", label: "Pitch" },
+  { key: "source", label: "Source" },
+  { key: "score", label: "Score" },
+  { key: "tags", label: "Tags" },
+];
+
+function rebaseValues(
+  baseline: EditorValues,
+  draft: EditorValues,
+  latest: EditorValues,
+): EditorValues {
+  return Object.fromEntries(
+    EDITOR_FIELDS.map(({ key }) => [key, draft[key] === baseline[key] ? latest[key] : draft[key]]),
+  ) as EditorValues;
+}
+
 function parseLatest(error: unknown): Idea | null {
   if (!(error instanceof ConflictError)) return null;
   return parseIdea(error.latest);
 }
 
-function summary(idea: Idea | null | undefined): string | undefined {
-  if (!idea) return undefined;
-  return [
-    idea.title,
-    idea.status,
-    idea.score === null ? "unscored" : `score ${idea.score}`,
-    idea.tags.join(", "),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+function DraftFields({
+  values,
+  overlappingFields,
+  status,
+}: {
+  values: EditorValues;
+  overlappingFields: ReadonlySet<EditorField>;
+  status: Idea["status"];
+}) {
+  return (
+    <dl className="flex flex-col gap-2">
+      <div className="min-w-0">
+        <dt className="font-semibold">Status</dt>
+        <dd className="text-ink-muted">{status}</dd>
+      </div>
+      {EDITOR_FIELDS.map(({ key, label }) => (
+        <div key={key} className="min-w-0">
+          <dt className="flex flex-wrap items-center gap-2 font-semibold">
+            {label}
+            {overlappingFields.has(key) ? <Badge tone="warn">Both changed</Badge> : null}
+          </dt>
+          <dd className="max-h-24 overflow-auto whitespace-pre-wrap break-words text-ink-muted">
+            {values[key] || "—"}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 /** Create or edit an idea; updates always send the version being edited. */
@@ -60,6 +100,7 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
   const formId = useId();
   const writeGuard = useWriteGuard("ideas");
   const [values, setValues] = useState(initialValues(idea));
+  const [baselineValues, setBaselineValues] = useState(initialValues(idea));
   const [expectedVersion, setExpectedVersion] = useState(idea?.version ?? 1);
   const [conflictOpen, setConflictOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -84,7 +125,9 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
 
   useEffect(() => {
     if (!open) return;
-    setValues(initialValues(idea));
+    const nextValues = initialValues(idea);
+    setValues(nextValues);
+    setBaselineValues(nextValues);
     setExpectedVersion(idea?.version ?? 1);
     setFormError(null);
     save.reset();
@@ -94,6 +137,15 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
   }, [open, idea?.id]);
 
   const latest = parseLatest(save.error);
+  const latestValues = latest ? initialValues(latest) : undefined;
+  const overlappingFields = new Set<EditorField>(
+    latestValues
+      ? EDITOR_FIELDS.filter(
+          ({ key }) =>
+            values[key] !== baselineValues[key] && latestValues[key] !== baselineValues[key],
+        ).map(({ key }) => key)
+      : [],
+  );
 
   function setField(field: keyof ReturnType<typeof initialValues>, value: string) {
     setValues((current) => ({ ...current, [field]: value }));
@@ -125,7 +177,9 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
 
   function reloadLatest() {
     if (latest) {
-      setValues(initialValues(latest));
+      const nextValues = initialValues(latest);
+      setValues(nextValues);
+      setBaselineValues(nextValues);
       setExpectedVersion(latest.version);
     }
     void queryClient.invalidateQueries({ queryKey: ideasQueryKey.all });
@@ -134,9 +188,11 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
   }
 
   function mergeLatest() {
-    if (!latest) return;
-    // Keep the complete local draft (including pitch/source) and rebase that draft on the
-    // current version. The next save still uses optimistic concurrency at the new version.
+    if (!latest || !latestValues) return;
+    // Fields untouched since opening adopt the server's latest value. Local edits remain in
+    // the draft so the following PATCH cannot overwrite unrelated remote changes.
+    setValues((draft) => rebaseValues(baselineValues, draft, latestValues));
+    setBaselineValues(latestValues);
     setExpectedVersion(latest.version);
     setConflictOpen(false);
     save.reset();
@@ -231,19 +287,28 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
         entity="idea"
         error={save.error instanceof ConflictError ? save.error : null}
         changedBy={latest?.updated_by}
-        latest={summary(latest)}
-        yours={[
-          values.title,
-          idea?.status ?? "inbox",
-          values.score === "" ? "unscored" : `score ${values.score}`,
-          values.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean)
-            .join(", "),
-        ]
-          .filter(Boolean)
-          .join(" · ")}
+        latest={
+          latestValues ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-ink-muted">
+                Merge uses the latest value for fields you left unchanged. Fields marked “Both
+                changed” keep your draft value.
+              </p>
+              <DraftFields
+                values={latestValues}
+                overlappingFields={overlappingFields}
+                status={latest?.status ?? "inbox"}
+              />
+            </div>
+          ) : undefined
+        }
+        yours={
+          <DraftFields
+            values={values}
+            overlappingFields={overlappingFields}
+            status={idea?.status ?? "inbox"}
+          />
+        }
         onReload={reloadLatest}
         onMerge={latest ? mergeLatest : undefined}
         onKeepEditing={keepEditing}

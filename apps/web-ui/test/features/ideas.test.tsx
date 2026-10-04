@@ -209,7 +209,7 @@ describe("Ideas UI", () => {
     expect(requests[1]?.body).not.toHaveProperty("note");
   });
 
-  it("rebases all edited fields onto the latest version after an explicit merge", async () => {
+  it("keeps the local title and rebases untouched remote pitch and source after merging", async () => {
     setCsrfToken("test-csrf");
     const original = idea({
       title: "Version two",
@@ -219,7 +219,81 @@ describe("Ideas UI", () => {
       tags: ["version-two"],
     });
     const current = idea({
-      title: "Version three",
+      score: 42,
+      tags: ["version-two"],
+      title: "Version two",
+      pitch: "Version three pitch",
+      source: "Version three source",
+      version: 3,
+    });
+    const requests = recordFetch((url, init) => {
+      if (url.pathname !== `/api/ideas/${IDEA_ID}` || init?.method !== "PATCH") {
+        return jsonResponse({ error: "Unexpected request" }, 500);
+      }
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const attempt = requests.filter((request) => request.method === "PATCH").length;
+      if (attempt === 1) {
+        return jsonResponse({ error: "This idea changed to version 3.", latest: current }, 409);
+      }
+      return jsonResponse({
+        idea: idea({
+          ...current,
+          title: body.title as string,
+          pitch: body.pitch as string,
+          source: body.source as string,
+          score: body.score as number,
+          tags: body.tags as string[],
+          version: 4,
+        }),
+      });
+    });
+    const onSaved = vi.fn<(saved: Idea) => void>();
+    const user = userEvent.setup();
+    renderWithSession(
+      <IdeaEditorDialog open idea={original} onClose={vi.fn<() => void>()} onSaved={onSaved} />,
+    );
+
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.type(screen.getByRole("textbox", { name: "Title" }), "My retained title");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("This idea changed to version 3.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Merge my changes" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("My retained title");
+    expect(screen.getByRole("textbox", { name: "Pitch" })).toHaveValue("Version three pitch");
+    expect(screen.getByRole("textbox", { name: "Source" })).toHaveValue("Version three source");
+    expect(screen.getByRole("spinbutton", { name: "Score" })).toHaveValue(42);
+    expect(screen.getByRole("textbox", { name: "Tags" })).toHaveValue("version-two");
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ version: 4 })),
+    );
+    const patchBodies = requests
+      .filter((request) => request.method === "PATCH")
+      .map((request) => request.body as Record<string, unknown>);
+    expect(patchBodies[0]).toMatchObject({ expected_version: 2 });
+    expect(patchBodies[1]).toMatchObject({
+      expected_version: 3,
+      title: "My retained title",
+      pitch: "Version three pitch",
+      source: "Version three source",
+      score: 42,
+      tags: ["version-two"],
+    });
+  });
+
+  it("shows overlapping pitch and source on both sides and keeps both local values when rebasing", async () => {
+    setCsrfToken("test-csrf");
+    const original = idea({
+      title: "Version two",
+      pitch: "Version two pitch",
+      source: "Version two source",
+      score: 42,
+      tags: ["version-two"],
+    });
+    const current = idea({
+      title: "Version three title",
       pitch: "Version three pitch",
       source: "Version three source",
       score: 65,
@@ -253,39 +327,38 @@ describe("Ideas UI", () => {
       <IdeaEditorDialog open idea={original} onClose={vi.fn<() => void>()} onSaved={onSaved} />,
     );
 
-    await user.clear(screen.getByRole("textbox", { name: "Title" }));
-    await user.type(screen.getByRole("textbox", { name: "Title" }), "My retained title");
     await user.clear(screen.getByRole("textbox", { name: "Pitch" }));
     await user.type(screen.getByRole("textbox", { name: "Pitch" }), "My retained pitch");
     await user.clear(screen.getByRole("textbox", { name: "Source" }));
     await user.type(screen.getByRole("textbox", { name: "Source" }), "My retained source");
-    await user.clear(screen.getByRole("spinbutton", { name: "Score" }));
-    await user.type(screen.getByRole("spinbutton", { name: "Score" }), "91");
-    await user.clear(screen.getByRole("textbox", { name: "Tags" }));
-    await user.type(screen.getByRole("textbox", { name: "Tags" }), "alpha, beta");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect(await screen.findByText("This idea changed to version 3.")).toBeInTheDocument();
+    expect(screen.getAllByText("My retained pitch")).toHaveLength(2);
+    expect(screen.getByText("Version three pitch")).toBeInTheDocument();
+    expect(screen.getByText("My retained source")).toBeInTheDocument();
+    expect(screen.getByText("Version three source")).toBeInTheDocument();
+    expect(screen.getAllByText("Both changed")).toHaveLength(4);
+
     await user.click(screen.getByRole("button", { name: "Merge my changes" }));
-    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("My retained title");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Version three title");
     expect(screen.getByRole("textbox", { name: "Pitch" })).toHaveValue("My retained pitch");
     expect(screen.getByRole("textbox", { name: "Source" })).toHaveValue("My retained source");
-
     await user.click(screen.getByRole("button", { name: "Save changes" }));
+
     await waitFor(() =>
       expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ version: 4 })),
     );
     const patchBodies = requests
       .filter((request) => request.method === "PATCH")
       .map((request) => request.body as Record<string, unknown>);
-    expect(patchBodies[0]).toMatchObject({ expected_version: 2 });
     expect(patchBodies[1]).toMatchObject({
       expected_version: 3,
-      title: "My retained title",
+      title: "Version three title",
       pitch: "My retained pitch",
       source: "My retained source",
-      score: 91,
-      tags: ["alpha", "beta"],
+      score: 65,
+      tags: ["version-three"],
     });
   });
 
