@@ -108,6 +108,25 @@ describe("NotesPanel: reading", () => {
     expect(await screen.findByText("Good idea, shortlist it.")).toBeInTheDocument();
   });
 
+  it("rejects a successful response containing notes for another entity", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            notes: [note({ id: "wrong-entity", entity_id: OTHER_ID, body_md: "private note" })],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    renderWithSession(<NotesPanel entityType="idea" entityId={IDEA_ID} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The server's response to /api/notes was not in the expected format.",
+    );
+    expect(screen.queryByText("private note")).toBeNull();
+  });
+
   it("does not ask the server at all without Read on notes", () => {
     const api = stubApi("owner");
     renderWithSession(<NotesPanel entityType="idea" entityId={IDEA_ID} />, {

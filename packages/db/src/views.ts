@@ -98,6 +98,37 @@ export interface ListIdeaPipelineInput {
   limit?: number;
 }
 
+/** Fields that can be ordered in the Ideas list. Every value maps to a fixed SQL expression. */
+export type IdeaSortField =
+  "title" | "status" | "score" | "source" | "created_at" | "updated_at" | "status_changed_at";
+
+export interface ListIdeasInput {
+  /** Optional idea id, used for a detail lookup including archived rows. */
+  id?: string;
+  /** Optional pipeline stage filter. */
+  stage?: IdeaStage;
+  /** Exact, case-sensitive tag match. */
+  tag?: string;
+  /** Inclusive whole-number score range. Unscored ideas are excluded when either is set. */
+  scoreMin?: number;
+  scoreMax?: number;
+  /** Case-insensitive substring of the source field. */
+  source?: string;
+  /** Include archived ideas (default false). */
+  includeArchived?: boolean;
+  sortBy?: IdeaSortField;
+  sortOrder?: "asc" | "desc";
+  /** Number of rows (1-500), default 100. */
+  limit?: number;
+  /** Zero-based offset (0-1,000,000), default 0. */
+  offset?: number;
+}
+
+export interface ListIdeasResult {
+  ideas: IdeaPipelineRecord[];
+  total: number;
+}
+
 interface IdeaPipelineRow extends IdeaRecord {
   ageInStageSeconds: number;
   daysInStage: number;
@@ -111,6 +142,10 @@ interface IdeaPipelineRow extends IdeaRecord {
   packagingAt: Date | null;
 }
 
+interface IdeaPipelineCountRow extends IdeaPipelineRow {
+  total: number;
+}
+
 function revision(
   id: string | null,
   version: number | null,
@@ -121,6 +156,36 @@ function revision(
     ? null
     : { id, version, status, savedAt };
 }
+
+function pipelineRecord(row: IdeaPipelineRow): IdeaPipelineRecord {
+  const {
+    scriptId,
+    scriptVersion,
+    scriptStatus,
+    scriptAt,
+    packagingId,
+    packagingVersion,
+    packagingStatus,
+    packagingAt,
+    ...idea
+  } = row;
+  return {
+    ...idea,
+    latestScript: revision(scriptId, scriptVersion, scriptStatus, scriptAt),
+    latestPackaging: revision(packagingId, packagingVersion, packagingStatus, packagingAt),
+  };
+}
+
+const IDEA_SORT_SQL: Readonly<Record<IdeaSortField, string>> = {
+  title: "title",
+  status:
+    "array_position(ARRAY['inbox','shortlisted','scripting','filming','editing','published','dropped']::text[], status)",
+  score: "score",
+  source: "source",
+  created_at: "created_at",
+  updated_at: "updated_at",
+  status_changed_at: "status_changed_at",
+};
 
 /**
  * The ideas of the pipeline, most recently moved first. Archived ideas are left out unless
@@ -150,24 +215,125 @@ export async function listIdeaPipeline(
       LIMIT $2::integer`,
     [[...stages], limit],
   );
-  return rows.map((row) => {
-    const {
-      scriptId,
-      scriptVersion,
-      scriptStatus,
-      scriptAt,
-      packagingId,
-      packagingVersion,
-      packagingStatus,
-      packagingAt,
-      ...idea
-    } = row;
-    return {
-      ...idea,
-      latestScript: revision(scriptId, scriptVersion, scriptStatus, scriptAt),
-      latestPackaging: revision(packagingId, packagingVersion, packagingStatus, packagingAt),
-    };
-  });
+  return rows.map(pipelineRecord);
+}
+
+/**
+ * Filtered, deterministically ordered and paged Ideas reader for the web UI. All predicates are
+ * bound values; only a fixed, allow-listed sort expression is interpolated into SQL. The total
+ * travels with the page so the UI can paginate a channel with the PRD's 10,000-idea target without
+ * silently filtering a truncated in-memory subset.
+ */
+export async function listIdeas(
+  db: Queryable,
+  input: ListIdeasInput = {},
+): Promise<ListIdeasResult> {
+  if (input.id !== undefined) requireUuid("id", input.id);
+  if (input.stage !== undefined) checkOneOf("stage", [input.stage], IDEA_STAGES);
+  if (input.tag !== undefined) {
+    if (input.tag.trim() === "" || input.tag.length > 64) {
+      throw new ValidationError("tag must contain 1 to 64 characters", { field: "tag" });
+    }
+  }
+  if (input.source !== undefined && (input.source.trim() === "" || input.source.length > 200)) {
+    throw new ValidationError("source must contain 1 to 200 characters", { field: "source" });
+  }
+  for (const [field, value] of [
+    ["score_min", input.scoreMin],
+    ["score_max", input.scoreMax],
+  ] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 100)) {
+      throw new ValidationError(`${field} must be a whole number from 0 to 100`, { field });
+    }
+  }
+  if (
+    input.scoreMin !== undefined &&
+    input.scoreMax !== undefined &&
+    input.scoreMin > input.scoreMax
+  ) {
+    throw new ValidationError("score_min must be less than or equal to score_max", {
+      field: "score_min",
+    });
+  }
+  const limit = input.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new ValidationError("limit must be a whole number from 1 to 500", {
+      field: "limit",
+      value: String(limit),
+    });
+  }
+  const offset = input.offset ?? 0;
+  if (!Number.isInteger(offset) || offset < 0 || offset > 1_000_000) {
+    throw new ValidationError("offset must be a whole number from 0 to 1000000", {
+      field: "offset",
+      value: String(offset),
+    });
+  }
+  const sortBy = input.sortBy ?? "updated_at";
+  if (!Object.hasOwn(IDEA_SORT_SQL, sortBy)) {
+    throw new ValidationError("sort_by is not supported", { field: "sort_by" });
+  }
+  const sortOrder = input.sortOrder ?? "desc";
+  if (sortOrder !== "asc" && sortOrder !== "desc") {
+    throw new ValidationError("sort_order must be asc or desc", { field: "sort_order" });
+  }
+
+  const sourceTable = input.includeArchived === true ? "ideas_pipeline_all" : "ideas_pipeline";
+  const predicates = [
+    "$1::uuid IS NULL OR id = $1::uuid",
+    "$2::text IS NULL OR status = $2::text",
+    "$3::text IS NULL OR $3::text = ANY(tags)",
+    "$4::integer IS NULL OR score >= $4::integer",
+    "$5::integer IS NULL OR score <= $5::integer",
+    "$6::text IS NULL OR position(lower($6::text) in lower(coalesce(source, ''))) > 0",
+  ];
+  const values = [
+    input.id ?? null,
+    input.stage ?? null,
+    input.tag ?? null,
+    input.scoreMin ?? null,
+    input.scoreMax ?? null,
+    input.source ?? null,
+  ];
+  const where = predicates.map((predicate) => `(${predicate})`).join(" AND ");
+  const rows = await select<IdeaPipelineCountRow>(
+    db,
+    `SELECT id, title, pitch, status, status_changed_at AS "statusChangedAt", score, source, tags,
+            version, archived_at AS "archivedAt", created_at AS "createdAt",
+            updated_at AS "updatedAt", created_by AS "createdBy", updated_by AS "updatedBy",
+            extract(epoch FROM age_in_stage)::float8 AS "ageInStageSeconds",
+            days_in_stage AS "daysInStage",
+            latest_script_id AS "scriptId", latest_script_version AS "scriptVersion",
+            latest_script_status AS "scriptStatus", latest_script_at AS "scriptAt",
+            latest_packaging_id AS "packagingId", latest_packaging_version AS "packagingVersion",
+            latest_packaging_status AS "packagingStatus", latest_packaging_at AS "packagingAt",
+            count(*) OVER ()::int AS total
+       FROM public.${sourceTable}
+      WHERE ${where}
+      ORDER BY ${IDEA_SORT_SQL[sortBy]} ${sortOrder.toUpperCase()} NULLS LAST, id ASC
+      LIMIT $7::integer OFFSET $8::integer`,
+    [...values, limit, offset],
+  );
+  let total = rows[0]?.total;
+  if (total === undefined) {
+    const counts = await select<{ total: number }>(
+      db,
+      `SELECT count(*)::int AS total FROM public.${sourceTable} WHERE ${where}`,
+      values,
+    );
+    total = counts[0]?.total ?? 0;
+  }
+  return { ideas: rows.map(({ total: _total, ...row }) => pipelineRecord(row)), total };
+}
+
+/** One pipeline row by id, including archived ideas, or null. */
+export async function getIdeaPipeline(
+  db: Queryable,
+  id: string,
+  includeArchived = true,
+): Promise<IdeaPipelineRecord | null> {
+  const result = await listIdeas(db, { id, includeArchived, limit: 1 });
+  return result.ideas[0] ?? null;
 }
 
 /**
@@ -244,6 +410,8 @@ export interface VideoPerformanceRecord {
 export interface ListVideoPerformanceInput {
   /** Only this video (the medians still cover the whole channel). */
   videoId?: string;
+  /** Only videos linked to this idea. */
+  ideaId?: string;
   /** At most this many rows, 1 to 1000 (default 500). */
   limit?: number;
 }
@@ -293,6 +461,9 @@ export async function listVideoPerformance(
   if (input.videoId !== undefined) {
     requireUuid("video_id", input.videoId);
   }
+  if (input.ideaId !== undefined) {
+    requireUuid("idea_id", input.ideaId);
+  }
   const rows = await select<VideoPerformanceRow>(
     db,
     `SELECT id, idea_id AS "ideaId", youtube_id AS "youtubeId", title,
@@ -317,9 +488,10 @@ export async function listVideoPerformance(
             subs_gained_vs_median::text AS "subsGainedVsMedian"
        FROM public.video_performance_summary
       WHERE ($1::uuid IS NULL OR id = $1::uuid)
+        AND ($2::uuid IS NULL OR idea_id = $2::uuid)
       ORDER BY published_at DESC NULLS LAST, id DESC
-      LIMIT $2::integer`,
-    [input.videoId ?? null, limit],
+      LIMIT $3::integer`,
+    [input.videoId ?? null, input.ideaId ?? null, limit],
   );
   return rows.map((row) => ({
     id: row.id,
