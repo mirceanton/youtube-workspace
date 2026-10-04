@@ -213,11 +213,11 @@ export function Component() {
     [history],
   );
   const markers = useMemo<ChartMarker[]>(() => {
-    if (!experiment) return [];
-    return [
-      experiment.starts_at ? { x: experiment.starts_at, label: "Experiment started" } : null,
-      experiment.ends_at ? { x: experiment.ends_at, label: "Experiment ended" } : null,
-    ].filter((marker): marker is ChartMarker => marker !== null);
+    const result: ChartMarker[] = [];
+    if (experiment?.starts_at)
+      result.push({ x: experiment.starts_at, label: "Experiment started" });
+    if (experiment?.ends_at) result.push({ x: experiment.ends_at, label: "Experiment ended" });
+    return result;
   }, [experiment]);
 
   if (!validId) {

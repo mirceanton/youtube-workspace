@@ -165,6 +165,14 @@ refresh under the user (an editor's source document) sets `refetchInterval: fals
 `["ideas", id]`, `["scripts", ideaId, kind]`). The session is `["session"]`, notes are
 `["notes", entityType, entityId]`. The dashboard's event poll (T47) invalidates by that prefix.
 
+T47 mounts its compact change poller in `AppShell`, so it remains active while the user is on any
+screen. The poll runs at the shared 15 s query interval and returns only changed resource names the
+current session may read. It never returns actors, actions, entity identifiers or audit payloads;
+the full `/api/activity` feed still requires Read on `activity`. This small global mount is the one
+T47 ownership exception: keeping the hook inside the Dashboard route would stop cache invalidation
+while a user was working elsewhere. The poller imports no zod schemas, so it stays in the shell's
+small initial bundle.
+
 ### Optimistic concurrency (never overwrite silently)
 
 ```tsx
