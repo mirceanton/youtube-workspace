@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ytw/db": "workspace:*",
     "@ytw/shared": "workspace:*",
     "fastify": "catalog:",
     "zod": "catalog:"
