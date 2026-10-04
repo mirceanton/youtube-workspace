@@ -13,10 +13,14 @@
   },
   "dependencies": {
     "@ytw/db": "workspace:*",
+    "@ytw/observability": "workspace:*",
     "@ytw/policy": "workspace:*",
     "@ytw/script-md": "workspace:*",
     "@ytw/shared": "workspace:*",
+    "@types/pg": "^8.23.0",
     "fastify": "catalog:",
+    "openid-client": "^6.8.8",
+    "pg": "^8.23.0",
     "zod": "catalog:"
   }
 }
