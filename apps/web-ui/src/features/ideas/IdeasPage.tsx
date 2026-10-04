@@ -53,7 +53,6 @@ export function Component() {
   const canWrite = useCan("ideas", "write");
   const writeGuard = useWriteGuard("ideas");
   const [stage, setStage] = useState<IdeaStage | "">("");
-  const [mobileStage, setMobileStage] = useState<IdeaStage>("inbox");
   const [tag, setTag] = useState("");
   const [source, setSource] = useState("");
   const [scoreMin, setScoreMin] = useState("");
@@ -90,7 +89,9 @@ export function Component() {
 
   const ideas = ideasQuery.data?.ideas ?? [];
   const page = ideasQuery.data?.page;
-  const mobileIdeas = ideas.filter((idea) => idea.status === mobileStage);
+  const hasActiveFilters = Boolean(
+    stage || tag.trim() || source.trim() || scoreMin || scoreMax || includeArchived,
+  );
 
   function changeFilter<T>(setValue: (value: T) => void, value: T) {
     setValue(value);
@@ -149,7 +150,6 @@ export function Component() {
           onChange={(event) => {
             const next = IDEA_STAGES.find((item) => item === event.target.value) ?? "";
             changeFilter(setStage, next);
-            if (next) setMobileStage(next);
           }}
         >
           <option value="">All stages</option>
@@ -235,14 +235,20 @@ export function Component() {
         />
       ) : ideas.length === 0 ? (
         <EmptyState
-          title={includeArchived ? "No ideas match these filters" : "No ideas yet"}
+          title={
+            stage
+              ? `No ${IDEA_STAGE_LABELS[stage].toLowerCase()} ideas`
+              : hasActiveFilters
+                ? "No ideas match these filters"
+                : "No ideas yet"
+          }
           description={
-            includeArchived
+            hasActiveFilters
               ? "Try changing or clearing one of the filters."
               : "Create the first idea to start a channel pipeline."
           }
           action={
-            canWrite && !includeArchived ? (
+            canWrite && !hasActiveFilters ? (
               <Button variant="primary" onClick={() => setCreateOpen(true)}>
                 Create an idea
               </Button>
@@ -307,27 +313,32 @@ export function Component() {
           <div className="space-y-3 md:hidden">
             <SelectField
               label="Show one stage"
-              value={mobileStage}
+              value={stage}
               onChange={(event) => {
-                const next = IDEA_STAGES.find((item) => item === event.target.value);
-                if (next) setMobileStage(next);
+                const next = IDEA_STAGES.find((item) => item === event.target.value) ?? "";
+                changeFilter(setStage, next);
               }}
             >
+              <option value="">All stages</option>
               {IDEA_STAGES.map((item) => (
                 <option key={item} value={item}>
                   {IDEA_STAGE_LABELS[item]}
                 </option>
               ))}
             </SelectField>
-            {mobileIdeas.length === 0 ? (
+            {ideas.length === 0 ? (
               <EmptyState
                 compact
-                title={`No ${IDEA_STAGE_LABELS[mobileStage].toLowerCase()} ideas`}
+                title={
+                  stage
+                    ? `No ${IDEA_STAGE_LABELS[stage].toLowerCase()} ideas`
+                    : "No ideas match these filters"
+                }
                 description="Choose another stage or change the filters."
               />
             ) : (
               <ul className="flex flex-col gap-3">
-                {mobileIdeas.map((idea) => (
+                {ideas.map((idea) => (
                   <li key={idea.id}>
                     <IdeaCard idea={idea} onMove={moveTo} />
                   </li>

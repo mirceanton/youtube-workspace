@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { IDEA_STAGE_LABELS, findIdeaStageTransition, type IdeaStage } from "@ytw/shared/constants";
 import type { AdvanceIdeaRequest, Idea, IdeaMutationResponse } from "@ytw/shared/api/ideas";
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Alert, Button, ConflictDialog, Dialog, TextAreaField, useWriteGuard } from "@/kit";
 import { api } from "@/lib/api.ts";
 import { ConflictError, describeError } from "@/lib/errors.ts";
@@ -49,6 +49,18 @@ export function StageMoveDialog({ idea, target, onClose, onMoved }: StageMoveDia
       }
     },
   });
+
+  const scope = idea && target ? `${idea.id}:${target}` : null;
+  const previousScope = useRef<string | null>(null);
+  const resetMove = move.reset;
+  useEffect(() => {
+    if (scope === previousScope.current) return;
+    previousScope.current = scope;
+    setNote("");
+    setConflictOpen(false);
+    setLatestIdea(null);
+    resetMove();
+  }, [resetMove, scope]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
