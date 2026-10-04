@@ -794,6 +794,7 @@ describe("web BFF OIDC and sessions", () => {
     const allowed = await loginRequest(app, readerCookie, "/api/protected");
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toEqual({ username: "reader" });
+    expect((await loginRequest(app, ownerCookie, "/api/any-write")).statusCode).toBe(200);
     const readerMe = await loginRequest(app, readerCookie);
     const writeDenied = await app.inject({
       method: "POST",
@@ -807,14 +808,34 @@ describe("web BFF OIDC and sessions", () => {
     });
     expect(writeDenied.statusCode).toBe(403);
 
-    await withActor(webPool, { name: "owner", type: "human" }, (tx) =>
-      setUserPermission(tx, {
+    await withActor(webPool, { name: "owner", type: "human" }, async (tx) => {
+      await setUserPermission(tx, {
         actingUserId: owner.id,
         userId: reader.id,
         resource: "ideas",
         level: "none",
+      });
+      await setUserPermission(tx, {
+        actingUserId: owner.id,
+        userId: reader.id,
+        resource: "scripts",
+        level: "read",
+      });
+    });
+    const anyRead = await loginRequest(app, readerCookie, "/api/any-read");
+    expect(anyRead.statusCode).toBe(200);
+    expect((await loginRequest(app, readerCookie, "/api/any-write")).statusCode).toBe(403);
+    expect((await loginRequest(app, readerCookie, "/api/protected")).statusCode).toBe(403);
+
+    await withActor(webPool, { name: "owner", type: "human" }, (tx) =>
+      setUserPermission(tx, {
+        actingUserId: owner.id,
+        userId: reader.id,
+        resource: "scripts",
+        level: "none",
       }),
     );
+    expect((await loginRequest(app, readerCookie, "/api/any-read")).statusCode).toBe(403);
     const denied = await loginRequest(app, readerCookie, "/api/protected");
     expect(denied.statusCode).toBe(403);
 

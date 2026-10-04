@@ -12,7 +12,7 @@ import {
   type UserAccess,
 } from "@ytw/db";
 import { authorize, DENIAL_HTTP_STATUS, type AccessRule } from "@ytw/policy";
-import type { Resource } from "@ytw/shared/constants";
+import { GRANTABLE_LEVELS, RESOURCES, type Resource } from "@ytw/shared/constants";
 import * as oidc from "openid-client";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
@@ -481,6 +481,29 @@ function denied(reply: FastifyReply, rule: AccessRule, principal: WebAuth | unde
   return reply.code(DENIAL_HTTP_STATUS[decision.reason]).send({ error: decision.message });
 }
 
+function deniedAny(reply: FastifyReply, level: "read" | "write", principal: WebAuth | undefined) {
+  if (principal === undefined) {
+    return reply.code(401).send({ error: "Authentication required." });
+  }
+  const user = {
+    kind: "user" as const,
+    userId: principal.userId,
+    username: principal.username,
+    isAdmin: principal.isAdmin,
+    levels: principal.levels,
+  };
+  if (
+    RESOURCES.some(
+      (resource) =>
+        GRANTABLE_LEVELS[resource].includes(level) && authorize(user, { resource, level }).allowed,
+    )
+  ) {
+    return undefined;
+  }
+  const label = level === "read" ? "Read" : "Write";
+  return reply.code(403).send({ error: `${label} access on at least one object is required.` });
+}
+
 const requireAuthenticated: preHandlerHookHandler = async (request, reply) => {
   const result = denied(reply, "authenticated", request.auth);
   if (result !== undefined) return result;
@@ -556,6 +579,15 @@ export function registerAuthCore(
     const rule: AccessRule = { resource, level };
     const guard: preHandlerHookHandler = async (request, reply) => {
       const result = denied(reply, rule, request.auth);
+      if (result !== undefined) return result;
+    };
+    Object.defineProperty(guard, GUARDED, { value: true });
+    return guard;
+  });
+
+  app.decorate("requireAnyLevel", (level: "read" | "write") => {
+    const guard: preHandlerHookHandler = async (request, reply) => {
+      const result = deniedAny(reply, level, request.auth);
       if (result !== undefined) return result;
     };
     Object.defineProperty(guard, GUARDED, { value: true });

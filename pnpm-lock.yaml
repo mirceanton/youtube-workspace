@@ -273,6 +273,9 @@ importers:
       '@ytw/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@ytw/tokens':
+        specifier: workspace:*
+        version: link:../../packages/tokens
       fastify:
         specifier: 'catalog:'
         version: 5.12.5

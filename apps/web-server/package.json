@@ -18,6 +18,7 @@
     "@ytw/script-md": "workspace:*",
     "@ytw/shared": "workspace:*",
     "@types/pg": "^8.23.0",
+    "@ytw/tokens": "workspace:*",
     "fastify": "catalog:",
     "jose": "^6.2.12",
     "openid-client": "^6.8.8",
