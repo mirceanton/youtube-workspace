@@ -14,15 +14,18 @@ export type DiffLine =
       rightStart: number;
       leftCount: number;
       rightCount: number;
-    };
+    }
+  | { kind: "omitted-context"; count: number };
 
 export interface ScriptDiff {
   lines: DiffLine[];
-  /** True when a very large diff is represented as one changed block to keep the phone responsive. */
+  /** True when a very large diff uses matching edges and bounded previews instead of an LCS. */
   summarized: boolean;
 }
 
 const MAX_LCS_CELLS = 400_000;
+const MAX_CONTEXT_LINES_PER_EDGE = 3;
+const MAX_CHANGED_LINES_PER_SIDE = 100;
 
 /** Line diff with an LCS for ordinary scripts and a prefix/suffix summary for very large edits. */
 export function diffScriptLines(before: string, after: string): ScriptDiff {
@@ -98,6 +101,28 @@ function changeFromBase(base: readonly string[], side: readonly string[]): Chang
   };
 }
 
+function changesOverlap(left: Change, right: Change): boolean {
+  const leftInsertion = left.start === left.end;
+  const rightInsertion = right.start === right.end;
+  if (leftInsertion && rightInsertion) return left.start === right.start;
+  if (leftInsertion) return left.start >= right.start && left.start <= right.end;
+  if (rightInsertion) return right.start >= left.start && right.start <= left.end;
+  return Math.max(left.start, right.start) < Math.min(left.end, right.end);
+}
+
+function applyChangeToRange(
+  base: readonly string[],
+  change: Change,
+  rangeStart: number,
+  rangeEnd: number,
+): string[] {
+  return [
+    ...base.slice(rangeStart, change.start),
+    ...change.replacement,
+    ...base.slice(change.end, rangeEnd),
+  ];
+}
+
 /**
  * Merges one contiguous edit from each side. Overlapping edits become explicit conflict markers
  * for the editor to resolve; no side is silently discarded.
@@ -109,20 +134,17 @@ export function mergeScriptBodies(baseText: string, latestText: string, yoursTex
   const base = baseText.split("\n");
   const latest = changeFromBase(base, latestText.split("\n"));
   const yours = changeFromBase(base, yoursText.split("\n"));
-  const overlaps =
-    Math.max(latest.start, yours.start) < Math.min(latest.end, yours.end) ||
-    (latest.start === latest.end && yours.start === yours.end && latest.start === yours.start) ||
-    (latest.start === yours.start && (latest.start === latest.end || yours.start === yours.end));
-
-  if (overlaps) {
+  if (changesOverlap(latest, yours)) {
+    const conflictStart = Math.min(latest.start, yours.start);
+    const conflictEnd = Math.max(latest.end, yours.end);
     return [
-      ...base.slice(0, Math.min(latest.start, yours.start)),
+      ...base.slice(0, conflictStart),
       "<<<<<<< Your changes",
-      ...yours.replacement,
+      ...applyChangeToRange(base, yours, conflictStart, conflictEnd),
       "=======",
-      ...latest.replacement,
+      ...applyChangeToRange(base, latest, conflictStart, conflictEnd),
       ">>>>>>> Latest version",
-      ...base.slice(Math.max(latest.end, yours.end)),
+      ...base.slice(conflictEnd),
     ].join("\n");
   }
 
@@ -151,37 +173,62 @@ function summarizeChange(left: readonly string[], right: readonly string[]): Dif
   }
 
   const lines: DiffLine[] = [];
-  for (let index = 0; index < prefix; index += 1) {
-    const text = left[index] ?? "";
-    lines.push({
-      kind: "context",
-      leftText: text,
-      rightText: right[index] ?? "",
-      leftNumber: index + 1,
-      rightNumber: index + 1,
-    });
-  }
+  appendMatchingContext(lines, left, right, 0, 0, prefix);
   const leftCount = left.length - prefix - suffix;
   const rightCount = right.length - prefix - suffix;
-  if (leftCount > 0 || rightCount > 0) {
+  const visibleLeft = Math.min(leftCount, MAX_CHANGED_LINES_PER_SIDE);
+  const visibleRight = Math.min(rightCount, MAX_CHANGED_LINES_PER_SIDE);
+  for (let offset = 0; offset < visibleLeft; offset += 1) {
+    const index = prefix + offset;
+    lines.push({ kind: "removed", leftText: left[index] ?? "", leftNumber: index + 1 });
+  }
+  for (let offset = 0; offset < visibleRight; offset += 1) {
+    const index = prefix + offset;
+    lines.push({ kind: "added", rightText: right[index] ?? "", rightNumber: index + 1 });
+  }
+  const omittedLeft = leftCount - visibleLeft;
+  const omittedRight = rightCount - visibleRight;
+  if (omittedLeft > 0 || omittedRight > 0) {
     lines.push({
       kind: "summary",
-      leftStart: prefix + 1,
-      rightStart: prefix + 1,
-      leftCount,
-      rightCount,
+      leftStart: prefix + visibleLeft + 1,
+      rightStart: prefix + visibleRight + 1,
+      leftCount: omittedLeft,
+      rightCount: omittedRight,
     });
   }
-  for (let offset = suffix; offset > 0; offset -= 1) {
-    const leftIndex = left.length - offset;
-    const rightIndex = right.length - offset;
+  appendMatchingContext(lines, left, right, left.length - suffix, right.length - suffix, suffix);
+  return lines;
+}
+
+function appendMatchingContext(
+  lines: DiffLine[],
+  left: readonly string[],
+  right: readonly string[],
+  leftStart: number,
+  rightStart: number,
+  count: number,
+): void {
+  const shownPerEdge = Math.min(MAX_CONTEXT_LINES_PER_EDGE, Math.ceil(count / 2));
+  const omitted = count - shownPerEdge * 2;
+  for (let offset = 0; offset < shownPerEdge; offset += 1) {
     lines.push({
       kind: "context",
-      leftText: left[leftIndex] ?? "",
-      rightText: right[rightIndex] ?? "",
-      leftNumber: leftIndex + 1,
-      rightNumber: rightIndex + 1,
+      leftText: left[leftStart + offset] ?? "",
+      rightText: right[rightStart + offset] ?? "",
+      leftNumber: leftStart + offset + 1,
+      rightNumber: rightStart + offset + 1,
     });
   }
-  return lines;
+  if (omitted > 0) lines.push({ kind: "omitted-context", count: omitted });
+  for (let offset = count - shownPerEdge; offset < count; offset += 1) {
+    if (offset < shownPerEdge) continue;
+    lines.push({
+      kind: "context",
+      leftText: left[leftStart + offset] ?? "",
+      rightText: right[rightStart + offset] ?? "",
+      leftNumber: leftStart + offset + 1,
+      rightNumber: rightStart + offset + 1,
+    });
+  }
 }

@@ -25,24 +25,42 @@ describe("script version comparison", () => {
     ]);
   });
 
-  it("summarizes unusually large diffs while retaining matching edges", () => {
+  it("keeps a bounded, inspectable preview of unusually large changed blocks", () => {
     const before = `${Array.from({ length: 700 }, (_, index) => `old ${index}`).join("\n")}\nlast`;
     const after = `${Array.from({ length: 700 }, (_, index) => `new ${index}`).join("\n")}\nlast`;
     const diff = diffScriptLines(before, after);
     expect(diff.summarized).toBe(true);
-    expect(diff.lines).toHaveLength(2);
-    expect(diff.lines[0]).toMatchObject({
+    expect(diff.lines.length).toBeLessThanOrEqual(203);
+    expect(diff.lines[0]).toMatchObject({ kind: "removed", leftText: "old 0", leftNumber: 1 });
+    expect(diff.lines).toContainEqual({ kind: "added", rightText: "new 0", rightNumber: 1 });
+    expect(diff.lines).toContainEqual({
       kind: "summary",
-      leftStart: 1,
-      rightStart: 1,
-      leftCount: 700,
-      rightCount: 700,
+      leftStart: 101,
+      rightStart: 101,
+      leftCount: 600,
+      rightCount: 600,
     });
     expect(diff.lines.at(-1)).toMatchObject({
       kind: "context",
       leftText: "last",
       rightText: "last",
     });
+  });
+
+  it("shows the changed lines for a sparse edit in a large script", () => {
+    const before = Array.from({ length: 700 }, (_, index) => `line ${index}`).join("\n");
+    const afterLines = before.split("\n");
+    afterLines[350] = "edited line 350";
+    const diff = diffScriptLines(before, afterLines.join("\n"));
+
+    expect(diff.summarized).toBe(true);
+    expect(diff.lines).toContainEqual({ kind: "removed", leftText: "line 350", leftNumber: 351 });
+    expect(diff.lines).toContainEqual({
+      kind: "added",
+      rightText: "edited line 350",
+      rightNumber: 351,
+    });
+    expect(diff.lines.length).toBeLessThan(25);
   });
 
   it("merges edits to separate lines and leaves the newer line positions intact", () => {
@@ -58,5 +76,10 @@ describe("script version comparison", () => {
     );
     expect(merged).toContain("intro\n");
     expect(merged.endsWith("\nend")).toBe(true);
+  });
+
+  it("preserves base context in both alternatives when an insertion overlaps a wider edit", () => {
+    const merged = mergeScriptBodies("a\nb\nc", "A\nB\nc", "a\nX\nb\nc");
+    expect(merged).toBe("<<<<<<< Your changes\na\nX\nb\n=======\nA\nB\n>>>>>>> Latest version\nc");
   });
 });
