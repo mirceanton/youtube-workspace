@@ -8,8 +8,9 @@ editor can reload or keep its draft.
 
 ## API
 
-- `GET /api/videos?limit=500` returns active videos from `video_performance_summary`, including the
-  latest snapshot, channel medians and metric differences. `limit` is 1-1000; the UI requests 500.
+- `GET /api/videos?limit=1000` returns active videos from `video_performance_summary`, including the
+  latest snapshot, channel medians and metric differences. `limit` is 1-1000; the UI requests the
+  maximum and warns when the list reaches that limit.
 - `GET /api/videos/:id` returns the video, up to 1,000 snapshots in capture-time order, the current
   channel comparison and, when the caller can Read ideas, the linked idea title.
 - `POST /api/videos` registers an existing YouTube video with its 11-character ID, title, optional

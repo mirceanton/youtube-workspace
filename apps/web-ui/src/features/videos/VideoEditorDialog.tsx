@@ -42,14 +42,24 @@ function initial(video?: Video) {
 }
 
 type Values = ReturnType<typeof initial>;
+type SaveInput =
+  | { kind: "create"; input: CreateVideoRequest }
+  | { kind: "update"; id: string; input: UpdateVideoRequest };
 
 export function VideoEditorDialog({ open, video, onClose, onSaved }: VideoEditorDialogProps) {
   const queryClient = useQueryClient();
   const canReadIdeas = useCan("ideas", "read");
+  const [baseline, setBaseline] = useState(video);
   const [values, setValues] = useState<Values>(initial(video));
   const [expectedVersion, setExpectedVersion] = useState(video?.version ?? 1);
   const [conflictOpen, setConflictOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const hasChanges =
+    !baseline ||
+    values.title.trim() !== baseline.title ||
+    values.publishedAt !== toLocalDateTime(baseline.published_at) ||
+    values.thumbnailUrl.trim() !== (baseline.thumbnail_url ?? "") ||
+    values.ideaId.trim() !== (baseline.idea_id ?? "");
 
   const ideasQuery = useQuery({
     queryKey: ["ideas", "video-editor-options"],
@@ -59,16 +69,9 @@ export function VideoEditorDialog({ open, video, onClose, onSaved }: VideoEditor
   });
 
   const save = useMutation({
-    mutationFn: (input: CreateVideoRequest) => {
-      if (!video) return api.post<VideoMutationResponse>(VIDEOS_PATH, input);
-      const update: UpdateVideoRequest = {
-        expected_version: expectedVersion,
-        title: input.title,
-        published_at: input.published_at,
-        thumbnail_url: input.thumbnail_url,
-        idea_id: input.idea_id,
-      };
-      return api.patch<VideoMutationResponse>(`${VIDEOS_PATH}/${video.id}`, update);
+    mutationFn: (input: SaveInput) => {
+      if (input.kind === "create") return api.post<VideoMutationResponse>(VIDEOS_PATH, input.input);
+      return api.patch<VideoMutationResponse>(VIDEOS_PATH + "/" + input.id, input.input);
     },
     onSuccess: async ({ video: saved }) => {
       await queryClient.invalidateQueries({ queryKey: videosQueryKey.all });
@@ -83,6 +86,7 @@ export function VideoEditorDialog({ open, video, onClose, onSaved }: VideoEditor
 
   useEffect(() => {
     if (!open) return;
+    setBaseline(video);
     setValues(initial(video));
     setExpectedVersion(video?.version ?? 1);
     setFormError(null);
@@ -114,25 +118,46 @@ export function VideoEditorDialog({ open, video, onClose, onSaved }: VideoEditor
       setFormError("Choose an idea or enter a valid idea ID.");
       return;
     }
-    const input: CreateVideoRequest = {
-      title: values.title.trim(),
-      youtube_id: video?.youtube_id ?? youtubeId,
-      published_at: values.publishedAt ? new Date(values.publishedAt).toISOString() : null,
-      thumbnail_url: values.thumbnailUrl.trim() || null,
-      idea_id: values.ideaId.trim() || null,
-    };
-    if (!input.title) {
+    const title = values.title.trim();
+    if (!title) {
       setFormError("A title is required.");
       return;
     }
     setFormError(null);
-    save.mutate(input);
+    if (baseline) {
+      const update: UpdateVideoRequest = { expected_version: expectedVersion };
+      if (title !== baseline.title) update.title = title;
+      // datetime-local is minute-precision. Keep the stored instant when the user leaves this
+      // field untouched instead of truncating seconds and milliseconds on unrelated edits.
+      if (values.publishedAt !== toLocalDateTime(baseline.published_at)) {
+        update.published_at = values.publishedAt
+          ? new Date(values.publishedAt).toISOString()
+          : null;
+      }
+      const thumbnailUrl = values.thumbnailUrl.trim();
+      if (thumbnailUrl !== (baseline.thumbnail_url ?? ""))
+        update.thumbnail_url = thumbnailUrl || null;
+      const ideaId = values.ideaId.trim();
+      if (ideaId !== (baseline.idea_id ?? "")) update.idea_id = ideaId || null;
+      if (Object.keys(update).length === 1) return;
+      save.mutate({ kind: "update", id: baseline.id, input: update });
+      return;
+    }
+    const input: CreateVideoRequest = {
+      title,
+      youtube_id: youtubeId,
+      published_at: values.publishedAt ? new Date(values.publishedAt).toISOString() : null,
+      thumbnail_url: values.thumbnailUrl.trim() || null,
+      idea_id: values.ideaId.trim() || null,
+    };
+    save.mutate({ kind: "create", input });
   }
 
   const latest = save.error instanceof ConflictError ? parseVideo(save.error.latest) : null;
 
   function reloadLatest() {
     if (latest) {
+      setBaseline(latest);
       setValues(initial(latest));
       setExpectedVersion(latest.version);
     }
@@ -154,9 +179,17 @@ export function VideoEditorDialog({ open, video, onClose, onSaved }: VideoEditor
         footer={
           <>
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" type="submit" form="video-editor-form" busy={save.isPending}>
-              {video ? "Save changes" : "Register video"}
-            </Button>
+            <WriteGuard resource="videos" explain={false}>
+              <Button
+                variant="primary"
+                type="submit"
+                form="video-editor-form"
+                busy={save.isPending}
+                disabled={!hasChanges}
+              >
+                {video ? "Save changes" : "Register video"}
+              </Button>
+            </WriteGuard>
           </>
         }
       >

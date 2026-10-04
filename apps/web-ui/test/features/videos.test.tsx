@@ -130,7 +130,11 @@ function renderWithRouter(
   );
 }
 
-afterEach(() => setCsrfToken(undefined));
+afterEach(() => {
+  setCsrfToken(undefined);
+  Reflect.deleteProperty(navigator, "onLine");
+  window.dispatchEvent(new Event("online"));
+});
 
 describe("Videos feature UI", () => {
   it("turns sparse metric snapshots into chart gaps and handles empty and large history", () => {
@@ -270,11 +274,72 @@ describe("Videos feature UI", () => {
     });
   });
 
+  it("preserves sub-minute publication precision on title edits and disables unchanged saves", async () => {
+    const publishedAt = "2026-10-04T10:00:37.123Z";
+    let submitted: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PATCH") {
+        submitted = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse({
+          video: video({ title: "Renamed video", published_at: publishedAt }),
+        });
+      }
+      return jsonResponse({ error: "Unexpected request" }, 500);
+    });
+    const user = userEvent.setup();
+    renderWithRouter(
+      <VideoEditorDialog
+        open
+        video={video({ published_at: publishedAt })}
+        onClose={vi.fn<() => void>()}
+      />,
+      "/videos",
+      sessionWith({ videos: "write" }),
+    );
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toBeDisabled();
+    const title = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(title);
+    await user.type(title, "Renamed video");
+    expect(save).toBeEnabled();
+    await user.click(save);
+    await waitFor(() => expect(submitted).toBeDefined());
+    expect(submitted).toEqual({ expected_version: 2, title: "Renamed video" });
+    expect(submitted).not.toHaveProperty("published_at");
+  });
+
+  it("disables the dialog footer action for read-only users", () => {
+    renderWithRouter(
+      <VideoEditorDialog open onClose={vi.fn<() => void>()} />,
+      "/videos",
+      sessionWith({ videos: "read" }),
+    );
+    expect(screen.getByRole("button", { name: "Register video" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Title" })).toBeDisabled();
+  });
+
+  it("disables the dialog footer action while offline", () => {
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+    window.dispatchEvent(new Event("offline"));
+    renderWithRouter(
+      <VideoEditorDialog open onClose={vi.fn<() => void>()} />,
+      "/videos",
+      sessionWith({ videos: "write" }),
+    );
+    expect(screen.getByRole("button", { name: "Register video" })).toBeDisabled();
+    expect(
+      screen.getByText("You are offline. Changes cannot be saved until you reconnect."),
+    ).toBeInTheDocument();
+  });
+
   it("shows a stale edit conflict and lets the editor reload the latest version", async () => {
     const latest = video({ title: "Updated elsewhere", version: 3 });
+    let submitted: Record<string, unknown> | undefined;
     vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "PATCH")
+      if (init?.method === "PATCH") {
+        submitted = JSON.parse(String(init.body)) as Record<string, unknown>;
         return jsonResponse({ error: "Version 2 is stale; version 3 exists.", latest }, 409);
+      }
       return jsonResponse({ error: "Unexpected request" }, 500);
     });
     const user = userEvent.setup();
@@ -293,6 +358,13 @@ describe("Videos feature UI", () => {
     expect(conflict).toHaveTextContent("Version 2 is stale; version 3 exists.");
     await user.click(within(conflict).getByRole("button", { name: "Discard mine and reload" }));
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Updated elsewhere");
+    const updatedTitle = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(updatedTitle);
+    await user.type(updatedTitle, "A follow-up edit");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(submitted).toEqual({ expected_version: 3, title: "A follow-up edit" }),
+    );
   });
 
   it("keeps YouTube links canonical and safe and links the readable originating idea", async () => {
@@ -318,5 +390,23 @@ describe("Videos feature UI", () => {
     );
     expect(videoWatchUrl("javascript:xx")).toBeNull();
     expect(screen.getAllByText("No data yet").length).toBeGreaterThan(0);
+  });
+
+  it("warns when the video list reaches its 1,000-result cap", async () => {
+    const videos = Array.from({ length: 1000 }, (_, index) =>
+      performance({
+        id: "0199c2a4-7b1e-7c3a-9d2f-" + String(index + 1).padStart(12, "0"),
+        title: "Video " + (index + 1),
+      }),
+    );
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      expect(url.searchParams.get("limit")).toBe("1000");
+      return jsonResponse({ videos });
+    });
+    renderWithRouter(<VideosPage />, "/videos", sessionWith({ videos: "read" }));
+    expect(
+      await screen.findByText("Showing the first 1,000 videos. Additional videos may be hidden."),
+    ).toBeInTheDocument();
   });
 });
