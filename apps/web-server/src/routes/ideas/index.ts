@@ -21,24 +21,18 @@ import {
   updateIdeaRequestSchema,
 } from "@ytw/shared/api/ideas";
 import type { IdeaStage } from "@ytw/shared/constants";
+import type { WebAuth } from "../../core/types.js";
 
-interface SessionAuth {
-  userId: string;
-  username: string;
-  isAdmin: boolean;
-  levels: Readonly<Record<string, "none" | "read" | "write">>;
-}
-
-type IdeaRequest = FastifyRequest & { auth: SessionAuth };
+type IdeaRequest = FastifyRequest & { auth: WebAuth };
 
 /** The subset of T40's documented core contract this plugin uses. */
-interface IdeasCore extends FastifyInstance {
+type IdeasCore = FastifyInstance & {
   requireLevel(resource: "ideas", level: "read" | "write"): preHandlerHookHandler;
   db: {
     pool: Queryable;
     withActor<T>(request: FastifyRequest, fn: (tx: ActorTx) => Promise<T>): Promise<T>;
   };
-}
+};
 
 interface IdeaParams {
   id: string;
