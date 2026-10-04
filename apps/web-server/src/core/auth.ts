@@ -35,8 +35,10 @@ export const CSRF_HEADER = "x-csrf-token";
 
 const LOGIN_TRANSACTION_TTL_SECONDS = 600;
 const REFRESH_EARLY_SECONDS = 30;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GUARDED = Symbol("ytw.route-guard");
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const sessionRefreshQueues = new Map<string, Promise<void>>();
 const PUBLIC_ROUTES = new Set([
   "GET /healthz",
   "HEAD /healthz",
@@ -114,9 +116,15 @@ function cookieValue(request: FastifyRequest, name: string): string | undefined 
   return undefined;
 }
 
-function secureCookie(request: FastifyRequest): boolean {
-  const host = request.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return !(host === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host));
+function hasCookie(request: FastifyRequest, name: string): boolean {
+  return (
+    typeof request.headers.cookie === "string" &&
+    request.headers.cookie.split(";").some((part) => part.trim().startsWith(`${name}=`))
+  );
+}
+
+function secureCookie(env: Env): boolean {
+  return new URL(env.OIDC_REDIRECT_URI).protocol === "https:";
 }
 
 function currentOrigin(env: Env): string {
@@ -200,6 +208,10 @@ function requiredString(claims: Record<string, unknown>, name: string): string |
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function includesAudience(value: unknown, clientId: string): boolean {
+  return value === clientId || (Array.isArray(value) && value.includes(clientId));
+}
+
 function setAuth(request: FastifyRequest, user: UserAccess | null): void {
   if (user === null || user.accessRevokedAt !== null) {
     request.auth = undefined;
@@ -237,38 +249,93 @@ async function endSessionForGroupRevocation(
   await deleteWebSession(app.db.pool, sessionId);
 }
 
+async function withSessionRefreshLock<T>(
+  sessionId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = sessionRefreshQueues.get(sessionId);
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  sessionRefreshQueues.set(sessionId, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sessionRefreshQueues.get(sessionId) === current) sessionRefreshQueues.delete(sessionId);
+  }
+}
+
 async function refreshSession(
   app: FastifyInstance,
   dependencies: Dependencies,
   sessionId: string,
-  userId: string,
-  initial: SessionSecretData,
 ): Promise<{ data: SessionSecretData; idTokenHint: string | null } | null> {
-  if (initial.refreshToken === null) return null;
-  const response = await dependencies.oidc.refreshTokenGrant(initial.refreshToken);
-  if (typeof response.access_token !== "string" || response.access_token.length === 0) return null;
-  const profile = await dependencies.oidc.fetchUserInfo(response.access_token, initial.subject);
-  if (!hasRequiredGroup(profile, dependencies.env)) {
-    await endSessionForGroupRevocation(app, sessionId, initial);
-    return null;
-  }
+  return withSessionRefreshLock(sessionId, async () => {
+    // A queued request must use the latest encrypted refresh token. Another request may already
+    // have rotated it while this one waited for the per-session lock.
+    const session = await getWebSession(app.db.pool, sessionId);
+    if (session === null || session.status !== "active") return null;
 
-  const refreshedClaims = response.claims();
-  const idToken = typeof response.id_token === "string" ? response.id_token : null;
-  const next: SessionSecretData = {
-    ...initial,
-    refreshToken:
-      typeof response.refresh_token === "string" ? response.refresh_token : initial.refreshToken,
-    accessTokenExpiresAt: tokenExpiry(response, refreshedClaims),
-  };
-  const updated = await updateWebSessionTokens(app.db.pool, sessionId, {
-    refreshTokenEncrypted: encryptSessionData(dependencies.env.SESSION_SECRET, next),
-    ...(idToken === null ? {} : { idTokenHint: idToken }),
+    let current: SessionSecretData;
+    try {
+      if (session.refreshTokenEncrypted === null) return null;
+      current = decryptSessionData(dependencies.env.SESSION_SECRET, session.refreshTokenEncrypted);
+    } catch {
+      return null;
+    }
+    if (current.accessTokenExpiresAt > Date.now() + REFRESH_EARLY_SECONDS * 1000) {
+      return { data: current, idTokenHint: session.idTokenHint };
+    }
+    if (current.refreshToken === null) return null;
+
+    const response = await dependencies.oidc.refreshTokenGrant(current.refreshToken);
+    if (typeof response.access_token !== "string" || response.access_token.length === 0)
+      return null;
+    const accessTokenExpiry = await dependencies.oidc.validateAccessToken(
+      response.access_token,
+      current.subject,
+    );
+    const refreshedClaims = response.claims();
+    const idToken = typeof response.id_token === "string" ? response.id_token : null;
+    if (idToken !== null && refreshedClaims === undefined) {
+      throw new Error("OIDC refresh ID token could not be verified");
+    }
+    if (
+      refreshedClaims !== undefined &&
+      (requiredString(refreshedClaims, "iss") !== current.issuer ||
+        requiredString(refreshedClaims, "sub") !== current.subject ||
+        !includesAudience(refreshedClaims.aud, dependencies.env.OIDC_CLIENT_ID) ||
+        typeof refreshedClaims.exp !== "number" ||
+        refreshedClaims.exp * 1000 <= Date.now())
+    ) {
+      throw new Error("OIDC refresh changed the authenticated identity");
+    }
+
+    const profile = await dependencies.oidc.fetchUserInfo(response.access_token, current.subject);
+    if (!hasRequiredGroup(profile, dependencies.env)) {
+      await endSessionForGroupRevocation(app, sessionId, current);
+      return null;
+    }
+
+    const next: SessionSecretData = {
+      ...current,
+      refreshToken:
+        typeof response.refresh_token === "string" ? response.refresh_token : current.refreshToken,
+      accessTokenExpiresAt: Math.min(accessTokenExpiry, tokenExpiry(response, refreshedClaims)),
+    };
+    const updated = await updateWebSessionTokens(app.db.pool, sessionId, {
+      refreshTokenEncrypted: encryptSessionData(dependencies.env.SESSION_SECRET, next),
+      ...(idToken === null ? {} : { idTokenHint: idToken }),
+    });
+    if (!updated) return null;
+    const latest = await getWebSession(app.db.pool, sessionId);
+    if (latest === null || latest.status !== "active" || latest.userId !== session.userId)
+      return null;
+    return { data: next, idTokenHint: latest.idTokenHint };
   });
-  if (!updated) return null;
-  const session = await getWebSession(app.db.pool, sessionId);
-  if (session === null || session.status !== "active" || session.userId !== userId) return null;
-  return { data: next, idTokenHint: session.idTokenHint };
 }
 
 async function loadSession(
@@ -280,9 +347,16 @@ async function loadSession(
   request.auth = undefined;
   request.sessionId = undefined;
   const sessionId = cookieValue(request, SESSION_COOKIE);
-  if (sessionId === undefined) return;
+  const secure = secureCookie(dependencies.env);
+  if (sessionId === undefined) {
+    if (hasCookie(request, SESSION_COOKIE)) clearCookie(reply, SESSION_COOKIE, secure);
+    return;
+  }
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    clearCookie(reply, SESSION_COOKIE, secure);
+    return;
+  }
 
-  const secure = secureCookie(request);
   const discard = async (): Promise<void> => {
     await deleteWebSession(app.db.pool, sessionId).catch(() => false);
     clearCookie(reply, SESSION_COOKIE, secure);
@@ -308,7 +382,7 @@ async function loadSession(
 
   if (data.accessTokenExpiresAt <= Date.now() + REFRESH_EARLY_SECONDS * 1000) {
     try {
-      const refreshed = await refreshSession(app, dependencies, sessionId, session.userId, data);
+      const refreshed = await refreshSession(app, dependencies, sessionId);
       if (refreshed === null) {
         await discard();
         return;
@@ -559,7 +633,7 @@ export function registerAuthCore(
       });
       addCookie(reply, LOGIN_COOKIE, encryptLoginTransaction(env.SESSION_SECRET, transaction), {
         maxAge: LOGIN_TRANSACTION_TTL_SECONDS,
-        secure: secureCookie(request),
+        secure: secureCookie(env),
       });
       return reply.redirect(url.href, 302);
     } catch (error) {
@@ -572,7 +646,7 @@ export function registerAuthCore(
   });
 
   app.get("/auth/callback", async (request, reply) => {
-    const secure = secureCookie(request);
+    const secure = secureCookie(env);
     const loginCookie = cookieValue(request, LOGIN_COOKIE);
     clearCookie(reply, LOGIN_COOKIE, secure);
     if (loginCookie === undefined)
@@ -598,9 +672,20 @@ export function registerAuthCore(
       const issuer = requiredString(claims, "iss");
       const subject = requiredString(claims, "sub");
       const username = requiredString(claims, "preferred_username");
-      if (issuer !== env.OIDC_ISSUER_URL || subject === undefined || username === undefined) {
+      if (
+        issuer !== env.OIDC_ISSUER_URL ||
+        subject === undefined ||
+        username === undefined ||
+        !includesAudience(claims.aud, env.OIDC_CLIENT_ID) ||
+        typeof claims.exp !== "number" ||
+        claims.exp * 1000 <= Date.now()
+      ) {
         return reply.code(401).send("Sign-in could not be verified.");
       }
+      if (typeof tokens.access_token !== "string" || tokens.access_token.length === 0) {
+        return reply.code(401).send("Sign-in could not be verified.");
+      }
+      const accessTokenExpiry = await oidcClient.validateAccessToken(tokens.access_token, subject);
       if (!hasRequiredGroup(claims, env)) {
         await withActor(app.db.pool, { name: username, type: "human" }, (tx) =>
           markUserOutsideAccessGroup(tx, { issuer, sub: subject }).then(() => undefined),
@@ -617,7 +702,7 @@ export function registerAuthCore(
         subject,
         username,
         refreshToken: tokens.refresh_token,
-        accessTokenExpiresAt: tokenExpiry(tokens, claims),
+        accessTokenExpiresAt: Math.min(accessTokenExpiry, tokenExpiry(tokens, claims)),
         returnTo: transaction.returnTo,
       };
       const login = await withActor(app.db.pool, { name: username, type: "human" }, (tx) =>
@@ -677,8 +762,8 @@ export function registerAuthCore(
     const session = await getWebSession(app.db.pool, request.sessionId);
     const redirectUrl = await oidcClient.endSessionUrl(session?.idTokenHint ?? null);
     await deleteWebSession(app.db.pool, request.sessionId);
-    clearCookie(reply, SESSION_COOKIE, secureCookie(request));
-    clearCookie(reply, LOGIN_COOKIE, secureCookie(request));
+    clearCookie(reply, SESSION_COOKIE, secureCookie(env));
+    clearCookie(reply, LOGIN_COOKIE, secureCookie(env));
     reply.header("Clear-Site-Data", '"cache", "storage"');
     if (request.headers.accept?.includes("application/json")) {
       return reply.send({

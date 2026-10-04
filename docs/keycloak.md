@@ -70,6 +70,9 @@ below).
   `"groups": ["youtube-workspace-users"]`. A user in no group gets an empty list. With full paths
   turned on it would be `["/youtube-workspace-users"]`; the realm does not use that form, so
   `OIDC_REQUIRED_GROUP` is the bare name.
+- **Audience mapper** on the client: adds `youtube-workspace` to the access token's `aud` claim and
+  leaves the ID token unchanged. The BFF validates the access-token signature, issuer, audience,
+  expiry and subject before using it for UserInfo.
 - The standard client scopes (`profile`, `email`, `roles`, ...) give the ID token `sub`,
   `preferred_username` (the audit actor), `name` and `email`.
 
@@ -105,10 +108,12 @@ The group name appears in the realm file (the group, its `path`, and `owner`'s m
 
 ### Using another provider
 
-The apps only need the six variables above, so any OIDC provider that can issue a list of group
-names in a claim works. Create a confidential client with the authorization code flow and PKCE,
-register the callback URL, add a groups claim, and point the variables at it.
-`OIDC_GROUPS_CLAIM_PATH` may be a nested path for providers that put groups elsewhere.
+The apps only need the six variables above. A provider must support the authorization code flow
+with PKCE and issue signed JWT access tokens whose issuer matches `OIDC_ISSUER_URL`, whose audience
+includes `OIDC_CLIENT_ID`, and which carry `exp` and `sub` claims. Create a confidential client,
+register the callback URL, add the groups claim to the ID/access tokens and UserInfo, add the client
+to the access-token audience, and point the variables at it. `OIDC_GROUPS_CLAIM_PATH` may be a
+nested path for providers that put groups elsewhere.
 
 ## Checking it
 
@@ -119,10 +124,11 @@ dev/keycloak/validate-realm.sh        # needs bash and jq only
 ```
 
 Checks that the JSON parses, that the client is confidential with PKCE `S256` and no implicit or
-password grant, that all four redirect URIs and post-logout URIs are registered, that the mapper
-writes the `groups` claim, that `owner` is in the group and `outsider` is not, and that the realm
-agrees with the `OIDC_*` values in `.env.example`. This is all that can run in an environment that
-cannot start Keycloak, such as the agent sandbox. It does not prove that Keycloak accepts the file.
+password grant, that all four redirect URIs and post-logout URIs are registered, that the group and
+audience mappers write the expected token claims, that `owner` is in the group and `outsider` is not,
+and that the realm agrees with the `OIDC_*` values in `.env.example`. This is all that can run in an
+environment that cannot start Keycloak, such as the agent sandbox. It does not prove that Keycloak
+accepts the file.
 
 ### Against a running Keycloak
 
@@ -136,9 +142,10 @@ curl, jq and openssl, never prints tokens, and stops at the first failing check.
 
 1. The discovery document (issuer, code and refresh grants, `S256`, JWKS, `end_session_endpoint`).
 2. A full authorization code flow with PKCE for `owner`: login form, redirect to the registered URI
-   with the original `state`, code exchange with the client secret, then ID token claims (issuer,
-   audience, `azp`, nonce, `sub`, `preferred_username`) and the `groups` claim containing
-   `youtube-workspace-users` in the ID and access tokens.
+  with the original `state`, code exchange with the client secret, then ID token claims (issuer,
+  audience, `azp`, nonce, `sub`, `preferred_username`) and the `groups` claim containing
+  `youtube-workspace-users` in the ID and access tokens; the access token's issuer, audience,
+  expiry and subject are checked as well.
 3. The same flow for `outsider`, whose tokens must not contain the group.
 4. Client restrictions: a request without a PKCE challenge, one with method `plain`, an
    unregistered redirect URI, a wrong client secret, a wrong code verifier, the password grant and a

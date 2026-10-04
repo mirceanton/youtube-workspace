@@ -5,6 +5,8 @@ import { getUserAccess, setUserPermission, withActor, type UserAccess } from "@y
 import { createTestDb, type TestDb } from "@ytw/db/testing";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
+import { OidcClient } from "../src/core/oidc.js";
+import { decryptSessionData, encryptSessionData } from "../src/core/session-crypto.js";
 import type { Env } from "../src/env.js";
 import { loadEnv } from "../src/env.js";
 
@@ -12,7 +14,7 @@ const ISSUER = "http://localhost:8080/realms/youtube-workspace";
 const CLIENT_ID = "youtube-workspace";
 const REQUIRED_GROUP = "youtube-workspace-users";
 const HOST = "localhost:5173";
-const ORIGIN = `http://${HOST}`;
+const ORIGIN = "https://workspace.example";
 const SESSION_SECRET = "a-dev-only-session-secret-with-32-or-more-characters";
 const ROUTES = fileURLToPath(new URL("./fixtures/routes", import.meta.url));
 
@@ -23,6 +25,17 @@ interface IdentityProfile {
   expiresIn: number;
 }
 
+interface TokenClaimsOverride {
+  issuer?: string;
+  audience?: string | string[];
+  subject?: string;
+  expiresAt?: number;
+}
+
+interface IdTokenOverride extends TokenClaimsOverride {
+  nonce?: string;
+}
+
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
@@ -31,8 +44,20 @@ class MockOidcProvider {
   readonly #privateKey: KeyObject;
   readonly publicJwk: Record<string, unknown>;
   readonly profiles = new Map<string, IdentityProfile>();
-  userInfoGroups = [REQUIRED_GROUP];
+  readonly accessTokenOverrides = new Map<string, string | TokenClaimsOverride>();
+  readonly idTokenOverrides = new Map<string, IdTokenOverride>();
+  readonly invalidIdTokenSignatures = new Set<string>();
+  readonly invalidAccessTokenSignatures = new Set<string>();
+  readonly refreshIdTokenSubjects = new Map<string, string>();
+  userInfoGroups: string[] | undefined;
+  omitJwks = false;
+  emptyJwks = false;
+  refreshDelayMilliseconds = 0;
   refreshCalls = 0;
+  #loginTokenSequence = 0;
+  readonly #refreshTokenProfiles = new Map<string, IdentityProfile>();
+  readonly #consumedRefreshTokens = new Set<string>();
+  readonly #accessTokenSubjects = new Map<string, string>();
   readonly fetch: typeof fetch;
 
   constructor() {
@@ -44,22 +69,52 @@ class MockOidcProvider {
   }
 
   signIdToken(profile: IdentityProfile, nonce: string): string {
+    const override = this.idTokenOverrides.get(profile.username);
+    const token = this.#signJwt({
+      iss: override?.issuer ?? ISSUER,
+      aud: override?.audience ?? CLIENT_ID,
+      sub: override?.subject ?? profile.subject,
+      iat: Math.floor(Date.now() / 1000),
+      exp: override?.expiresAt ?? Math.floor(Date.now() / 1000) + 3600,
+      nonce: override?.nonce ?? nonce,
+      preferred_username: profile.username,
+      name: profile.username,
+      email: `${profile.username}@example.test`,
+      realm: { groups: profile.groups },
+    });
+    return this.invalidIdTokenSignatures.has(profile.username)
+      ? this.#corruptSignature(token)
+      : token;
+  }
+
+  signAccessToken(profile: IdentityProfile): string {
+    const override = this.accessTokenOverrides.get(profile.username);
+    if (typeof override === "string") return override;
+    const claims = override ?? {};
+    const token = this.#signJwt({
+      iss: claims.issuer ?? ISSUER,
+      aud: claims.audience ?? CLIENT_ID,
+      sub: claims.subject ?? profile.subject,
+      iat: Math.floor(Date.now() / 1000),
+      exp: claims.expiresAt ?? Math.floor(Date.now() / 1000) + 3600,
+    });
+    if (this.invalidAccessTokenSignatures.has(profile.username)) {
+      return this.#corruptSignature(token);
+    }
+    this.#accessTokenSubjects.set(token, profile.subject);
+    return token;
+  }
+
+  #corruptSignature(token: string): string {
+    const [header, payload, signature = ""] = token.split(".");
+    const first = signature[0] === "A" ? "B" : "A";
+    return `${header}.${payload}.${first}${signature.slice(1)}`;
+  }
+
+  #signJwt(payload: Record<string, unknown>): string {
     const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT", kid: "test-key" }));
-    const payload = base64url(
-      JSON.stringify({
-        iss: ISSUER,
-        aud: CLIENT_ID,
-        sub: profile.subject,
-        iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + 3600,
-        nonce,
-        preferred_username: profile.username,
-        name: profile.username,
-        email: `${profile.username}@example.test`,
-        realm: { groups: profile.groups },
-      }),
-    );
-    const signed = `${header}.${payload}`;
+    const encodedPayload = base64url(JSON.stringify(payload));
+    const signed = `${header}.${encodedPayload}`;
     const signature = createSign("RSA-SHA256")
       .update(signed)
       .sign(this.#privateKey)
@@ -75,7 +130,7 @@ class MockOidcProvider {
         authorization_endpoint: `${ISSUER}/protocol/openid-connect/auth`,
         token_endpoint: `${ISSUER}/protocol/openid-connect/token`,
         userinfo_endpoint: `${ISSUER}/protocol/openid-connect/userinfo`,
-        jwks_uri: `${ISSUER}/protocol/openid-connect/certs`,
+        ...(this.omitJwks ? {} : { jwks_uri: `${ISSUER}/protocol/openid-connect/certs` }),
         end_session_endpoint: `${ISSUER}/protocol/openid-connect/logout`,
         response_types_supported: ["code"],
         subject_types_supported: ["public"],
@@ -85,7 +140,7 @@ class MockOidcProvider {
       });
     }
     if (url.pathname.endsWith("/protocol/openid-connect/certs")) {
-      return this.#json({ keys: [this.publicJwk] });
+      return this.#json({ keys: this.emptyJwks ? [] : [this.publicJwk] });
     }
     if (url.pathname.endsWith("/protocol/openid-connect/token")) {
       const body = init?.body;
@@ -93,12 +148,27 @@ class MockOidcProvider {
         typeof body === "string" ? body : body instanceof URLSearchParams ? body : "",
       );
       if (parameters.get("grant_type") === "refresh_token") {
+        const refreshToken = parameters.get("refresh_token") ?? "";
+        const profile = this.#refreshTokenProfiles.get(refreshToken);
+        if (profile === undefined || this.#consumedRefreshTokens.has(refreshToken)) {
+          return this.#json({ error: "invalid_grant" }, 400);
+        }
+        this.#consumedRefreshTokens.add(refreshToken);
         this.refreshCalls += 1;
+        if (this.refreshDelayMilliseconds > 0) {
+          await new Promise((resolve) => setTimeout(resolve, this.refreshDelayMilliseconds));
+        }
+        const rotatedRefreshToken = `refresh-rotated-${this.refreshCalls}`;
+        this.#refreshTokenProfiles.set(rotatedRefreshToken, profile);
+        const refreshSubject = this.refreshIdTokenSubjects.get(profile.username);
         return this.#json({
-          access_token: `access-refreshed-${this.refreshCalls}`,
-          refresh_token: `refresh-rotated-${this.refreshCalls}`,
+          access_token: this.signAccessToken(profile),
+          refresh_token: rotatedRefreshToken,
           token_type: "Bearer",
           expires_in: 3600,
+          ...(refreshSubject === undefined
+            ? {}
+            : { id_token: this.signIdToken({ ...profile, subject: refreshSubject }, "") }),
         });
       }
       const code = parameters.get("code") ?? "";
@@ -106,25 +176,33 @@ class MockOidcProvider {
       if (profile === undefined) return this.#json({ error: "invalid_grant" }, 400);
       // openid-client sends nonce in the authorization request; tests use one profile per flow.
       const idToken = this.signIdToken(profile, this.lastNonce ?? "");
+      const refreshToken = `refresh-${profile.username}-${++this.#loginTokenSequence}`;
+      this.#refreshTokenProfiles.set(refreshToken, profile);
       return this.#json({
-        access_token: `access-${profile.username}`,
-        refresh_token: `refresh-${profile.username}`,
+        access_token: this.signAccessToken(profile),
+        refresh_token: refreshToken,
         token_type: "Bearer",
         expires_in: profile.expiresIn,
         id_token: idToken,
       });
     }
     if (url.pathname.endsWith("/protocol/openid-connect/userinfo")) {
+      const headers = input instanceof Request ? input.headers : new Headers(init?.headers);
+      const token = headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+      const subject = token === undefined ? undefined : this.#accessTokenSubjects.get(token);
+      const profile = [...this.profiles.values()].find(
+        (candidate) => candidate.subject === subject,
+      );
+      if (profile === undefined) return this.#json({ error: "invalid_token" }, 401);
       return this.#json({
-        sub: this.lastSubject ?? "subject-owner",
-        realm: { groups: this.userInfoGroups },
+        sub: profile.subject,
+        realm: { groups: this.userInfoGroups ?? profile.groups },
       });
     }
     throw new Error(`unexpected OIDC fetch ${url.href}`);
   }
 
   lastNonce: string | undefined;
-  lastSubject: string | undefined;
 
   #json(value: unknown, status = 200): Response {
     return new Response(JSON.stringify(value), {
@@ -165,11 +243,15 @@ function setCookie(response: { headers: Record<string, unknown> }, name: string)
   return match.split(";", 1)[0] ?? match;
 }
 
-async function signIn(
+async function attemptLogin(
   app: FastifyInstance,
   provider: MockOidcProvider,
   code: string,
-): Promise<string> {
+  options: { tamperState?: boolean } = {},
+): Promise<{
+  login: Awaited<ReturnType<FastifyInstance["inject"]>>;
+  callback: Awaited<ReturnType<FastifyInstance["inject"]>>;
+}> {
   const profile = provider.profiles.get(code);
   if (profile === undefined) throw new Error(`missing profile ${code}`);
   const login = await app.inject({
@@ -186,18 +268,29 @@ async function signIn(
   if (state === null || nonce === null)
     throw new Error("authorization request omitted state or nonce");
   provider.lastNonce = nonce;
-  provider.lastSubject = profile.subject;
   const transactionCookie = setCookie(login, "ytw_oidc");
   const callback = await app.inject({
     method: "GET",
-    url: `/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+    url: `/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(
+      options.tamperState ? `${state}-tampered` : state,
+    )}`,
     headers: { host: HOST, cookie: transactionCookie },
   });
+  return { login, callback };
+}
+
+async function signIn(
+  app: FastifyInstance,
+  provider: MockOidcProvider,
+  code: string,
+): Promise<string> {
+  const { login, callback } = await attemptLogin(app, provider, code);
   expect(callback.statusCode).toBe(303);
+  expect(cookieLine(login, "ytw_oidc")).toContain("Secure");
   const sessionCookie = cookieLine(callback, "ytw_session");
   expect(sessionCookie).toContain("HttpOnly");
   expect(sessionCookie).toContain("SameSite=Lax");
-  expect(sessionCookie).not.toContain("Secure");
+  expect(sessionCookie).toContain("Secure");
   expect(callback.headers.location).toBe("/ideas");
   return setCookie(callback, "ytw_session");
 }
@@ -295,6 +388,218 @@ describe("web BFF OIDC and sessions", () => {
     expect(rows.rows[0]?.count).toBe(0);
   });
 
+  it("rejects hostile callback tokens and state before creating a user or session", async () => {
+    const attacks: Array<{
+      code: string;
+      setup: (username: string) => void;
+      tamperState?: boolean;
+    }> = [
+      { code: "bad-state", setup: () => undefined, tamperState: true },
+      {
+        code: "bad-id-signature",
+        setup: (username) => provider.invalidIdTokenSignatures.add(username),
+      },
+      {
+        code: "bad-id-nonce",
+        setup: (username) => provider.idTokenOverrides.set(username, { nonce: "wrong-nonce" }),
+      },
+      {
+        code: "bad-id-issuer",
+        setup: (username) => provider.idTokenOverrides.set(username, { issuer: `${ISSUER}/evil` }),
+      },
+      {
+        code: "bad-id-audience",
+        setup: (username) =>
+          provider.idTokenOverrides.set(username, { audience: "another-client" }),
+      },
+      {
+        code: "expired-id-token",
+        setup: (username) =>
+          provider.idTokenOverrides.set(username, {
+            expiresAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+      },
+      {
+        code: "opaque-access-token",
+        setup: (username) => provider.accessTokenOverrides.set(username, "not-a-jwt"),
+      },
+      {
+        code: "forged-access-signature",
+        setup: (username) => provider.invalidAccessTokenSignatures.add(username),
+      },
+      {
+        code: "bad-access-issuer",
+        setup: (username) =>
+          provider.accessTokenOverrides.set(username, { issuer: `${ISSUER}/evil` }),
+      },
+      {
+        code: "bad-access-audience",
+        setup: (username) =>
+          provider.accessTokenOverrides.set(username, { audience: "another-client" }),
+      },
+      {
+        code: "expired-access-token",
+        setup: (username) =>
+          provider.accessTokenOverrides.set(username, {
+            expiresAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+      },
+      {
+        code: "wrong-access-subject",
+        setup: (username) =>
+          provider.accessTokenOverrides.set(username, { subject: "someone-else" }),
+      },
+    ];
+
+    for (const attack of attacks) {
+      const profile: IdentityProfile = {
+        subject: `subject-${attack.code}`,
+        username: attack.code,
+        groups: [REQUIRED_GROUP],
+        expiresIn: 3600,
+      };
+      provider.profiles.set(attack.code, profile);
+      attack.setup(profile.username);
+      const { callback } = await attemptLogin(app, provider, attack.code, {
+        tamperState: attack.tamperState,
+      });
+      expect(callback.statusCode).toBe(401);
+      expect(callback.headers["set-cookie"]?.toString()).not.toContain("ytw_session=");
+      await expectNoIdentity(profile.subject);
+      provider.idTokenOverrides.delete(profile.username);
+      provider.accessTokenOverrides.delete(profile.username);
+      provider.invalidIdTokenSignatures.delete(profile.username);
+      provider.invalidAccessTokenSignatures.delete(profile.username);
+    }
+  });
+
+  it("rejects signed login when the discovered issuer has an empty JWKS", async () => {
+    const noKeysProvider = new MockOidcProvider();
+    noKeysProvider.emptyJwks = true;
+    noKeysProvider.profiles.set("no-jwks", {
+      subject: "subject-no-jwks",
+      username: "no-jwks",
+      groups: [REQUIRED_GROUP],
+      expiresIn: 3600,
+    });
+    const noKeysApp = await buildApp(env(db.url("ytw_web")), {
+      pool: webPool,
+      oidcFetch: noKeysProvider.fetch,
+      routeDirectory: ROUTES,
+    });
+    try {
+      const { callback } = await attemptLogin(noKeysApp, noKeysProvider, "no-jwks");
+      expect(callback.statusCode).toBe(401);
+      await expectNoIdentity("subject-no-jwks");
+    } finally {
+      await noKeysApp.close();
+    }
+  });
+
+  it("retries OIDC discovery after an initial transient failure", async () => {
+    let discoveryCalls = 0;
+    const retryingFetch: typeof fetch = async (input, init) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(input.toString());
+      if (url.pathname.endsWith("/.well-known/openid-configuration")) {
+        discoveryCalls += 1;
+        if (discoveryCalls === 1) {
+          return new Response("temporarily unavailable", { status: 503 });
+        }
+      }
+      return provider.fetch(input, init);
+    };
+    const client = new OidcClient(env(db.url("ytw_web")), retryingFetch);
+    const parameters = {
+      client_id: CLIENT_ID,
+      redirect_uri: `${ORIGIN}/auth/callback`,
+      response_type: "code",
+    };
+    await expect(client.authorizationUrl(parameters)).rejects.toBeInstanceOf(Error);
+    await expect(client.authorizationUrl(parameters)).resolves.toBeInstanceOf(URL);
+    expect(discoveryCalls).toBe(2);
+  });
+
+  it("serializes simultaneous refreshes and persists the rotated single-use refresh token", async () => {
+    provider.profiles.set("refresh-race", {
+      subject: "subject-refresh-race",
+      username: "refresh-race",
+      groups: [REQUIRED_GROUP],
+      expiresIn: 0,
+    });
+    const cookie = await signIn(app, provider, "refresh-race");
+    const expectedUser = await userByUsername("refresh-race");
+    const initialRefreshCalls = provider.refreshCalls;
+    provider.refreshDelayMilliseconds = 40;
+    let firstResponses: Awaited<ReturnType<typeof loginRequest>>[];
+    try {
+      firstResponses = await Promise.all([loginRequest(app, cookie), loginRequest(app, cookie)]);
+    } finally {
+      provider.refreshDelayMilliseconds = 0;
+    }
+    expect(provider.refreshCalls - initialRefreshCalls).toBe(1);
+    expect(firstResponses.map((response) => response.statusCode)).toEqual([200, 200]);
+    expect(firstResponses.map((response) => response.json().user.id)).toEqual([
+      expectedUser.id,
+      expectedUser.id,
+    ]);
+
+    const sessionId = cookie.slice("ytw_session=".length);
+    const stored = await db.admin.query<{ refresh_token_encrypted: Buffer }>(
+      "SELECT refresh_token_encrypted FROM ytw_private.web_sessions WHERE id = $1::uuid",
+      [sessionId],
+    );
+    const encrypted = stored.rows[0]?.refresh_token_encrypted;
+    if (encrypted === undefined) throw new Error("rotated session ciphertext missing");
+    const secret = decryptSessionData(SESSION_SECRET, encrypted);
+    expect(secret.refreshToken).toMatch(/^refresh-rotated-/);
+
+    await db.admin.query(
+      "UPDATE ytw_private.web_sessions SET refresh_token_encrypted = $2 WHERE id = $1::uuid",
+      [
+        sessionId,
+        encryptSessionData(SESSION_SECRET, { ...secret, accessTokenExpiresAt: Date.now() - 1000 }),
+      ],
+    );
+    const rotatedRefreshCalls = provider.refreshCalls;
+    const again = await loginRequest(app, cookie);
+    expect(again.statusCode).toBe(200);
+    expect(again.json().user.id).toBe(expectedUser.id);
+    expect(provider.refreshCalls - rotatedRefreshCalls).toBe(1);
+  });
+
+  it("does not change the session identity when refresh returns another subject", async () => {
+    provider.profiles.set("refresh-subject-change", {
+      subject: "subject-refresh-subject-change",
+      username: "refresh-subject-change",
+      groups: [REQUIRED_GROUP],
+      expiresIn: 0,
+    });
+    provider.refreshIdTokenSubjects.set("refresh-subject-change", "subject-attacker");
+    const cookie = await signIn(app, provider, "refresh-subject-change");
+    const expectedUser = await userByUsername("refresh-subject-change");
+    const response = await loginRequest(app, cookie);
+    expect(response.statusCode).toBe(401);
+    expect((await userByUsername("refresh-subject-change")).id).toBe(expectedUser.id);
+    await expectNoIdentity("subject-attacker");
+    const session = await db.admin.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM ytw_private.web_sessions WHERE id = $1::uuid",
+      [cookie.slice("ytw_session=".length)],
+    );
+    expect(session.rows[0]?.count).toBe(0);
+    provider.refreshIdTokenSubjects.delete("refresh-subject-change");
+  });
+
+  it("clears a malformed session cookie and still starts login", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/login",
+      headers: { host: HOST, cookie: "ytw_session=not-a-uuid" },
+    });
+    expect(response.statusCode).toBe(302);
+    expect(response.headers["set-cookie"]?.toString()).toContain("ytw_session=; Path=/");
+    expect(response.headers["set-cookie"]?.toString()).toContain("Max-Age=0");
+  });
+
   it("rejects CSRF, requires same-origin POSTs, and performs RP logout", async () => {
     const cookie = await signIn(app, provider, "owner");
     const me = await loginRequest(app, cookie);
@@ -355,7 +660,7 @@ describe("web BFF OIDC and sessions", () => {
       [cookie.slice("ytw_session=".length)],
     );
     expect(session.rows[0]?.count).toBe(0);
-    provider.userInfoGroups = [REQUIRED_GROUP];
+    provider.userInfoGroups = undefined;
   });
 
   it("expires idle and absolute sessions and checks permissions against current DB levels", async () => {
@@ -439,20 +744,19 @@ async function userByUsername(username: string): Promise<UserAccess> {
   return access;
 }
 
+async function expectNoIdentity(subject: string): Promise<void> {
+  const result = await db.admin.query<{ users: number; sessions: number }>(
+    `SELECT
+       (SELECT count(*)::int FROM users WHERE oidc_sub = $1) AS users,
+       (SELECT count(*)::int
+          FROM ytw_private.web_sessions AS sessions
+          JOIN users ON users.id = sessions.user_id
+         WHERE users.oidc_sub = $1) AS sessions`,
+    [subject],
+  );
+  expect(result.rows[0]).toEqual({ users: 0, sessions: 0 });
+}
+
 async function signInDenied(server: FastifyInstance, oidc: MockOidcProvider, code: string) {
-  const profile = oidc.profiles.get(code);
-  if (profile === undefined) throw new Error(`missing profile ${code}`);
-  const login = await server.inject({ method: "GET", url: "/auth/login", headers: { host: HOST } });
-  const authorizationUrl = new URL(login.headers.location as string);
-  const state = authorizationUrl.searchParams.get("state");
-  const nonce = authorizationUrl.searchParams.get("nonce");
-  if (state === null || nonce === null)
-    throw new Error("authorization request omitted state or nonce");
-  oidc.lastNonce = nonce;
-  oidc.lastSubject = profile.subject;
-  return server.inject({
-    method: "GET",
-    url: `/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
-    headers: { host: HOST, cookie: setCookie(login, "ytw_oidc") },
-  });
+  return (await attemptLogin(server, oidc, code)).callback;
 }

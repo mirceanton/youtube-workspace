@@ -19,6 +19,7 @@
     "@ytw/shared": "workspace:*",
     "@types/pg": "^8.23.0",
     "fastify": "catalog:",
+    "jose": "^6.2.12",
     "openid-client": "^6.8.8",
     "pg": "^8.23.0",
     "zod": "catalog:"
