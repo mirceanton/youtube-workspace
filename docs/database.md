@@ -926,6 +926,14 @@ cannot, like `search_all`.
   transaction (`now()`), so an event of a transaction that started before the cursor's position and
   commits after a running walk has passed that position is missed by that walk (a new walk sees it);
   if the walk has not reached the position yet, the event simply appears in its place (tested).
+- **Live-poll checkpoint**: migration `0200_event_transaction_xid.sql` adds `transaction_xid xid8`,
+  with xid 2 as the baseline for preexisting immutable audit rows and
+  `pg_current_xact_id()` as the default for new rows. The web poll compares
+  `pg_visible_in_snapshot(transaction_xid, ...)` between a saved snapshot and a fixed snapshot
+  for the current page walk. PostgreSQL 16 supports these built-in snapshot functions and full xids;
+  application roles need only their existing `SELECT` on `events` and default access to
+  the `pg_catalog` snapshot functions. A pinned through-snapshot keeps pages consistent, while
+  newly committed or formerly active transactions are found on the next poll regardless of event age.
 - **Limit**: 1 to 100 (`EVENTS_LIMIT_MAX`), NULL means 50 (`EVENTS_LIMIT_DEFAULT`); a payload can be
   64 KiB, so the page is capped.
 - **Rights**: `SECURITY INVOKER`, `STABLE`, `plan_cache_mode = force_custom_plan` (a generic plan for
