@@ -23,6 +23,7 @@ import { latestValue, metricFields, sortVideos } from "./sorting.ts";
 import type { MetricField, SortField, SortOrder } from "./sorting.ts";
 
 const percentageFields = new Set<MetricField>(["ctr", "avg_view_pct"]);
+const VIDEO_LIST_LIMIT = 1000;
 
 function integer(value: string): bigint | null {
   return /^-?\d+$/.test(value) ? BigInt(value) : null;
@@ -109,8 +110,8 @@ export function Component() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [createOpen, setCreateOpen] = useState(false);
   const query = useQuery({
-    queryKey: videosQueryKey.list(500),
-    queryFn: ({ signal }) => fetchVideos(500, signal),
+    queryKey: videosQueryKey.list(VIDEO_LIST_LIMIT),
+    queryFn: ({ signal }) => fetchVideos(VIDEO_LIST_LIMIT, signal),
   });
   const videos = useMemo(
     () => sortVideos(query.data?.videos ?? [], sortBy, sortOrder),
@@ -151,6 +152,11 @@ export function Component() {
       {query.isError && query.data ? (
         <Alert tone="warn" title="Showing the last loaded list">
           {describeError(query.error)}
+        </Alert>
+      ) : null}
+      {videos.length === VIDEO_LIST_LIMIT ? (
+        <Alert tone="info" title="Video list reached its limit">
+          Showing the first 1,000 videos. Additional videos may be hidden.
         </Alert>
       ) : null}
       {videos.length === 0 ? (
