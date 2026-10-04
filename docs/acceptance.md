@@ -107,14 +107,14 @@ This document provides the final acceptance quality assurance and requirements-t
 
 ---
 
-## 6. Traceability Matrix: PRD Section 8 (Mobile & PWA - Deferred)
+## 6. Traceability Matrix: PRD Section 8 (Mobile & PWA - Phase 4 Outstanding)
 
 | Requirement | Scope | Status | Notes |
 | --- | --- | --- | --- |
-| PWA manifest (`display: standalone`, icons, theme) | Phase 4 | **DEFERRED** | Deferred with Web UI |
-| Service worker precaching app shell | Phase 4 | **DEFERRED** | Deferred with Web UI |
-| Read-through offline script caching | Phase 4 | **DEFERRED** | Deferred with Web UI |
-| Touch targets >= 44 px, WCAG 2.1 AA accessibility | Phase 4 | **DEFERRED** | Deferred with Web UI |
+| PWA manifest (`display: standalone`, icons, theme) | Phase 4 | **OUTSTANDING** | PWA work remains in Phase 4 (T50–T51); the Phase 3 Web UI is implemented |
+| Service worker precaching app shell | Phase 4 | **OUTSTANDING** | Service-worker and offline work remains in Phase 4 (T50–T51) |
+| Read-through offline script caching | Phase 4 | **OUTSTANDING** | Offline work remains in Phase 4 (T50–T51) |
+| Touch targets >= 44 px, WCAG 2.1 AA accessibility | Phase 4 | **OUTSTANDING** | Mobile and accessibility gate remains Phase 4 (T51) |
 
 ---
 

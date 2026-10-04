@@ -330,13 +330,16 @@ Mutations need the mock's CSRF token, exactly like the real server (the API clie
 Switch users with `?mock_persona=owner|collaborator|reader|newcomer|anonymous`.
 Production builds never load the dev layer, so `mock.ts` files cost nothing there.
 
-## Not done here / hand-offs
+## Current implementation and remaining work
 
-- Against the real web server (T40): the shell was built and tested against the mock of the contract
-  in `packages/shared/src/api/session.ts`; run it against T40 once it lands (login redirect, CSRF
-  header name, `/api/me` body).
-- `/api/notes` routes are T41b; `NotesPanel` is tested against the mock of that contract.
-- PWA (T50): the "new version available" page calls `browser.reload()` (`lib/navigation.ts`); T50
-  should make a new service-worker build take over before that reload so it actually fetches the new
-  build. The offline banner and `WriteGuard` are in place; caching is T50.
-- Pull-to-refresh, per-screen mobile polish and the axe/Playwright sweep over every screen are T51.
+- The original shell work used a mock of the session contract in `packages/shared/src/api/session.ts`.
+  The Phase 3 app is now integrated with the T40 web server: its login redirect, CSRF header and
+  `/api/me` response are defined by that shared contract and covered by the web-server and browser
+  tests. The `/api/notes` routes from T41b are also implemented; `NotesPanel` remains covered by its
+  mock-contract tests.
+- Phase 4 PWA work (T50) remains outstanding. The "new version available" page calls
+  `browser.reload()` (`lib/navigation.ts`); service-worker activation and caching still need to be
+  completed so the reload fetches the new build. The offline banner and `WriteGuard` are already in
+  place.
+- Pull-to-refresh, per-screen mobile polish and the axe/Playwright sweep over every screen remain
+  Phase 4 work under T51.
