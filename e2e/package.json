@@ -6,6 +6,15 @@
   "scripts": {
     "build": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "tsx --conditions=@ytw/source run.ts"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@playwright/test": "1.63.0",
+    "@types/pg": "^8.23.0",
+    "@ytw/db": "workspace:*",
+    "jose": "^6.2.12",
+    "pg": "^8.23.0"
   }
 }

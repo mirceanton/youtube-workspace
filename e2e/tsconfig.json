@@ -4,5 +4,6 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "flows", "run.ts", "playwright.config.ts"],
+  "references": [{ "path": "../packages/db" }]
 }
