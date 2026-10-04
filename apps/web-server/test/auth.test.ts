@@ -6,7 +6,11 @@ import { createTestDb, type TestDb } from "@ytw/db/testing";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { OidcClient } from "../src/core/oidc.js";
-import { decryptSessionData, encryptSessionData } from "../src/core/session-crypto.js";
+import {
+  decryptSessionData,
+  encryptSessionData,
+  type SessionSecretData,
+} from "../src/core/session-crypto.js";
 import type { Env } from "../src/env.js";
 import { loadEnv } from "../src/env.js";
 
@@ -36,6 +40,11 @@ interface IdTokenOverride extends TokenClaimsOverride {
   nonce?: string;
 }
 
+interface RefreshIdTokenOverride {
+  subject?: string;
+  nonce?: string | null;
+}
+
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
@@ -48,7 +57,7 @@ class MockOidcProvider {
   readonly idTokenOverrides = new Map<string, IdTokenOverride>();
   readonly invalidIdTokenSignatures = new Set<string>();
   readonly invalidAccessTokenSignatures = new Set<string>();
-  readonly refreshIdTokenSubjects = new Map<string, string>();
+  readonly refreshIdTokenOverrides = new Map<string, RefreshIdTokenOverride>();
   userInfoGroups: string[] | undefined;
   omitJwks = false;
   emptyJwks = false;
@@ -68,15 +77,16 @@ class MockOidcProvider {
     this.fetch = this.#fetch.bind(this);
   }
 
-  signIdToken(profile: IdentityProfile, nonce: string): string {
+  signIdToken(profile: IdentityProfile, nonce: string | undefined): string {
     const override = this.idTokenOverrides.get(profile.username);
+    const nonceClaim = override?.nonce ?? nonce;
     const token = this.#signJwt({
       iss: override?.issuer ?? ISSUER,
       aud: override?.audience ?? CLIENT_ID,
       sub: override?.subject ?? profile.subject,
       iat: Math.floor(Date.now() / 1000),
       exp: override?.expiresAt ?? Math.floor(Date.now() / 1000) + 3600,
-      nonce: override?.nonce ?? nonce,
+      ...(nonceClaim === undefined ? {} : { nonce: nonceClaim }),
       preferred_username: profile.username,
       name: profile.username,
       email: `${profile.username}@example.test`,
@@ -160,15 +170,20 @@ class MockOidcProvider {
         }
         const rotatedRefreshToken = `refresh-rotated-${this.refreshCalls}`;
         this.#refreshTokenProfiles.set(rotatedRefreshToken, profile);
-        const refreshSubject = this.refreshIdTokenSubjects.get(profile.username);
+        const refreshIdToken = this.refreshIdTokenOverrides.get(profile.username);
         return this.#json({
           access_token: this.signAccessToken(profile),
           refresh_token: rotatedRefreshToken,
           token_type: "Bearer",
           expires_in: 3600,
-          ...(refreshSubject === undefined
+          ...(refreshIdToken === undefined
             ? {}
-            : { id_token: this.signIdToken({ ...profile, subject: refreshSubject }, "") }),
+            : {
+                id_token: this.signIdToken(
+                  { ...profile, subject: refreshIdToken.subject ?? profile.subject },
+                  refreshIdToken.nonce ?? undefined,
+                ),
+              }),
         });
       }
       const code = parameters.get("code") ?? "";
@@ -297,6 +312,31 @@ async function signIn(
 
 async function loginRequest(app: FastifyInstance, sessionCookie: string, url = "/api/me") {
   return app.inject({ method: "GET", url, headers: { host: HOST, cookie: sessionCookie } });
+}
+
+async function readSessionSecret(cookie: string): Promise<SessionSecretData> {
+  const result = await db.admin.query<{ refresh_token_encrypted: Buffer | null }>(
+    "SELECT refresh_token_encrypted FROM ytw_private.web_sessions WHERE id = $1::uuid",
+    [cookie.slice("ytw_session=".length)],
+  );
+  const encrypted = result.rows[0]?.refresh_token_encrypted;
+  if (encrypted === undefined || encrypted === null) throw new Error("session ciphertext missing");
+  return decryptSessionData(SESSION_SECRET, encrypted);
+}
+
+async function writeSessionSecret(cookie: string, data: SessionSecretData): Promise<void> {
+  await db.admin.query(
+    "UPDATE ytw_private.web_sessions SET refresh_token_encrypted = $2 WHERE id = $1::uuid",
+    [cookie.slice("ytw_session=".length), encryptSessionData(SESSION_SECRET, data)],
+  );
+}
+
+async function countSession(cookie: string): Promise<number> {
+  const result = await db.admin.query<{ count: number }>(
+    "SELECT count(*)::int AS count FROM ytw_private.web_sessions WHERE id = $1::uuid",
+    [cookie.slice("ytw_session=".length)],
+  );
+  return result.rows[0]?.count ?? 0;
 }
 
 let db: TestDb;
@@ -574,7 +614,9 @@ describe("web BFF OIDC and sessions", () => {
       groups: [REQUIRED_GROUP],
       expiresIn: 0,
     });
-    provider.refreshIdTokenSubjects.set("refresh-subject-change", "subject-attacker");
+    provider.refreshIdTokenOverrides.set("refresh-subject-change", {
+      subject: "subject-attacker",
+    });
     const cookie = await signIn(app, provider, "refresh-subject-change");
     const expectedUser = await userByUsername("refresh-subject-change");
     const response = await loginRequest(app, cookie);
@@ -586,7 +628,79 @@ describe("web BFF OIDC and sessions", () => {
       [cookie.slice("ytw_session=".length)],
     );
     expect(session.rows[0]?.count).toBe(0);
-    provider.refreshIdTokenSubjects.delete("refresh-subject-change");
+    provider.refreshIdTokenOverrides.delete("refresh-subject-change");
+  });
+
+  it("accepts an omitted or matching refresh nonce and rejects a mismatched nonce", async () => {
+    const cases = [
+      { code: "refresh-nonce-omitted", nonce: null, expectedStatus: 200 },
+      { code: "refresh-nonce-matching", nonce: "matching", expectedStatus: 200 },
+      { code: "refresh-nonce-wrong", nonce: "wrong", expectedStatus: 401 },
+    ] as const;
+
+    for (const testCase of cases) {
+      const profile: IdentityProfile = {
+        subject: `subject-${testCase.code}`,
+        username: testCase.code,
+        groups: [REQUIRED_GROUP],
+        expiresIn: 0,
+      };
+      provider.profiles.set(testCase.code, profile);
+      const cookie = await signIn(app, provider, testCase.code);
+      const original = await readSessionSecret(cookie);
+      if (typeof original.nonce !== "string") throw new Error("original OIDC nonce was not stored");
+      const returnedNonce =
+        testCase.nonce === "matching"
+          ? original.nonce
+          : testCase.nonce === "wrong"
+            ? `${original.nonce}-wrong`
+            : null;
+      provider.refreshIdTokenOverrides.set(profile.username, { nonce: returnedNonce });
+
+      const response = await loginRequest(app, cookie);
+      expect(response.statusCode).toBe(testCase.expectedStatus);
+      const sessionCount = await countSession(cookie);
+      expect(sessionCount).toBe(testCase.expectedStatus === 200 ? 1 : 0);
+      const setCookieHeader = response.headers["set-cookie"]?.toString() ?? "";
+      const shouldClearSession = testCase.expectedStatus === 401;
+      expect(setCookieHeader.includes("ytw_session=; Path=/")).toBe(shouldClearSession);
+      expect(setCookieHeader.includes("Max-Age=0")).toBe(shouldClearSession);
+      expect(setCookieHeader.includes("Secure")).toBe(shouldClearSession);
+      provider.refreshIdTokenOverrides.delete(profile.username);
+    }
+  });
+
+  it("keeps legacy nonce-less sessions only when a refresh ID token also omits nonce", async () => {
+    for (const testCase of [
+      { code: "legacy-refresh-no-nonce", returnedNonce: null, expectedStatus: 200 },
+      {
+        code: "legacy-refresh-unverifiable-nonce",
+        returnedNonce: "unverifiable",
+        expectedStatus: 401,
+      },
+    ]) {
+      const profile: IdentityProfile = {
+        subject: `subject-${testCase.code}`,
+        username: testCase.code,
+        groups: [REQUIRED_GROUP],
+        expiresIn: 0,
+      };
+      provider.profiles.set(testCase.code, profile);
+      const cookie = await signIn(app, provider, testCase.code);
+      const legacy = await readSessionSecret(cookie);
+      delete legacy.nonce;
+      await writeSessionSecret(cookie, legacy);
+      provider.refreshIdTokenOverrides.set(profile.username, { nonce: testCase.returnedNonce });
+
+      const response = await loginRequest(app, cookie);
+      expect(response.statusCode).toBe(testCase.expectedStatus);
+      expect(await countSession(cookie)).toBe(testCase.expectedStatus === 200 ? 1 : 0);
+      const setCookieHeader = response.headers["set-cookie"]?.toString() ?? "";
+      const shouldClearSession = testCase.expectedStatus === 401;
+      expect(setCookieHeader.includes("ytw_session=; Path=/")).toBe(shouldClearSession);
+      expect(setCookieHeader.includes("Max-Age=0")).toBe(shouldClearSession);
+      provider.refreshIdTokenOverrides.delete(profile.username);
+    }
   });
 
   it("clears a malformed session cookie and still starts login", async () => {

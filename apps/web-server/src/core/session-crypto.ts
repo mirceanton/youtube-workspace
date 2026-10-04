@@ -10,6 +10,8 @@ export interface SessionSecretData {
   issuer: string;
   subject: string;
   username: string;
+  /** Absent only for sessions encrypted before nonce retention was added. */
+  nonce?: string;
   refreshToken: string | null;
   accessTokenExpiresAt: number;
   returnTo: string;
@@ -67,6 +69,7 @@ export function decryptSessionData(secret: string, value: Uint8Array): SessionSe
     typeof data.issuer !== "string" ||
     typeof data.subject !== "string" ||
     typeof data.username !== "string" ||
+    (data.nonce !== undefined && typeof data.nonce !== "string") ||
     (data.refreshToken !== null && typeof data.refreshToken !== "string") ||
     !Number.isSafeInteger(data.accessTokenExpiresAt) ||
     typeof data.returnTo !== "string"
