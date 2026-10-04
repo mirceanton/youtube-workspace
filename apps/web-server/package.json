@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@ytw/db": "workspace:*",
+    "@ytw/policy": "workspace:*",
     "@ytw/shared": "workspace:*",
     "fastify": "catalog:",
     "zod": "catalog:"
