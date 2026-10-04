@@ -56,6 +56,16 @@ export function Component() {
     },
   });
 
+  function openDemotionDialog() {
+    admin.reset();
+    setConfirmDemote(true);
+  }
+
+  function closeDemotionDialog() {
+    setConfirmDemote(false);
+    admin.reset();
+  }
+
   if (!session.user.isAdmin) {
     return (
       <ErrorState title="Admin access required" description="Only admins can manage user access." />
@@ -68,7 +78,7 @@ export function Component() {
       <ErrorState title="User not found" description="This user may not have signed in yet." />
     );
 
-  const mutationError = permission.error ?? admin.error;
+  const mutationError = permission.error ?? (confirmDemote ? null : admin.error);
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-5">
       <PageHeader
@@ -77,7 +87,7 @@ export function Component() {
         description={user.email ? `${user.username} · ${user.email}` : user.username}
         actions={
           user.is_admin ? (
-            <Button variant="danger" onClick={() => setConfirmDemote(true)}>
+            <Button variant="danger" onClick={openDemotionDialog}>
               Demote admin
             </Button>
           ) : (
@@ -164,12 +174,12 @@ export function Component() {
       </Card>
       <Dialog
         open={confirmDemote}
-        onClose={() => setConfirmDemote(false)}
+        onClose={closeDemotionDialog}
         title="Demote this admin?"
         description="The database prevents demoting the last active admin. By default, this person loses all access and their tokens become ineffective."
         footer={
           <>
-            <Button onClick={() => setConfirmDemote(false)}>Cancel</Button>
+            <Button onClick={closeDemotionDialog}>Cancel</Button>
             <Button
               variant="danger"
               busy={admin.isPending}
@@ -180,6 +190,11 @@ export function Component() {
           </>
         }
       >
+        {admin.error ? (
+          <Alert tone="danger" title="Access change failed">
+            {admin.error.message}
+          </Alert>
+        ) : null}
         <label className="flex min-h-11 items-center gap-3 text-sm">
           <input
             type="checkbox"

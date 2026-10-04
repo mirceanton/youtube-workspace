@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { setCsrfToken } from "@/lib/csrf.ts";
 import { Component as SettingsPage } from "@/features/settings/SettingsPage.tsx";
 import { sessionWith } from "../../helpers/render.tsx";
-import { renderWithSession } from "../../helpers/render.tsx";
+import { createTestQueryClient, renderWithSession } from "../../helpers/render.tsx";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const USER_ID = "b3f5ddf1-8a0d-4ed1-9d61-283c6f90a450";
@@ -83,7 +83,11 @@ describe("SettingsPage", () => {
     );
     setCsrfToken("csrf-test-value");
     const user = userEvent.setup();
-    renderWithSession(<SettingsPage />, { session: sessionWith({ scripts: "read" }) });
+    const client = createTestQueryClient();
+    renderWithSession(<SettingsPage />, {
+      client,
+      session: sessionWith({ scripts: "read" }),
+    });
 
     await screen.findByText("Script Reader");
     await user.click(screen.getByRole("button", { name: "Create token" }));
@@ -125,6 +129,19 @@ describe("SettingsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "I saved it" }));
     await waitFor(() => expect(screen.queryByText(SECRET)).not.toBeInTheDocument());
+    await waitFor(() => {
+      const mutations = client.getMutationCache().getAll();
+      expect(
+        mutations.some(
+          (mutation) =>
+            mutation.options.mutationKey?.[0] === "settings" &&
+            mutation.options.mutationKey?.[1] === "createToken",
+        ),
+      ).toBe(false);
+      expect(JSON.stringify(mutations.map((mutation) => mutation.state.data))).not.toContain(
+        SECRET,
+      );
+    });
     expect(JSON.stringify(requestLog.filter((item) => item.method === "GET"))).not.toContain(
       SECRET,
     );

@@ -88,6 +88,7 @@ function TokenDetail({ tokenId }: { tokenId: string }) {
   });
 
   const rotate = useMutation({
+    mutationKey: ["settings", "rotateToken", tokenId],
     mutationFn: (expiry: string | null) =>
       api.post<IssuedSettingsTokenResponse>(
         `${SETTINGS_TOKENS_PATH}/${tokenId}/rotate`,
@@ -96,6 +97,7 @@ function TokenDetail({ tokenId }: { tokenId: string }) {
         },
         { parse: issuedSettingsTokenResponseSchema },
       ),
+    gcTime: 0,
   });
 
   const revoke = useMutation({
@@ -105,6 +107,16 @@ function TokenDetail({ tokenId }: { tokenId: string }) {
       await queryClient.invalidateQueries({ queryKey: settingsKeys.tokens });
     },
   });
+
+  function openRevokeDialog() {
+    revoke.reset();
+    setConfirmRevoke(true);
+  }
+
+  function closeRevokeDialog() {
+    setConfirmRevoke(false);
+    revoke.reset();
+  }
 
   if (tokens.isPending || profile.isPending) return <LoadingState label="Loading token" />;
   if (tokens.isError)
@@ -147,7 +159,7 @@ function TokenDetail({ tokenId }: { tokenId: string }) {
         back={{ to: "/settings", label: "Settings" }}
         description={`${token.prefix}… · ${describeLevels(token.effective_levels)}`}
       />
-      {save.error || rotate.error || revoke.error ? (
+      {save.error || rotate.error || (revoke.error && !confirmRevoke) ? (
         <Alert tone="danger" title="Token action failed">
           {save.error?.message ?? rotate.error?.message ?? revoke.error?.message}
         </Alert>
@@ -240,7 +252,7 @@ function TokenDetail({ tokenId }: { tokenId: string }) {
             variant="danger"
             disabled={disabled}
             busy={revoke.isPending}
-            onClick={() => setConfirmRevoke(true)}
+            onClick={openRevokeDialog}
           >
             Revoke token
           </Button>
@@ -249,18 +261,24 @@ function TokenDetail({ tokenId }: { tokenId: string }) {
 
       <Dialog
         open={confirmRevoke}
-        onClose={() => setConfirmRevoke(false)}
+        onClose={closeRevokeDialog}
         title="Revoke this token?"
         description="It will stop working immediately and remain in your token history."
         footer={
           <>
-            <Button onClick={() => setConfirmRevoke(false)}>Keep token</Button>
+            <Button onClick={closeRevokeDialog}>Keep token</Button>
             <Button variant="danger" busy={revoke.isPending} onClick={() => revoke.mutate()}>
               Revoke token
             </Button>
           </>
         }
-      />
+      >
+        {revoke.error ? (
+          <Alert tone="danger" title="Token action failed">
+            {revoke.error.message}
+          </Alert>
+        ) : null}
+      </Dialog>
       <Dialog
         open={issued !== null}
         onClose={closeSecret}

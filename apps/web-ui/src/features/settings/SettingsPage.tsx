@@ -69,7 +69,11 @@ function TokenForm({
   const [neverExpires, setNeverExpires] = useState(false);
   const [permissions, setPermissions] = useState<ResourceLevels>(EMPTY_LEVELS);
   const allowed = grantOptions({ isAdmin: profile.is_admin, levels: profile.levels });
-  const mutation = useMutation({ mutationFn: createSettingsToken });
+  const mutation = useMutation({
+    mutationKey: ["settings", "createToken"],
+    mutationFn: createSettingsToken,
+    gcTime: 0,
+  });
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
