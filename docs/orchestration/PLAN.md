@@ -3,15 +3,21 @@
 Source of truth for requirements: [`docs/PRD.md`](../PRD.md). Worker rules: [`PROTOCOL.md`](PROTOCOL.md).
 The orchestrator only dispatches, tracks and unblocks. Workers implement; separate workers review.
 
-## Scope decision (user, 2026-10-02): deliver phases 0-2 now, defer the web app
-Delivered in this round: Phase 0 (foundations), Phase 1 (data layer) and Phase 2 (MCP server) = the backend plus the MCP
+## Original scope decision (user, 2026-10-02): deliver phases 0-2 first, defer the web app
+At the time, this round delivered Phase 0 (foundations), Phase 1 (data layer) and Phase 2 (MCP server) = the backend plus the MCP
 interface, usable by agents without any UI (PRD 10: "agents can collaborate through the database before any UI exists").
-**Deferred until the user asks:** Phase 3 (web BFF, SPA features, OIDC login, settings screens: T40, T41b, T42-T49), Phase 4
+The original plan deferred Phase 3 (web BFF, SPA features, OIDC login, settings screens: T40, T41b, T42-T49) until the user asked, and listed Phase 4
 (PWA and mobile: T50, T51) and the web-related parts of Phase 5 (T60 security review of the web tier, T61 web performance,
-T62 full README). T41 (SPA shell) and T02 (Keycloak realm) are already merged and stay dormant. Because the web app is where
+T62 full README) as deferred. T41 (SPA shell) and T02 (Keycloak realm) had already merged and were dormant then. Because the web app is where
 users and API tokens are normally created, phase 2 gains **T21b (admin CLI)** and **T36 (operator guide)**, and T63 becomes a
-final acceptance check of phases 0-2 only. Also deferred to the web phase: the "disabled user" design gap found in the T14
+final acceptance check of phases 0-2 only. The original plan also deferred the "disabled user" design gap found in the T14
 review (a user removed from the Keycloak group should lose their API tokens too).
+
+This records the original scope decision. Phase 3 was subsequently authorized, implemented, and
+merged in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7); its hosted Keycloak
+acceptance evidence is in [`docs/traceability/phase3.md`](../traceability/phase3.md). Phase 4
+PWA/mobile (T50–T51) and Phase 5 hardening (T60–T63) remain outstanding. The task descriptions below
+preserve the plan as written at the time; they are not current implementation status.
 
 ## 0. Decisions fixed up front (cheap to decide now, expensive to change mid-fleet)
 
@@ -241,10 +247,10 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 **T36 Operator guide for the backend and MCP server** · P2 · sonnet · deps: T35, T21b · Review tier B
 *Owns:* `README.md`, `docs/operations.md`.
 *PRD:* 9 (Quality: README contents), 3 (stack deviation justification), 5.
-*Do:* README with what this is, a mermaid architecture diagram (backend + MCP, web app marked as a later phase), prerequisites, local development (`scripts/pg-local.sh` or docker compose), the configuration table generated with `renderEnvTable` from the MCP server's zod env schema, running migrations (roles, passwords, the superuser bootstrap for non-superuser owners, `queryReadOnly` role notes), starting the MCP server, going from an empty database to a working token with the admin CLI, connecting an agent (client configuration example), the script download/edit/upload recipe, `query_sql` rules, security notes (METRICS_TOKEN, TLS termination in front, rate limits, log redaction), deployment (images from `docs/ci-cd.md`, migrate job command), how to add an object type (link `docs/policy.md`), and the stack-deviation justification (from the ADR). State clearly that the web app is not built yet.
+*Do:* README with what this is, a mermaid architecture diagram (backend + MCP, web app marked as a later phase), prerequisites, local development (`scripts/pg-local.sh` or docker compose), the configuration table generated with `renderEnvTable` from the MCP server's zod env schema, running migrations (roles, passwords, the superuser bootstrap for non-superuser owners, `queryReadOnly` role notes), starting the MCP server, going from an empty database to a working token with the admin CLI, connecting an agent (client configuration example), the script download/edit/upload recipe, `query_sql` rules, security notes (METRICS_TOKEN, TLS termination in front, rate limits, log redaction), deployment (images from `docs/ci-cd.md`, migrate job command), how to add an object type (link `docs/policy.md`), and the stack-deviation justification (from the ADR). Historical instruction from the original Phase 2 scope; current README status is maintained in `README.md`.
 *Done when:* a fresh worker follows the README from a clean clone and reaches a running MCP server, creates a token with the CLI and makes a successful tool call (docs-as-tests); every command in the README was executed.
 
-### Phase 3: web UI + authentication (DEFERRED by user decision)
+### Phase 3: web UI + authentication (completed; original task plan)
 
 **T40 Web BFF: OIDC, sessions, authz, security** · P3 · sonnet · deps: T14, T20, T23 · Review tier A
 *Owns:* `apps/web-server/**` except `src/routes/<feature>/` for features (T41-T47).
@@ -345,7 +351,7 @@ Format: **ID title** · phase · model · deps · review. *Owns* = paths you may
 *Do:* README with setup, one-command local dev, configuration table generated from the zod env schemas, how to create an API token for a new agent, how to add a new object type to the permission matrix (from `docs/policy.md`), architecture diagram (mermaid), MCP agent guide link, deployment notes (images, env, migration job, roles), stack-deviation justification (from the ADR).
 *Done when:* a fresh worker follows the README from a clean clone and reaches a running stack, creates a token and calls the MCP server (docs-as-tests); every command in the README was executed.
 
-**T63 Final acceptance QA (phases 0-2 only; web-related requirements listed as deferred)** · P5 gate · sonnet · deps: T60, T61, T62 · gate
+**T63 Initial acceptance QA (phases 0-2 only; original Phase 2 scope)** · P5 gate · sonnet · deps: T60, T61, T62 · gate
 *Owns:* `docs/acceptance.md`.
 *Do:* independent verification. Traceability matrix of **every** PRD requirement (goals G1-G5, stories, section 4 integrity rules, section 5 tools, section 6 rows, section 7 bullets, section 8, section 9) -> evidence (test file/command) or a gap; run the full suite from a clean clone; list what cannot be verified in the sandbox (real Keycloak realm, real iPhone, hosted CI) and what the user must configure.
 *Done when:* every row is pass / not-verifiable-with-reason / gap-with-follow-up-task.
@@ -373,12 +379,12 @@ Parallel slots: after T00 -> {T01,T02,T10,T20,T22,T23}. After T11 -> {T12,T13,T1
 
 | Phase | Gate | State |
 | --- | --- | --- |
-| P0 foundations | T00 + T01 + T02 | not started |
-| P1 data layer | T16 | not started |
-| P2 MCP | T35 | not started |
-| P3 web | T49 | DEFERRED (user decision) |
-| P4 PWA/mobile | T51 | DEFERRED (user decision) |
-| P5 hardening | T63 (phases 0-2 only) | not started; T60/T61/T62 deferred with the web app |
+| P0 foundations | T00 + T01 + T02 | complete |
+| P1 data layer | T16 | complete; see [`docs/traceability/phase1.md`](../traceability/phase1.md) |
+| P2 MCP | T35 | complete; see [`docs/traceability/phase2.md`](../traceability/phase2.md) |
+| P3 web | T49 | complete and merged in PR #7; see [`docs/traceability/phase3.md`](../traceability/phase3.md) |
+| P4 PWA/mobile | T51 | outstanding (T50–T51) |
+| P5 hardening | T63 | outstanding (T60–T63, including T62 full documentation milestone) |
 
 Note: the PRD roadmap diagram (section 10, "5 phases, 5 gates") was an embedded image and was not in the text export; the phase
 split above is inferred from the prose ("phases 1 and 2 are useful on their own: agents can collaborate through the database

@@ -1,8 +1,13 @@
 # Phase 3 web gate
 
 Task T49, reviewed against PRD section 2 stories and sections 6 and 7 on 2026-10-04.
-Status: **local gate passes; real-Keycloak hosted acceptance remains pending**. T42–T48 are
-integrated, including approved T47 through `65270d5`. Every section 2 story has a passing browser
+Status: **Phase 3 implemented and CI validated; hosted Keycloak end-to-end acceptance passed**.
+The work was merged in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7) at
+`d7cb8ae9`; its [CI run](https://github.com/mirceanton/youtube-workspace/actions/runs/37241526833),
+[OIDC E2E run](https://github.com/mirceanton/youtube-workspace/actions/runs/37241526840)
+and [Keycloak smoke run](https://github.com/mirceanton/youtube-workspace/actions/runs/37241526759)
+passed against PR head `849e83c`. This verifies the code and hosted test environment; it does not
+mean the application has been deployed to production. Every section 2 story has a passing browser
 scenario, and every declared feature API route has permission-matrix evidence.
 
 ## Evidence and execution
@@ -23,13 +28,14 @@ pnpm format:check
 actionlint -shellcheck= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/keycloak-smoke.yaml
 ```
 
-Final browser result: **12 passing tests (30.9 seconds)**, including the existing OIDC flow.
+Final local browser result: **12 passing tests (30.9 seconds)**, including the mock OIDC flow.
 The MCP revision became visible in the already-open phone reader in **14,529 ms**, with no
 navigation or reload (the preceding run measured 14,523 ms). TypeScript, lint, formatting,
 workflow lint and production build pass. The final combined Vitest run has **131 passing files /
 3,793 passing tests (60.29 seconds)**, with no skipped tests.
 Workflow lint disabled shellcheck integration because the local shellcheck shim was unavailable.
-Real Keycloak execution remains a CI requirement; mock OIDC evidence is not proof of a Keycloak run.
+Hosted Keycloak validation is recorded by the successful OIDC E2E and smoke runs linked above;
+the local mock OIDC run is separate evidence.
 
 ## PRD section 2 stories
 
@@ -68,10 +74,10 @@ unit tests supplement the real-service browser stories.
 
 | Requirement | Evidence | Status |
 | --- | --- | --- |
-| Authorization Code + PKCE, confidential BFF, server-side provider tokens | `apps/web-server/test/auth.test.ts`; `e2e/flows/oidc.spec.ts`; token story checks browser storage remains empty | Local pass; real Keycloak CI pending |
-| Group gate, outsider creates no user, repeated at refresh | OIDC browser flow verifies denial and DB state, group-removal refresh revocation | Mock pass; real Keycloak CI pending |
+| Authorization Code + PKCE, confidential BFF, server-side provider tokens | `apps/web-server/test/auth.test.ts`; `e2e/flows/oidc.spec.ts`; token story checks browser storage remains empty | Local and hosted Keycloak CI pass |
+| Group gate, outsider creates no user, repeated at refresh | OIDC browser flow verifies denial and DB state, group-removal refresh revocation | Mock and hosted Keycloak CI pass |
 | Session cookie flags, validation, discovery, session timeouts, env settings | `auth.test.ts`, `env.test.ts`, `app.test.ts` | Pass |
-| RP-initiated provider logout | OIDC browser flow returns to provider credential form | Mock pass; real Keycloak CI pending |
+| RP-initiated provider logout | OIDC browser flow returns to provider credential form | Mock and hosted Keycloak CI pass |
 | Unauthenticated API requests return 401 and pages redirect to login | OIDC flow and all-route anonymous probes | Browser pass |
 | None/Read/Write enforced from current stored levels for each object | `stories/route-authz.spec.ts`: all 41 declared API routes × None/Read/Write plus anonymous requests; orthogonal video/experiment restrictions and search/resource privacy | Pass |
 | None everywhere shows access-not-granted | OIDC browser flow | Pass |
@@ -81,7 +87,7 @@ unit tests supplement the real-service browser stories.
 | Expiring, one-time, hashed token secrets; own tokens edit/rotate/revoke, last use | Token story; settings route/feature tests; `packages/tokens/test/`; MCP gate token-lifecycle tests | Pass |
 | Bearer token cannot serve as browser login; audit token identity/owner | Token browser story asserts valid MCP bearer alone gets web 401; activity story checks token ID, agent type and owner payload | Pass |
 | Profile read-only, own token list, admin matrix, phone detail screens | Settings feature tests and access story; phone controls audited in T51 | Core browser pass |
-| Keycloak development realm export and CI flow | `dev/keycloak/`, `.github/workflows/e2e.yaml` | Present; hosted run verification pending |
+| Keycloak development realm export and CI flow | `dev/keycloak/`, `.github/workflows/e2e.yaml` | Hosted OIDC E2E and smoke checks passed; see links above |
 
 ## Route authorization evidence
 
@@ -125,13 +131,9 @@ and an opaque cursor, allowing live updates without granting activity-log access
   branches now include `codex/**`; release and image-publication workflows retain their existing
   release rules. The other workflows are reusable or main-only release orchestration.
 
-## Hosted acceptance still required
+## Deployment and remaining scope
 
-All locally verifiable Phase 3 checks pass. A successful `OIDC E2E` GitHub Actions run against real
-Keycloak and its run link are still required by T48/T49. This sandbox cannot run the project's
-Docker-based Keycloak, no hosted run was triggered by this gate, and the orchestrator currently
-has no authenticated GitHub CLI session to dispatch/inspect one. The workflow now accepts pushes
-to `codex/**` and runs all story files in its isolated PostgreSQL/Keycloak Compose project.
-Real-Keycloak fixture lifecycle and provider logout/refresh behavior therefore remain unverified
-against the actual provider until that hosted run succeeds. No claim of full hosted acceptance is
-made here. Later PWA/mobile, scale and security gates remain T50–T63 as defined in PLAN.md.
+Phase 3 implementation and hosted Keycloak acceptance are complete. The linked GitHub Actions runs
+validate the PR branch and test environment; they do not establish a production deployment or
+production Keycloak configuration. Those remain deployment-specific work. Phase 4 PWA/mobile,
+scale and security gates remain T50–T63 as defined in PLAN.md.
