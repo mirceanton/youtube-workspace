@@ -15,10 +15,15 @@ if (mode !== "mock" && mode !== "keycloak") {
 
 function startPlaywright(environment: NodeJS.ProcessEnv): Promise<number> {
   const cli = createRequire(import.meta.url).resolve("@playwright/test/cli");
+  const nodeOptions = [environment.NODE_OPTIONS, "--conditions=@ytw/source"]
+    .filter(Boolean)
+    .join(" ");
   const child = spawn(
     process.execPath,
     [cli, "test", "--config", resolve(e2eDirectory, "playwright.config.ts")],
-    { cwd: repositoryRoot, env: environment, stdio: "inherit" },
+    // Playwright starts test workers as new Node processes. The condition passed to tsx while
+    // starting this runner does not reach those workers, so preserve it through NODE_OPTIONS.
+    { cwd: repositoryRoot, env: { ...environment, NODE_OPTIONS: nodeOptions }, stdio: "inherit" },
   );
   return new Promise((resolveExit, reject) => {
     child.once("error", reject);
