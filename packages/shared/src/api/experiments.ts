@@ -2,6 +2,7 @@ import { EXPERIMENT_STATUSES, EXPERIMENT_TYPES } from "../constants.js";
 import { z } from "zod";
 
 export const EXPERIMENTS_PATH = "/api/experiments";
+export const EXPERIMENTS_LIST_LIMIT = 500;
 export const EXPERIMENT_VIDEOS_PATH = `${EXPERIMENTS_PATH}/videos`;
 export const EXPERIMENT_CTR_HISTORY_PATH = `${EXPERIMENTS_PATH}/:experiment_id/ctr-history`;
 export const EXPERIMENT_VARIANT_STATS_PATH = `${EXPERIMENTS_PATH}/:experiment_id/variants/:variant_id/stats`;
