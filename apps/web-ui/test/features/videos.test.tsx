@@ -408,5 +408,6 @@ describe("Videos feature UI", () => {
     expect(
       await screen.findByText("Showing the first 1,000 videos. Additional videos may be hidden."),
     ).toBeInTheDocument();
-  });
+    // Rendering 1,000 items in both responsive list layouts is intentionally a larger jsdom case.
+  }, 15_000);
 });

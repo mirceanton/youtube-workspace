@@ -51,6 +51,11 @@ jobs:
       - name: Setup workspace
         uses: ./.github/actions/setup
 
+      - name: Remove shared build output before source-resolution E2E
+        run: |
+          rm -rf packages/shared/dist
+          test ! -e packages/shared/dist
+
       - name: Start isolated Postgres and import the dev realm
         run: docker compose up --detach --wait --wait-timeout 300 postgres keycloak
 
