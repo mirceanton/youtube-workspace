@@ -96,7 +96,7 @@ function sortOldestFirst(notes: readonly Note[]): Note[] {
 /**
  * Comments on an idea, script, video or experiment: the list (author, human/agent, time, sanitised
  * markdown body) and an add form. Talks to `/api/notes` (packages/shared/src/api/notes.ts) and
- * refreshes with the app's 15 s polling, so a note an agent adds shows up without a reload.
+ * refreshes with the app's 12 s polling, so a note an agent adds shows up without a reload.
  *
  * Needs Read on notes to show anything; the form is disabled (with the reason) without Write on
  * notes or while offline.

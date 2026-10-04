@@ -107,13 +107,13 @@ Also needed for a complete feature: server routes `apps/web-server/src/routes/<i
 | --- | --- |
 | Loading the session | `GET /api/me` (started before the first page's code finishes downloading) |
 | Not signed in (401 from any call) | The API client sends the browser to `/auth/login?return_to=<current path>` once |
-| Signed in, `None` on every object | "Access not granted yet" page; it re-checks every 15 s and has a "Check again" button |
+| Signed in, `None` on every object | "Access not granted yet" page; it re-checks every 12 s and has a "Check again" button |
 | Group gate refused the login | `/access-denied` is a public SPA route with the standard wording; the web server may redirect there |
 | `/api/me` has a shape this build cannot read | "A new version is available" page with a Reload button, **fail closed**: no navigation, no screens, no write controls. This is what an old cached app sees after the server gained an object type. It never retries the unreadable response |
 | User opens a feature they lack the level for | "You do not have access to this" inside the shell |
 | Unknown address | "Page not found" inside the shell |
 | Browser offline | Banner on every screen; `WriteGuard` disables write controls with the reason |
-| Levels change on the server | The session polls every 15 s: menu, screens and `WriteGuard` follow without a reload |
+| Levels change on the server | The session polls every 12 s: menu, screens and `WriteGuard` follow without a reload |
 
 Sign-out is a plain link to `/auth/logout` (a full navigation; the server ends the session).
 
@@ -155,8 +155,9 @@ explicitly through the database function.
 
 ### Queries and live updates
 
-TanStack Query is configured once (`lib/query-client.ts`): every active query refetches every **15 s**
-(`LIVE_UPDATE_INTERVAL_MS`), not while the tab is hidden, and again on focus or reconnect; 4xx answers
+TanStack Query is configured once (`lib/query-client.ts`): every active query refetches every **12 s**
+(`LIVE_UPDATE_INTERVAL_MS`) to leave request and browser scheduling margin under the 15 s live-update
+SLA, not while the tab is hidden, and again on focus or reconnect; 4xx answers
 and unreadable responses are not retried; **mutations never queue offline** (they fail at once).
 That polling is the "agents' changes appear without a reload" requirement. A query that must not
 refresh under the user (an editor's source document) sets `refetchInterval: false`.
@@ -166,7 +167,7 @@ refresh under the user (an editor's source document) sets `refetchInterval: fals
 `["notes", entityType, entityId]`. The dashboard's event poll (T47) invalidates by that prefix.
 
 T47 mounts its compact change poller in `AppShell`, so it remains active while the user is on any
-screen. The poll runs at the shared 15 s query interval and returns only changed resource names the
+screen. The poll runs at the shared 12 s query interval and returns only changed resource names the
 current session may read. It never returns actors, actions, entity identifiers or audit payloads;
 the full `/api/activity` feed still requires Read on `activity`. This small global mount is the one
 T47 ownership exception: keeping the hook inside the Dashboard route would stop cache invalidation

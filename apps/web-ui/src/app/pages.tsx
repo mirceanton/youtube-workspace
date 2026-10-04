@@ -31,7 +31,7 @@ function SignOutLink({ label = "Sign out" }: { label?: string }) {
 
 /**
  * Signed in, but an admin has not granted any access yet (PRD 7: None everywhere). The page checks
- * again by itself (the session query polls every 15 s) and offers a manual check.
+ * again by itself (the session query polls every 12 s) and offers a manual check.
  */
 export function AccessNotGrantedPage({
   me,

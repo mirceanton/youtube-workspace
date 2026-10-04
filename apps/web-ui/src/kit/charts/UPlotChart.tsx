@@ -256,7 +256,7 @@ export default function UPlotChart(props: UPlotChartProps) {
     };
   }, [labelsKey, xKind, height, width, compact, yMin, dark]);
 
-  // New data (the 15 s refresh) updates the existing plot instead of rebuilding it.
+  // New data (the 12 s refresh) updates the existing plot instead of rebuilding it.
   useEffect(() => {
     const shown = drawn.current;
     if (

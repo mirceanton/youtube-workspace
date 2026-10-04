@@ -11,7 +11,7 @@ import { AccessNotGrantedPage, VersionMismatchPage } from "./pages.tsx";
  *  - a response this build cannot parse (the server moved on): "new version available", fail closed;
  *  - no access to any object: the "access not granted" page;
  *  - otherwise the app, with `useSession()` available.
- * The query polls like every other (15 s), so granted or lowered levels show up without a reload,
+ * The query polls like every other (12 s), so granted or lowered levels show up without a reload,
  * and an expired session is noticed within one interval.
  */
 export function SessionGate({ children }: { children: ReactNode }) {
