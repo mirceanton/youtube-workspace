@@ -3,7 +3,7 @@ import { EnvError, loadEnv } from "./env.js";
 
 async function main(): Promise<void> {
   const env = loadEnv();
-  const app = buildApp(env);
+  const app = await buildApp(env);
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
