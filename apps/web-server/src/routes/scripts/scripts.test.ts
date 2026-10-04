@@ -288,6 +288,29 @@ describe("/api/scripts (PostgreSQL integration)", () => {
     expect(tooLargeFile.statusCode).toBe(413);
   });
 
+  it("accepts a body at the byte limit when JSON escaping expands its transport size", async () => {
+    const ideaId = await newTargetIdea("Scripts escaped JSON size target");
+    const body = '"'.repeat(SCRIPT_BODY_MAX_BYTES);
+    const payload = JSON.stringify({
+      idea_id: ideaId,
+      kind: "script",
+      base_version: 0,
+      body_md: body,
+    });
+    expect(Buffer.byteLength(payload, "utf8")).toBeGreaterThan(SCRIPT_BODY_MAX_BYTES + 16_384);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/scripts",
+      headers: { ...as(writer.username), "content-type": "application/json" },
+      payload,
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json<{ script: { size_bytes: number } }>().script.size_bytes).toBe(
+      SCRIPT_BODY_MAX_BYTES,
+    );
+  });
+
   it("allows only one concurrent save for the same base version", async () => {
     const ideaId = await newTargetIdea("Scripts concurrent edit target");
     const request = (body: string) =>

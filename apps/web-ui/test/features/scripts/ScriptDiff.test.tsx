@@ -23,4 +23,23 @@ describe("ScriptDiff", () => {
     expect(screen.getByRole("list", { name: "Version 2 lines" })).toHaveTextContent("New line");
     expect(screen.getByText("1 added lines, 1 removed lines.")).toBeInTheDocument();
   });
+
+  it("keeps changed text visible in the bounded large-script phone diff", () => {
+    const before = Array.from({ length: 700 }, (_, index) => `line ${index}`).join("\n");
+    const afterLines = before.split("\n");
+    afterLines[350] = "edited line 350";
+    render(
+      <ScriptDiff
+        before={before}
+        after={afterLines.join("\n")}
+        beforeLabel="Version 1"
+        afterLabel="Version 2"
+      />,
+    );
+
+    const unified = screen.getByRole("list", { name: "Unified script diff" });
+    expect(within(unified).getByText("line 350")).toBeInTheDocument();
+    expect(within(unified).getByText("edited line 350")).toBeInTheDocument();
+    expect(within(unified).getAllByRole("listitem")).toHaveLength(16);
+  });
 });

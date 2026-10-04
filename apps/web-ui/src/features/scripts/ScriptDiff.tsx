@@ -6,6 +6,7 @@ const ROW_TONE = {
   removed: "bg-danger-soft text-danger",
   added: "bg-ok-soft text-ok",
   summary: "bg-subtle text-ink-muted",
+  "omitted-context": "bg-subtle text-ink-muted",
 } as const;
 
 export function ScriptDiff({
@@ -34,7 +35,7 @@ export function ScriptDiff({
     <section aria-label="Script version diff" className="min-w-0">
       {diff.summarized ? (
         <p className="mb-2 text-sm text-ink-muted">
-          This large change is grouped into one changed block so the comparison stays responsive.
+          Large diffs show changed text with nearby matching lines; excess lines are summarized.
         </p>
       ) : null}
       <div className="hidden overflow-hidden rounded-lg border border-line md:grid md:grid-cols-2">
@@ -52,23 +53,27 @@ export function ScriptDiff({
                 const content =
                   line.kind === "summary"
                     ? `${line.leftCount} removed · ${line.rightCount} added lines`
-                    : side === "left"
-                      ? line.kind === "added"
-                        ? ""
-                        : line.leftText
-                      : line.kind === "removed"
-                        ? ""
-                        : line.rightText;
+                    : line.kind === "omitted-context"
+                      ? `${line.count} matching lines omitted`
+                      : side === "left"
+                        ? line.kind === "added"
+                          ? ""
+                          : line.leftText
+                        : line.kind === "removed"
+                          ? ""
+                          : line.rightText;
                 const number =
                   line.kind === "summary"
                     ? "…"
-                    : side === "left"
-                      ? line.kind === "added"
-                        ? ""
-                        : line.leftNumber
-                      : line.kind === "removed"
-                        ? ""
-                        : line.rightNumber;
+                    : line.kind === "omitted-context"
+                      ? "…"
+                      : side === "left"
+                        ? line.kind === "added"
+                          ? ""
+                          : line.leftNumber
+                        : line.kind === "removed"
+                          ? ""
+                          : line.rightNumber;
                 return (
                   <li
                     key={`${kind}-${index}`}
@@ -99,23 +104,29 @@ export function ScriptDiff({
                   ? "+"
                   : line.kind === "summary"
                     ? "…"
-                    : " ";
+                    : line.kind === "omitted-context"
+                      ? "…"
+                      : " ";
             const number =
               line.kind === "summary"
                 ? `${line.leftStart}/${line.rightStart}`
-                : line.kind === "added"
-                  ? line.rightNumber
-                  : line.kind === "removed"
-                    ? line.leftNumber
-                    : line.rightNumber;
+                : line.kind === "omitted-context"
+                  ? "…"
+                  : line.kind === "added"
+                    ? line.rightNumber
+                    : line.kind === "removed"
+                      ? line.leftNumber
+                      : line.rightNumber;
             const content =
               line.kind === "summary"
                 ? `${line.leftCount} lines removed, ${line.rightCount} lines added`
-                : line.kind === "added"
-                  ? line.rightText
-                  : line.kind === "removed"
-                    ? line.leftText
-                    : line.rightText;
+                : line.kind === "omitted-context"
+                  ? `${line.count} matching lines omitted`
+                  : line.kind === "added"
+                    ? line.rightText
+                    : line.kind === "removed"
+                      ? line.leftText
+                      : line.rightText;
             return (
               <li
                 key={`${line.kind}-${index}`}

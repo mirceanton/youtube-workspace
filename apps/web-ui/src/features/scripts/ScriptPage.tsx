@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useParams } from "react-router";
 import {
   SCRIPT_BODY_MAX_BYTES,
@@ -64,6 +64,7 @@ export function Component() {
   const [diffToVersion, setDiffToVersion] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftBody, setDraftBody] = useState("");
+  const draftBodyRef = useRef("");
   const [editBaseBody, setEditBaseBody] = useState("");
   const [editBaseVersion, setEditBaseVersion] = useState(0);
   const [conflict, setConflict] = useState<ConflictError | null>(null);
@@ -137,13 +138,16 @@ export function Component() {
         },
         { parse: saveScriptResponseSchema },
       ),
-    onSuccess: async ({ script }) => {
+    onSuccess: async ({ script }, input) => {
+      const savedBody = input.body.replace(/\r\n?/g, "\n");
       queryClient.setQueryData(revisionQueryKey(script.id), {
-        script: { ...script, body_md: draftBody },
+        script: { ...script, body_md: savedBody },
       });
       setSelectedVersion(script.version);
       setSavedVersion(script.version);
-      setEditing(false);
+      setEditBaseBody(savedBody);
+      setEditBaseVersion(script.version);
+      if (draftBodyRef.current === input.body) setEditing(false);
       setConflict(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: historyKey }),
@@ -198,6 +202,7 @@ export function Component() {
     const body = latest?.body_md ?? "";
     setEditBaseVersion(baseVersion);
     setEditBaseBody(body);
+    draftBodyRef.current = body;
     setDraftBody(body);
     setSavedVersion(null);
     setEditing(true);
@@ -218,10 +223,17 @@ export function Component() {
   function mergeConflict() {
     const latest = latestQuery.data?.script;
     if (!latest) return;
-    setDraftBody(mergeScriptBodies(editBaseBody, latest.body_md, draftBody));
+    const merged = mergeScriptBodies(editBaseBody, latest.body_md, draftBody);
+    draftBodyRef.current = merged;
+    setDraftBody(merged);
     setEditBaseBody(latest.body_md);
     setEditBaseVersion(latest.version);
     setConflict(null);
+  }
+
+  function changeDraftBody(body: string) {
+    draftBodyRef.current = body;
+    setDraftBody(body);
   }
 
   function uploadFile(event: ChangeEvent<HTMLInputElement>) {
@@ -387,7 +399,14 @@ export function Component() {
               ))}
             </SelectField>
           </div>
-          {diffFromQuery.isPending || diffToQuery.isPending ? (
+          {diffFromQuery.isError || diffToQuery.isError ? (
+            <ErrorState
+              compact
+              error={diffFromQuery.error ?? diffToQuery.error}
+              onRetry={() => void Promise.all([diffFromQuery.refetch(), diffToQuery.refetch()])}
+              retrying={diffFromQuery.isFetching || diffToQuery.isFetching}
+            />
+          ) : diffFromQuery.isPending || diffToQuery.isPending ? (
             <LoadingState compact label="Comparing versions" lines={4} />
           ) : diffFromQuery.data && diffToQuery.data ? (
             <ScriptDiff
@@ -407,7 +426,7 @@ export function Component() {
           </h2>
           <WriteGuard resource="scripts">
             <form onSubmit={submitEdit} className="grid gap-3" noValidate>
-              <ScriptEditor value={draftBody} onChange={setDraftBody} />
+              <ScriptEditor value={draftBody} onChange={changeDraftBody} />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-ink-muted">
                   {bodyBytes.toLocaleString()} of {SCRIPT_BODY_MAX_BYTES.toLocaleString()} UTF-8
@@ -433,28 +452,30 @@ export function Component() {
             </form>
           </WriteGuard>
         </section>
-      ) : selectedScript ? (
+      ) : selectedMeta ? (
         <section className="mb-6">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <Badge tone="info">Version {selectedScript.version}</Badge>
-            <WriteGuard resource="scripts" explain={false}>
-              <SelectField
-                label="Status"
-                hideLabel
-                value={selectedScript.status}
-                onChange={(event) => statusMutation.mutate(event.target.value as ScriptStatus)}
-              >
-                {SCRIPT_STATUSES.map((status) => (
-                  <option key={status} value={status}>
-                    {status}
-                  </option>
-                ))}
-              </SelectField>
-            </WriteGuard>
-            {statusMutation.isError ? (
-              <Alert tone="danger">{describeError(statusMutation.error)}</Alert>
-            ) : null}
-          </div>
+          {selectedScript ? (
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Badge tone="info">Version {selectedScript.version}</Badge>
+              <WriteGuard resource="scripts" explain={false}>
+                <SelectField
+                  label="Status"
+                  hideLabel
+                  value={selectedScript.status}
+                  onChange={(event) => statusMutation.mutate(event.target.value as ScriptStatus)}
+                >
+                  {SCRIPT_STATUSES.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </SelectField>
+              </WriteGuard>
+              {statusMutation.isError ? (
+                <Alert tone="danger">{describeError(statusMutation.error)}</Alert>
+              ) : null}
+            </div>
+          ) : null}
           {selectedQuery.isPending ? (
             <LoadingState label="Loading script version" lines={8} />
           ) : selectedQuery.isError ? (

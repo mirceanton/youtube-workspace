@@ -6,7 +6,7 @@ import type { ScriptKind, ScriptStatus } from "@ytw/shared/constants";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Component as ScriptPage } from "../../../src/features/scripts/ScriptPage.tsx";
 import { SessionContext } from "../../../src/lib/session.ts";
-import { createMockApi } from "../../../src/dev/mock-api.ts";
+import { createMockApi, type MockResult } from "../../../src/dev/mock-api.ts";
 import { createTestQueryClient, personaSession } from "../../helpers/render.tsx";
 
 const IDEA_ID = "0199c2a4-7b1e-7c3a-9d2f-000000000001";
@@ -45,11 +45,18 @@ function revision(id: string, version: number, body: string, updatedBy = "owner"
   };
 }
 
-function scriptApi() {
+function scriptApi({ previousVersion = false }: { previousVersion?: boolean } = {}) {
   const api = createMockApi({ persona: "owner" });
-  const versions = [revision(V1_ID, 1, "one\ntwo\nthree")];
+  const versions = previousVersion
+    ? [revision(V2_ID, 2, "one\nagent edit\nthree"), revision(V1_ID, 1, "one\ntwo\nthree")]
+    : [revision(V1_ID, 1, "one\ntwo\nthree")];
   const byId = new Map(versions.map((item) => [item.id, item]));
   let conflictsOnce = false;
+  let holdNextSave = false;
+  let releasePendingSave: (() => void) | undefined;
+  const detailFailures = new Set<string>();
+  const pausedDetails = new Set<string>();
+  const releasePausedDetails = new Map<string, () => void>();
 
   api.router.get(SCRIPTS_HISTORY_PATH, () => ({
     json: {
@@ -59,11 +66,21 @@ function scriptApi() {
       versions: versions.map(({ body_md: _body, ...metadata }) => metadata),
     },
   }));
-  api.router.get(`${SCRIPTS_PATH}/:script_id`, (request) => {
-    const found = byId.get(request.params.script_id ?? "");
+  const detailResponse = (id: string): MockResult => {
+    if (detailFailures.delete(id)) {
+      return { status: 500, json: { error: "Temporary revision error" } };
+    }
+    const found = byId.get(id);
     return found ? { json: { script: found } } : { status: 404, json: { error: "Not found" } };
+  };
+  api.router.get(`${SCRIPTS_PATH}/:script_id`, (request) => {
+    const id = request.params.script_id ?? "";
+    if (!pausedDetails.delete(id)) return detailResponse(id);
+    return new Promise<MockResult>((resolve) => {
+      releasePausedDetails.set(id, () => resolve(detailResponse(id)));
+    });
   });
-  api.router.post(SCRIPTS_PATH, (request) => {
+  const saveResponse = (request: { body: unknown }): MockResult => {
     const body = request.body as { base_version?: number; body_md?: string };
     if (conflictsOnce) {
       conflictsOnce = false;
@@ -83,6 +100,13 @@ function scriptApi() {
       status: 201,
       json: { script: { ...next, body_md: undefined } },
     };
+  };
+  api.router.post(SCRIPTS_PATH, (request) => {
+    if (!holdNextSave) return saveResponse(request);
+    holdNextSave = false;
+    return new Promise<MockResult>((resolve) => {
+      releasePendingSave = () => resolve(saveResponse(request));
+    });
   });
   api.router.post(SCRIPTS_UPLOAD_PATH, () => {
     const next = revision(V2_ID, 2, "uploaded body");
@@ -93,8 +117,25 @@ function scriptApi() {
 
   return {
     api,
+    failDetailOnce(id: string) {
+      detailFailures.add(id);
+    },
+    holdDetailOnce(id: string) {
+      pausedDetails.add(id);
+    },
     forceNextConflict() {
       conflictsOnce = true;
+    },
+    holdNextSave() {
+      holdNextSave = true;
+    },
+    releasePendingSave() {
+      releasePendingSave?.();
+      releasePendingSave = undefined;
+    },
+    releaseDetail(id: string) {
+      releasePausedDetails.get(id)?.();
+      releasePausedDetails.delete(id);
     },
   };
 }
@@ -174,5 +215,80 @@ describe("script page", () => {
       method: "POST",
       path: `${SCRIPTS_UPLOAD_PATH}?idea_id=${IDEA_ID}&kind=script&base_version=1`,
     });
+  });
+
+  it("shows revision loading errors and retries the selected script request", async () => {
+    const mock = scriptApi();
+    mock.failDetailOnce(V1_ID);
+    renderScriptPage(mock.api);
+
+    expect(await screen.findByRole("alert", { name: "Something went wrong" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("article", { name: "Script reader" })).toHaveTextContent(
+      "three",
+    );
+  });
+
+  it("shows loading while the selected script body is pending", async () => {
+    const mock = scriptApi();
+    mock.holdDetailOnce(V1_ID);
+    renderScriptPage(mock.api);
+
+    expect(await screen.findByText("Loading script version")).toBeInTheDocument();
+    mock.releaseDetail(V1_ID);
+    expect(await screen.findByRole("article", { name: "Script reader" })).toHaveTextContent(
+      "three",
+    );
+  });
+
+  it("shows diff request errors with a retry action", async () => {
+    const mock = scriptApi({ previousVersion: true });
+    mock.failDetailOnce(V1_ID);
+    renderScriptPage(mock.api);
+    expect(await screen.findByRole("article", { name: "Script reader" })).toHaveTextContent(
+      "agent edit",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Compare versions" }));
+
+    expect(await screen.findByRole("alert", { name: "Something went wrong" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("heading", { name: "Version 1" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Version 2" })).toBeInTheDocument();
+  });
+
+  it("keeps edits typed after submit and advances the next save base", async () => {
+    const mock = scriptApi();
+    mock.holdNextSave();
+    renderScriptPage(mock.api);
+    expect(await screen.findByRole("article", { name: "Script reader" })).toHaveTextContent(
+      "three",
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit latest version" }));
+    const editor = await screen.findByLabelText("Markdown source");
+    fireEvent.change(editor, { target: { value: "submitted body" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
+    await waitFor(() =>
+      expect(mock.api.requests.filter((request) => request.path === SCRIPTS_PATH)).toHaveLength(1),
+    );
+    fireEvent.change(editor, { target: { value: "submitted body plus later edits" } });
+    mock.releasePendingSave();
+
+    expect(await screen.findByText("Saved as version 2.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Markdown source")).toHaveValue("submitted body plus later edits");
+    expect(screen.getByRole("heading", { name: "Edit from version 2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
+    expect(await screen.findByText("Saved as version 3.")).toBeInTheDocument();
+    const saves = mock.api.requests
+      .filter((request) => request.method === "POST" && request.path === SCRIPTS_PATH)
+      .map((request) => request.body);
+    expect(saves).toEqual([
+      { idea_id: IDEA_ID, kind: "script", base_version: 1, body_md: "submitted body" },
+      {
+        idea_id: IDEA_ID,
+        kind: "script",
+        base_version: 2,
+        body_md: "submitted body plus later edits",
+      },
+    ]);
   });
 });

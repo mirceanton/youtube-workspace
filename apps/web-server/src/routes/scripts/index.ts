@@ -245,7 +245,8 @@ export default async function scriptsRoutes(server: FastifyInstance): Promise<vo
     SCRIPTS_PATH,
     {
       preHandler: app.requireLevel("scripts", "write"),
-      bodyLimit: SCRIPT_BODY_MAX_BYTES + 16_384,
+      // JSON escapes can expand a valid 1 MiB body up to six times before Fastify parses it.
+      bodyLimit: SCRIPT_BODY_MAX_BYTES * 6 + 16_384,
     },
     async (request, reply) => {
       const parsed = saveScriptRequestSchema.safeParse(request.body);
