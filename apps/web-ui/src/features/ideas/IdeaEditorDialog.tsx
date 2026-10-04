@@ -133,6 +133,15 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
     save.reset();
   }
 
+  function mergeLatest() {
+    if (!latest) return;
+    // Keep the complete local draft (including pitch/source) and rebase that draft on the
+    // current version. The next save still uses optimistic concurrency at the new version.
+    setExpectedVersion(latest.version);
+    setConflictOpen(false);
+    save.reset();
+  }
+
   function keepEditing() {
     setConflictOpen(false);
     save.reset();
@@ -236,6 +245,7 @@ export function IdeaEditorDialog({ open, idea, onClose, onSaved }: IdeaEditorDia
           .filter(Boolean)
           .join(" · ")}
         onReload={reloadLatest}
+        onMerge={latest ? mergeLatest : undefined}
         onKeepEditing={keepEditing}
       />
     </>

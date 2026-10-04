@@ -89,6 +89,12 @@ describe("production bundle of the app", () => {
         [],
       );
     }
+    for (const name of ["mockApi", "gallery"] as const) {
+      expect(
+        containing(chunks, MARKERS[name]),
+        `${name} must not be emitted in any production chunk`,
+      ).toEqual([]);
+    }
   });
 
   it("keeps the initial JavaScript inside the budget", async () => {

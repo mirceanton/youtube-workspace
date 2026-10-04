@@ -2,10 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import type { Idea } from "@ytw/shared/api/ideas";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { Component as IdeasPage } from "../../src/features/ideas/IdeasPage.tsx";
 import { Component as IdeaDetailPage } from "../../src/features/ideas/IdeaDetailPage.tsx";
+import { IdeaEditorDialog } from "../../src/features/ideas/IdeaEditorDialog.tsx";
 import { StageMoveDialog } from "../../src/features/ideas/StageMoveDialog.tsx";
 import { setCsrfToken } from "../../src/lib/csrf.ts";
 import { SessionContext } from "../../src/lib/session.ts";
@@ -128,6 +130,165 @@ describe("Ideas UI", () => {
     expect(screen.getByRole("button", { name: "Discard mine and reload" })).toBeInTheDocument();
   });
 
+  it("clears the canceled note and conflict before reusing the stage dialog for another idea", async () => {
+    setCsrfToken("test-csrf");
+    const requests = recordFetch((url) => {
+      if (url.pathname === `/api/ideas/${IDEA_ID}/stage`) {
+        return jsonResponse(
+          {
+            error: "The first idea changed while its move was being prepared.",
+            latest: idea({ title: "First idea latest version", version: 3 }),
+          },
+          409,
+        );
+      }
+      return jsonResponse({
+        idea: idea({ id: ARCHIVED_ID, title: "Second idea", status: "shortlisted", version: 3 }),
+      });
+    });
+    const onMoved = vi.fn<(moved: Idea) => void>();
+    function Harness() {
+      const [selection, setSelection] = useState<{
+        idea: Idea;
+        target: "inbox" | "shortlisted";
+      } | null>({ idea: idea(), target: "inbox" });
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setSelection({
+                idea: idea({ id: ARCHIVED_ID, title: "Second idea", status: "inbox" }),
+                target: "shortlisted",
+              })
+            }
+          >
+            Open second idea
+          </button>
+          <StageMoveDialog
+            idea={selection?.idea ?? null}
+            target={selection?.target ?? null}
+            onClose={() => setSelection(null)}
+            onMoved={onMoved}
+          />
+        </>
+      );
+    }
+    const user = userEvent.setup();
+    renderWithSession(<Harness />);
+
+    await user.type(
+      screen.getByRole("textbox", { name: "Why is this idea moving backward?" }),
+      "Do not carry this note forward.",
+    );
+    await user.click(screen.getByRole("button", { name: "Move idea" }));
+    expect(
+      await screen.findByRole("heading", { name: "This idea changed while you were editing" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("First idea latest version · Shortlisted")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(
+      screen.queryByRole("heading", { name: "This idea changed while you were editing" }),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(screen.getByRole("button", { name: "Open second idea" }));
+    expect(screen.queryByRole("textbox", { name: "Why is this idea moving backward?" })).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "This idea changed while you were editing" }),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Move idea" }));
+
+    await waitFor(() =>
+      expect(onMoved).toHaveBeenCalledWith(expect.objectContaining({ id: ARCHIVED_ID })),
+    );
+    expect(requests[1]).toMatchObject({
+      method: "POST",
+      body: { expected_version: 2, new_status: "shortlisted" },
+    });
+    expect(requests[1]?.body).not.toHaveProperty("note");
+  });
+
+  it("rebases all edited fields onto the latest version after an explicit merge", async () => {
+    setCsrfToken("test-csrf");
+    const original = idea({
+      title: "Version two",
+      pitch: "Version two pitch",
+      source: "Version two source",
+      score: 42,
+      tags: ["version-two"],
+    });
+    const current = idea({
+      title: "Version three",
+      pitch: "Version three pitch",
+      source: "Version three source",
+      score: 65,
+      tags: ["version-three"],
+      version: 3,
+    });
+    const requests = recordFetch((url, init) => {
+      if (url.pathname !== `/api/ideas/${IDEA_ID}` || init?.method !== "PATCH") {
+        return jsonResponse({ error: "Unexpected request" }, 500);
+      }
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const attempt = requests.filter((request) => request.method === "PATCH").length;
+      if (attempt === 1) {
+        return jsonResponse({ error: "This idea changed to version 3.", latest: current }, 409);
+      }
+      return jsonResponse({
+        idea: idea({
+          ...current,
+          title: body.title as string,
+          pitch: body.pitch as string,
+          source: body.source as string,
+          score: body.score as number,
+          tags: body.tags as string[],
+          version: 4,
+        }),
+      });
+    });
+    const onSaved = vi.fn<(saved: Idea) => void>();
+    const user = userEvent.setup();
+    renderWithSession(
+      <IdeaEditorDialog open idea={original} onClose={vi.fn<() => void>()} onSaved={onSaved} />,
+    );
+
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.type(screen.getByRole("textbox", { name: "Title" }), "My retained title");
+    await user.clear(screen.getByRole("textbox", { name: "Pitch" }));
+    await user.type(screen.getByRole("textbox", { name: "Pitch" }), "My retained pitch");
+    await user.clear(screen.getByRole("textbox", { name: "Source" }));
+    await user.type(screen.getByRole("textbox", { name: "Source" }), "My retained source");
+    await user.clear(screen.getByRole("spinbutton", { name: "Score" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Score" }), "91");
+    await user.clear(screen.getByRole("textbox", { name: "Tags" }));
+    await user.type(screen.getByRole("textbox", { name: "Tags" }), "alpha, beta");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("This idea changed to version 3.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Merge my changes" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("My retained title");
+    expect(screen.getByRole("textbox", { name: "Pitch" })).toHaveValue("My retained pitch");
+    expect(screen.getByRole("textbox", { name: "Source" })).toHaveValue("My retained source");
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ version: 4 })),
+    );
+    const patchBodies = requests
+      .filter((request) => request.method === "PATCH")
+      .map((request) => request.body as Record<string, unknown>);
+    expect(patchBodies[0]).toMatchObject({ expected_version: 2 });
+    expect(patchBodies[1]).toMatchObject({
+      expected_version: 3,
+      title: "My retained title",
+      pitch: "My retained pitch",
+      source: "My retained source",
+      score: 91,
+      tags: ["alpha", "beta"],
+    });
+  });
+
   it("applies filters and sort changes to the API query and disables moves on archived rows", async () => {
     const activeIdea = idea({ status: "inbox" });
     const archivedIdea = idea({
@@ -179,6 +340,60 @@ describe("Ideas UI", () => {
       requests.some(
         ({ url }) =>
           url.pathname === "/api/ideas" && url.searchParams.get("include_archived") === "true",
+      ),
+    ).toBe(true);
+  });
+
+  it("queries the selected mobile stage before paging and keeps both stage controls in sync", async () => {
+    const inboxPage = Array.from({ length: 100 }, (_, index) =>
+      idea({
+        id: `0199c2a4-7b1e-7c3a-9d2f-${String(index + 1).padStart(12, "0")}`,
+        title: `Inbox idea ${index + 1}`,
+        status: "inbox",
+      }),
+    );
+    const olderEditing = idea({
+      id: ARCHIVED_ID,
+      title: "Older editing idea",
+      status: "editing",
+    });
+    const requests = recordFetch((url) => {
+      if (url.pathname !== "/api/ideas") return jsonResponse({ error: "Not found" }, 404);
+      if (url.searchParams.get("stage") === "editing") {
+        return jsonResponse({
+          ideas: [olderEditing],
+          page: { limit: 100, offset: 0, total: 1 },
+        });
+      }
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      return jsonResponse({
+        ideas: offset === 100 ? inboxPage.slice(50, 100) : inboxPage,
+        page: { limit: 100, offset, total: 150 },
+      });
+    });
+    const user = userEvent.setup();
+    renderWithSession(<IdeasPage />, { session: sessionWith({ ideas: "write" }) });
+
+    expect(await screen.findAllByText("Inbox idea 100")).not.toHaveLength(0);
+    expect(screen.queryByText("Older editing idea")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => {
+      expect(
+        requests.some(
+          ({ url }) => url.pathname === "/api/ideas" && url.searchParams.get("offset") === "100",
+        ),
+      ).toBe(true);
+    });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Show one stage" }), "editing");
+
+    expect(await screen.findAllByText("Older editing idea")).not.toHaveLength(0);
+    expect(screen.getByRole("combobox", { name: "Filter by stage" })).toHaveValue("editing");
+    expect(
+      requests.some(
+        ({ url }) =>
+          url.pathname === "/api/ideas" &&
+          url.searchParams.get("stage") === "editing" &&
+          url.searchParams.get("offset") === "0",
       ),
     ).toBe(true);
   });
