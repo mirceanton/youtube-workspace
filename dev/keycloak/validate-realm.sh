@@ -5,7 +5,7 @@
 #
 #   dev/keycloak/validate-realm.sh [realm.json] [.env.example]
 #
-# It checks that the file is valid JSON, that the client, group, users and group mapper have the
+# It checks that the file is valid JSON, that the client, group, users and token mappers have the
 # shape docs/keycloak.md promises, and that the realm agrees with the OIDC_* values in .env.example.
 # It cannot prove that Keycloak accepts the file or behaves as described; scripts/keycloak-smoke.sh
 # does that against a running server.
@@ -69,6 +69,8 @@ check "no redirect URI is a bare wildcard" "${client} | [.redirectUris[] | selec
 
 check "a group membership mapper puts the groups into the groups claim (short names, ID + access token + userinfo)" \
   "${client} | [.protocolMappers[] | select(.protocolMapper == \"oidc-group-membership-mapper\" and .config.\"claim.name\" == \"groups\" and .config.\"full.path\" == \"false\" and .config.\"id.token.claim\" == \"true\" and .config.\"access.token.claim\" == \"true\" and .config.\"userinfo.token.claim\" == \"true\")] | length == 1"
+check "the access-token audience mapper includes the web client but not the ID token" \
+  "${client} | [.protocolMappers[] | select(.protocolMapper == \"oidc-audience-mapper\" and .config.\"included.client.audience\" == \"youtube-workspace\" and .config.\"access.token.claim\" == \"true\" and .config.\"id.token.claim\" == \"false\")] | length == 1"
 
 group=$(env_value OIDC_REQUIRED_GROUP)
 if [ -z "${group}" ]; then

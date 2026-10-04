@@ -276,6 +276,9 @@ importers:
       fastify:
         specifier: 'catalog:'
         version: 5.12.5
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
       openid-client:
         specifier: ^6.8.8
         version: 6.8.8

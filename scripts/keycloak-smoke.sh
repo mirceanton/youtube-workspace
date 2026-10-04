@@ -6,8 +6,9 @@
 #
 # It acts like the web server's OIDC client, with curl instead of a browser, and checks that:
 #   - the discovery document, issuer, JWKS, S256 support and the logout endpoint are there;
-#   - `owner` logs in through the authorization code flow with PKCE and the tokens carry the
-#     required group in the groups claim, and `outsider` logs in with the claim lacking it;
+#   - `owner` logs in through the authorization code flow with PKCE and the ID/access tokens carry
+#     the required group, while the access token also has the expected issuer, audience and expiry;
+#     `outsider` authenticates with the group claim lacking the required group;
 #   - the client is locked down: PKCE (S256 only), registered redirect URIs and a correct client
 #     secret are all required, and the password grant is off;
 #   - refreshing a token re-evaluates the group: removing `owner` from the group (admin API) drops
@@ -256,7 +257,7 @@ pass "JWKS has signing keys"
 # --- the code flow for both users -----------------------------------------------------------------
 
 check_login() { # check_login <username> <password> <expect member: true|false>
-  local username=$1 password=$2 member=$3 verifier id_token access_token claims
+  local username=$1 password=$2 member=$3 verifier id_token access_token claims access_claims
   step "Authorization code flow with PKCE as ${username}"
   verifier=$(random_urlsafe)
   login "${username}" "${password}" "${verifier}"
@@ -281,6 +282,12 @@ check_login() { # check_login <username> <password> <expect member: true|false>
     <<<"${claims}" >/dev/null || fail "ID token claims for ${username} are wrong (iss, aud, azp, nonce, sub or preferred_username)"
   pass "ID token: issuer, audience, nonce, subject and preferred_username=${username} are right"
   jq -e '(.email // "") != ""' <<<"${claims}" >/dev/null || fail "ID token for ${username} has no email claim"
+
+  access_claims=$(jwt_claims "${access_token}")
+  jq -e --arg iss "${EXPECTED_ISSUER}" --arg client "${CLIENT_ID}" \
+    '.iss == $iss and (([.aud] | flatten | index($client)) != null) and (.exp > (now | floor)) and ((.sub // "") != "")' \
+    <<<"${access_claims}" >/dev/null || fail "access token claims for ${username} are wrong (iss, aud, exp or sub)"
+  pass "access token: issuer, audience, expiry and subject are right"
 
   expect_membership "ID token of ${username}" "${id_token}" "${member}"
   expect_membership "access token of ${username}" "${access_token}" "${member}"
