@@ -24,6 +24,7 @@ describe("/api/dashboard (PostgreSQL integration)", () => {
   let app: FeatureTestCore;
   let owner: FeatureTestUser;
   let ideasOnly: FeatureTestUser;
+  let experimentsOnly: FeatureTestUser;
   let noAccess: FeatureTestUser;
   let ideaId: string;
 
@@ -31,8 +32,10 @@ describe("/api/dashboard (PostgreSQL integration)", () => {
     db = await createTestDb();
     owner = await signInFeatureUser(db, "t47-dashboard-owner");
     ideasOnly = await signInFeatureUser(db, "t47-dashboard-ideas");
+    experimentsOnly = await signInFeatureUser(db, "t47-dashboard-experiments");
     noAccess = await signInFeatureUser(db, "t47-dashboard-none");
     await grantFeatureLevels(db, owner, ideasOnly, { ideas: "read" });
+    await grantFeatureLevels(db, owner, experimentsOnly, { experiments: "read" });
 
     const idea = await withActor(db.pool("ytw_web"), acting(owner.username), (tx) =>
       createIdea(tx, { title: "Dashboard integration idea" }),
@@ -72,7 +75,7 @@ describe("/api/dashboard (PostgreSQL integration)", () => {
       }),
     );
 
-    app = dbBackedFeatureCore(db, [owner, ideasOnly, noAccess]);
+    app = dbBackedFeatureCore(db, [owner, ideasOnly, experimentsOnly, noAccess]);
     await app.register(dashboardRoutes);
     await app.ready();
   });
@@ -146,5 +149,27 @@ describe("/api/dashboard (PostgreSQL integration)", () => {
         .json()
         .recent_activity.some((event: { entity_id: string | null }) => event.entity_id === ideaId),
     ).toBe(true);
+  });
+
+  it("hides a linked video title when experiments are readable but videos are not", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/dashboard",
+      headers: { "x-test-user": experimentsOnly.username },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      ideas: null,
+      running_experiments: [
+        {
+          video_id: expect.any(String),
+          video_title: null,
+          type: "title",
+        },
+      ],
+      latest_videos: null,
+      recent_activity: null,
+    });
+    expect(JSON.stringify(response.json())).not.toContain("Dashboard integration video");
   });
 });

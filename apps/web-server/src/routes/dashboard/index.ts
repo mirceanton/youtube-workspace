@@ -55,7 +55,8 @@ export default async function dashboardRoutes(server: FastifyInstance): Promise<
             : experiments.map((experiment) => ({
                 id: experiment.experimentId,
                 video_id: experiment.videoId,
-                video_title: experiment.videoTitle,
+                // Experiment access does not imply permission to read the linked video's title.
+                video_title: canRead(auth, "videos") ? experiment.videoTitle : null,
                 type: experiment.type,
                 hypothesis: experiment.hypothesis,
                 starts_at: timestamp(experiment.startsAt),

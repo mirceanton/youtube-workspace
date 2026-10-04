@@ -115,7 +115,9 @@ export function Component() {
                       className="block min-h-11 py-3 outline-none focus-visible:ring-2 focus-visible:ring-focus"
                     >
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{experiment.video_title}</span>
+                        <span className="font-medium">
+                          {experiment.video_title ?? "Video title unavailable"}
+                        </span>
                         <Badge tone="info">{experiment.type}</Badge>
                       </div>
                       <p className="mt-1 text-sm text-ink-muted">

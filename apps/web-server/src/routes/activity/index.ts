@@ -12,61 +12,83 @@ import type { WebAuth } from "../../core/types.js";
 const POLL_BATCH_SIZE = 250;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POLL_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
-const FIRST_POSITION = {
-  createdAt: "1970-01-01T00:00:00.000000Z",
-  id: "00000000-0000-0000-0000-000000000000",
-};
+// events.created_at defaults to transaction-start `now()`. A transaction can therefore commit
+// after a newer event has already been polled. Rescan a bounded five-minute overlap so those late
+// commits are found; event rows inside each response are collapsed to resource names below.
+const POLL_OVERLAP = "5 minutes";
 
 type PollPosition = { createdAt: string; id: string };
 type PollRow = PollPosition & { entityType: string | null };
+type PollCursor = { watermark: string; through: string | null; scan: PollPosition | null };
 type ActivityCore = FastifyInstance & {
   requireLevel(resource: "activity", level: "read"): preHandlerHookHandler;
   requireAnyLevel(level: "read" | "write"): preHandlerHookHandler;
   db: { pool: Queryable };
 };
 
-function encodePosition(position: PollPosition): string {
-  return `v1_${Buffer.from(JSON.stringify(position), "utf8").toString("base64url")}`;
+function isPollTime(value: unknown): value is string {
+  return (
+    typeof value === "string" && POLL_TIME_PATTERN.test(value) && Number.isFinite(Date.parse(value))
+  );
 }
 
-function decodePosition(cursor: string): PollPosition | null {
-  if (!/^v1_[A-Za-z0-9_-]{1,480}$/.test(cursor)) return null;
-  const encoded = cursor.slice(3);
+function isPosition(value: unknown): value is PollPosition {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    Object.keys(row).toSorted().join(",") === "createdAt,id" &&
+    isPollTime(row.createdAt) &&
+    typeof row.id === "string" &&
+    UUID_PATTERN.test(row.id)
+  );
+}
+
+function encodeCursor(cursor: PollCursor): string {
+  // Project every field explicitly. In particular, never serialize a runtime PollRow, whose
+  // entityType could disclose events the caller cannot read.
+  const payload = {
+    watermark: cursor.watermark,
+    through: cursor.through,
+    scan: cursor.scan === null ? null : { createdAt: cursor.scan.createdAt, id: cursor.scan.id },
+  };
+  return `v2_${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
+}
+
+function decodeCursor(encodedCursor: string): PollCursor | null {
+  if (!/^v2_[A-Za-z0-9_-]{1,480}$/.test(encodedCursor)) return null;
+  const encoded = encodedCursor.slice(3);
   try {
     const text = Buffer.from(encoded, "base64url").toString("utf8");
     if (Buffer.from(text, "utf8").toString("base64url") !== encoded) return null;
     const value: unknown = JSON.parse(text);
-    if (typeof value !== "object" || value === null) return null;
-    const { createdAt, id } = value as { createdAt?: unknown; id?: unknown };
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
     if (
-      typeof createdAt !== "string" ||
-      !POLL_TIME_PATTERN.test(createdAt) ||
-      !Number.isFinite(Date.parse(createdAt)) ||
-      typeof id !== "string" ||
-      !UUID_PATTERN.test(id)
+      Object.keys(row).toSorted().join(",") !== "scan,through,watermark" ||
+      !isPollTime(row.watermark) ||
+      (row.through !== null && !isPollTime(row.through)) ||
+      (row.scan !== null && !isPosition(row.scan)) ||
+      (row.through !== null && Date.parse(row.through as string) < Date.parse(row.watermark)) ||
+      (row.through === null && row.scan !== null)
     ) {
       return null;
     }
-    return { createdAt, id };
+    return {
+      watermark: row.watermark,
+      through: row.through,
+      scan: row.scan,
+    } as PollCursor;
   } catch {
     return null;
   }
 }
 
-function cursorFor(row: PollPosition): string {
-  return encodePosition(row);
-}
-
-function initialCursor(pool: Queryable): Promise<PollPosition | null> {
+function initialCursor(pool: Queryable): Promise<PollCursor> {
   return pool
-    .query<PollPosition>(
-      `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
-              id::text AS id
-         FROM public.events
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1`,
+    .query<{ watermark: string }>(
+      `SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS watermark`,
     )
-    .then(({ rows }) => rows[0] ?? null);
+    .then(({ rows }) => ({ watermark: rows[0]!.watermark, through: null, scan: null }));
 }
 
 function eventResource(entityType: string | null): Resource {
@@ -172,24 +194,42 @@ export default async function activityRoutes(server: FastifyInstance): Promise<v
 
       try {
         if (since === undefined) {
-          const latest = await initialCursor(app.db.pool);
           return reply.send({
             changed_resources: [],
-            cursor: latest ? cursorFor(latest) : cursorFor(FIRST_POSITION),
+            cursor: encodeCursor(await initialCursor(app.db.pool)),
             has_more: false,
           });
         }
-        const position = decodePosition(since);
-        if (!position) return reply.code(400).send({ error: "since is not a valid event cursor" });
-        const { rows } = await app.db.pool.query<PollRow>(
-          `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
-                  id::text AS id, entity_type AS "entityType"
-             FROM public.events
-            WHERE (created_at, id) > ($1::timestamptz, $2::uuid)
-            ORDER BY created_at ASC, id ASC
-            LIMIT $3::integer`,
-          [position.createdAt, position.id, POLL_BATCH_SIZE + 1],
-        );
+        const cursor = decodeCursor(since);
+        if (!cursor) return reply.code(400).send({ error: "since is not a valid event cursor" });
+        const through =
+          cursor.through ??
+          (
+            await app.db.pool.query<{ through: string }>(
+              `SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS through`,
+            )
+          ).rows[0]!.through;
+        const { rows } = cursor.scan
+          ? await app.db.pool.query<PollRow>(
+              `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
+                      id::text AS id, entity_type AS "entityType"
+                 FROM public.events
+                WHERE (created_at, id) > ($1::timestamptz, $2::uuid)
+                  AND created_at <= $3::timestamptz
+                ORDER BY created_at ASC, id ASC
+                LIMIT $4::integer`,
+              [cursor.scan.createdAt, cursor.scan.id, through, POLL_BATCH_SIZE + 1],
+            )
+          : await app.db.pool.query<PollRow>(
+              `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
+                      id::text AS id, entity_type AS "entityType"
+                 FROM public.events
+                WHERE created_at >= ($1::timestamptz - interval '${POLL_OVERLAP}')
+                  AND created_at <= $2::timestamptz
+                ORDER BY created_at ASC, id ASC
+                LIMIT $3::integer`,
+              [cursor.watermark, through, POLL_BATCH_SIZE + 1],
+            );
         const hasMore = rows.length > POLL_BATCH_SIZE;
         const page = rows.slice(0, POLL_BATCH_SIZE);
         const changed = new Set<Resource>();
@@ -199,9 +239,16 @@ export default async function activityRoutes(server: FastifyInstance): Promise<v
           if (effectiveCanRead(auth, "activity")) changed.add("activity");
         }
         const last = page.at(-1);
+        const nextCursor: PollCursor = hasMore
+          ? {
+              watermark: cursor.watermark,
+              through,
+              scan: last ? { createdAt: last.createdAt, id: last.id } : null,
+            }
+          : { watermark: through, through: null, scan: null };
         return reply.send({
           changed_resources: [...changed],
-          cursor: last ? cursorFor(last) : since,
+          cursor: encodeCursor(nextCursor),
           has_more: hasMore,
         });
       } catch (error) {
