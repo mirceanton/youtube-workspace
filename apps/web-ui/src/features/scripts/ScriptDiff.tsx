@@ -34,9 +34,30 @@ export function ScriptDiff({
   return (
     <section aria-label="Script version diff" className="min-w-0">
       {diff.summarized ? (
-        <p className="mb-2 text-sm text-ink-muted">
-          Large diffs show changed text with nearby matching lines; excess lines are summarized.
-        </p>
+        <div className="mb-2">
+          <p className="text-sm text-ink-muted">
+            Large diffs show changed text with nearby matching lines; excess lines are summarized.
+          </p>
+          <details className="mt-2 rounded-lg border border-line bg-surface">
+            <summary className="cursor-pointer px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-focus">
+              Show complete versions
+            </summary>
+            <div className="grid gap-3 border-t border-line p-3 md:grid-cols-2">
+              <section aria-label={`${beforeLabel} complete text`} className="min-w-0">
+                <h3 className="mb-2 text-sm font-semibold">{beforeLabel} · complete text</h3>
+                <pre className="whitespace-pre-wrap break-words rounded-md bg-subtle p-3 font-mono text-sm">
+                  {before}
+                </pre>
+              </section>
+              <section aria-label={`${afterLabel} complete text`} className="min-w-0">
+                <h3 className="mb-2 text-sm font-semibold">{afterLabel} · complete text</h3>
+                <pre className="whitespace-pre-wrap break-words rounded-md bg-subtle p-3 font-mono text-sm">
+                  {after}
+                </pre>
+              </section>
+            </div>
+          </details>
+        </div>
       ) : null}
       <div className="hidden overflow-hidden rounded-lg border border-line md:grid md:grid-cols-2">
         {[
