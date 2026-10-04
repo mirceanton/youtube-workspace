@@ -3,7 +3,7 @@
 This guide provides operational instructions for running, administering, and monitoring the YouTube Workspace backend and Model Context Protocol (MCP) server.
 
 > [!NOTE]
-> Per architectural decision, Phases 0–2 (Foundations, Database Layer, and MCP Server) are fully implemented and production-ready for AI agent collaboration. The Web UI and browser-facing BFF (Phases 3–4) are explicitly deferred. Operators and agents interact directly with the database, MCP server, and Admin CLI.
+> Phases 0–3, including the Web UI and browser-facing BFF, are implemented. Phase 3 CI and hosted Keycloak end-to-end checks passed in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7); see the [acceptance report](acceptance.md) and [Phase 3 traceability](traceability/phase3.md). This documents implementation and CI validation, not production deployment. Phase 4 PWA and offline support remain deferred. Operators and agents can continue to use the Admin CLI and MCP server.
 
 ---
 

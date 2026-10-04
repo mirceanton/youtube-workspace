@@ -1,9 +1,9 @@
 # YouTube Workspace
 
-Headless content operations workspace and Model Context Protocol (MCP) server for a YouTube channel, built for autonomous AI agents collaborating with human channel operators.
+Content operations workspace and Model Context Protocol (MCP) server for a YouTube channel, built for autonomous AI agents collaborating with human channel operators.
 
 > [!NOTE]
-> **Phases 0–2 Delivered:** The core database layer, integrity constraints, audit subsystem, RBAC policy engine, token service, Admin CLI, and full MCP server (Phases 0–2) are implemented and verified. The Web UI and browser-facing BFF (Phases 3–4) are deferred by architectural decision; human operators manage access and tokens via the Admin CLI, while agents collaborate via MCP.
+> **Phases 0–3 implemented:** The core database layer, MCP server, Web UI, and browser-facing BFF are implemented. Phase 3 passed its CI and hosted Keycloak end-to-end checks in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7); this records implementation and CI validation, not a production deployment. Phase 4 PWA and offline support remain deferred. See the [acceptance report](docs/acceptance.md) and [Phase 3 traceability](docs/traceability/phase3.md).
 
 ---
 
@@ -43,7 +43,7 @@ flowchart TD
         Tools["Tool Registry (Write / Read / query_sql)"]
     end
 
-    subgraph FuturePhase["Deferred (Phases 3–4)"]
+    subgraph WebApp["Web App (Phase 3)"]
         WebBFF["Fastify Web BFF (:3000)"]
         WebSPA["React Single Page App (:5173)"]
     end
@@ -268,11 +268,11 @@ To add a new object type to the workspace:
 
 ---
 
-## Web App (Deferred)
+## Web App
 
-The Web UI (React single-page application) and Web BFF (OIDC authentication, cookie sessions) are defined in PRD Section 6 and 7, but are **explicitly deferred** to subsequent development phases.
+The React Web UI and Fastify BFF with OIDC authentication and cookie sessions (PRD Sections 6–7) are implemented. Phase 3 passed its CI and hosted Keycloak end-to-end checks in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7). The app still needs environment-specific production hosting and Keycloak configuration before it can be considered deployed. Phase 4 PWA and offline support remain deferred.
 
-In the current release, all administration is handled via the Admin CLI, and all agent tasks run via the MCP server.
+The Admin CLI and MCP server remain available for operator administration and agent tasks.
 
 ---
 
