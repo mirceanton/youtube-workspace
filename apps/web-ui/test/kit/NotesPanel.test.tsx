@@ -275,7 +275,7 @@ describe("NotesPanel: writing", () => {
 });
 
 describe("NotesPanel: live updates", () => {
-  it("picks up a note an agent added, within the 15 s polling interval", async () => {
+  it("picks up a note an agent added, within the 12 s polling interval", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const api = stubApi("owner", { notes: structuredClone(SEED) });
     renderWithSession(<NotesPanel entityType="idea" entityId={IDEA_ID} />, {
@@ -294,7 +294,7 @@ describe("NotesPanel: live updates", () => {
       }),
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(15_100);
+      await vi.advanceTimersByTimeAsync(12_100);
     });
     expect(await screen.findByText("Added by an agent meanwhile")).toBeInTheDocument();
   });

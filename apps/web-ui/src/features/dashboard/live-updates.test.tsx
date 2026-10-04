@@ -15,9 +15,9 @@ function jsonResponse(body: unknown): Response {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("global live-update poll", () => {
-  it("uses the shared 15-second refetch interval", () => {
+  it("uses the shared 12-second refetch interval to leave margin under the 15-second SLA", () => {
     const client = createQueryClient();
-    expect(client.getDefaultOptions().queries?.refetchInterval).toBe(15_000);
+    expect(client.getDefaultOptions().queries?.refetchInterval).toBe(12_000);
     client.clear();
   });
 

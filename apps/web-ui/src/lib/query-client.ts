@@ -14,7 +14,7 @@ export function shouldRetry(failureCount: number, error: unknown): boolean {
 }
 
 /**
- * Live updates are polling (PRD 6 accepts 15 s): every active query refetches every
+ * Live updates are polling (PRD 6 requires changes within 15 s): every active query refetches every
  * `LIVE_UPDATE_INTERVAL_MS`, but not while the tab is hidden (`refetchIntervalInBackground: false`),
  * and again when the tab regains focus or the network returns. A query that must not refetch under
  * the user (an editor's source document, say) passes `refetchInterval: false`.

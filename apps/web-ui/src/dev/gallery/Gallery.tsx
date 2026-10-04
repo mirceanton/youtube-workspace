@@ -133,7 +133,7 @@ export function Gallery() {
           </SelectField>
         </div>
         <Alert tone="info" title="Heads up">
-          Polling refreshes this page every 15 seconds.
+          Polling refreshes this page every 12 seconds.
         </Alert>
         <Alert tone="warn" title="Careful">
           This changes the live channel data.

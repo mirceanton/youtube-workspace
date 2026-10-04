@@ -15,10 +15,10 @@ afterEach(() => {
 });
 
 describe("createQueryClient defaults", () => {
-  it("polls every 15 seconds (PRD 6) and not in a hidden tab", () => {
+  it("polls every 12 seconds to meet the PRD 6 fifteen-second SLA and pauses in a hidden tab", () => {
     const { queries } = createQueryClient().getDefaultOptions();
-    expect(LIVE_UPDATE_INTERVAL_MS).toBe(15_000);
-    expect(queries?.refetchInterval).toBe(15_000);
+    expect(LIVE_UPDATE_INTERVAL_MS).toBe(12_000);
+    expect(queries?.refetchInterval).toBe(12_000);
     expect(queries?.refetchIntervalInBackground).toBe(false);
     expect(queries?.refetchOnWindowFocus).toBe(true);
     expect(queries?.refetchOnReconnect).toBe(true);
@@ -60,17 +60,17 @@ function observe(fn: () => Promise<number>) {
 }
 
 describe("live updates", () => {
-  it("refetches an active query every 15 seconds", async () => {
+  it("refetches an active query every 12 seconds", async () => {
     vi.useFakeTimers();
     const fn = vi.fn<() => Promise<number>>(() => Promise.resolve(1));
     const { unsubscribe } = observe(fn);
     await vi.advanceTimersByTimeAsync(0);
     expect(fn).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(14_000);
+    await vi.advanceTimersByTimeAsync(11_000);
     expect(fn).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1_100);
     expect(fn).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(12_000);
     expect(fn).toHaveBeenCalledTimes(3);
     unsubscribe();
   });

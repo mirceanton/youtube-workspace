@@ -13,5 +13,5 @@ export const QUERY_SQL_TIMEOUT_MS = 10_000;
 /** Default lifetime of a new API token, in days (PRD 7). */
 export const API_TOKEN_DEFAULT_EXPIRY_DAYS = 90;
 
-/** How quickly changes made by agents must show up in the web UI, in milliseconds (PRD 6). */
-export const LIVE_UPDATE_INTERVAL_MS = 15_000;
+/** Polling cadence that leaves request and browser scheduling margin in the PRD 6 fifteen-second SLA. */
+export const LIVE_UPDATE_INTERVAL_MS = 12_000;
