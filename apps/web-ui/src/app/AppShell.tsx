@@ -11,6 +11,7 @@ import { useSession } from "@/lib/session.ts";
 import { APP_NAME } from "@/lib/useDocumentTitle.ts";
 import { navEntriesFor, type FeatureDefinition, type NavEntry } from "./features.ts";
 import { WideLayoutContext } from "@/kit/layout.ts";
+import { LiveUpdatePoller } from "@/features/dashboard/LiveUpdatePoller.tsx";
 
 /** Items in the phone bottom bar before "More" (PRD 8: bottom navigation on phones). */
 export const BOTTOM_BAR_ITEMS = 4;
@@ -240,6 +241,8 @@ export function AppShell({ features }: { features: readonly FeatureDefinition[] 
   const entries = useMemo(() => navEntriesFor(features, me), [features, me]);
   return (
     <ShellFrame entries={entries}>
+      {/* T47 exception to feature-only files: this small, zod-free poller must run on every route. */}
+      <LiveUpdatePoller />
       <Outlet />
     </ShellFrame>
   );
