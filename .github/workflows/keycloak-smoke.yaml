@@ -7,7 +7,7 @@ permissions: { contents: read }
 # login for both dev users against it (scripts/keycloak-smoke.sh). This is the only place the realm
 # export is proven against a real Keycloak: the agent sandbox cannot pull the image. Runs only when
 # something that can change the outcome changes, which includes Renovate's image bumps.
-# Pushes to claude/** are included because the integration branch has no pull request flow yet.
+# Integration branches are included because they may not have a pull request yet.
 on:
   workflow_dispatch: {}
   pull_request:
@@ -19,7 +19,7 @@ on:
       - "docker-compose.yml"
       - "scripts/keycloak-smoke.sh"
   push:
-    branches: ["main", "claude/**", "renovate/**"]
+    branches: ["main", "claude/**", "codex/**", "renovate/**"]
     paths:
       - ".github/workflows/keycloak-smoke.yaml"
       - ".env.example"

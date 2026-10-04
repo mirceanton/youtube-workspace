@@ -1,8 +1,15 @@
-# OIDC end-to-end test
+# OIDC and Phase 3 end-to-end stories
 
 The Playwright scenario covers in-group sign-in, the first-user admin rule, outsider denial before
 user creation, a new user's initial no-access state, admin permission grants, group-removal
 revocation at refresh, RP logout, and using a token created in the UI against the MCP endpoint.
+
+The same runner discovers `stories/**/*.spec.ts`: idea-board dragging, phone script reading and
+comments, experiment comparison, MCP Markdown revision round trip and stale-upload rejection,
+token creation/revocation, the admin access matrix, two-session conflicts, human/agent activity,
+restricted search and activity visibility, and changes visible in an already-open phone reader
+within 15 seconds. A route matrix probes every feature API method/path with None, Read and Write,
+plus unauthenticated requests. See [Phase 3 traceability](../docs/traceability/phase3.md).
 
 The local default uses a small in-process OIDC provider, so Keycloak is not needed:
 
@@ -33,3 +40,8 @@ the outsider is out, and the collaborator exists in-group. It temporarily sets t
 access-token lifespan to 15 seconds and restores the original lifespan and group memberships after
 the scenario; it removes the collaborator if the test created it. CI uses its own Compose project
 and removes only that project's containers and volume after the run.
+
+Keycloak preparation also surrounds the entire runner, preserving the collaborator's OIDC subject
+between story files. Each file restores its group changes; only the outer runner removes a
+collaborator it created. Mock mode restores default fixture groups before each story file through
+the mock provider's authenticated test API. No application database rows are reset between stories.

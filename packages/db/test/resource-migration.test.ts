@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { RESOURCES } from "@ytw/shared/constants";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withActor } from "../src/client.js";
-import { migrate } from "../src/migrate.js";
+import { loadMigrations, migrate } from "../src/migrate.js";
 import { createTestDb, testRolePasswords, testServerUrl, type TestDb } from "../src/testing.js";
 import { copyMigrations, failure, sqlstate } from "./helpers.js";
 import { grant, login, makeToken, newSecret, person, type TestUser } from "./identity-helpers.js";
@@ -88,6 +88,7 @@ let oldToken: Awaited<ReturnType<typeof makeToken>>;
 let cleanup: () => Promise<void>;
 let migrationsDir = "";
 let applied: string[] = [];
+let addedMigration = "";
 
 beforeAll(async () => {
   db = await createTestDb();
@@ -101,7 +102,14 @@ beforeAll(async () => {
   const copy = await copyMigrations();
   cleanup = copy.remove;
   migrationsDir = copy.dir;
-  await writeFile(join(copy.dir, "0200_resource_sponsors.sql"), MIGRATION);
+  // The guide's example must follow the current real history, including later feature migrations.
+  const history = await loadMigrations(copy.dir);
+  const nextVersion = String(Math.max(...history.map((file) => Number(file.version))) + 1).padStart(
+    4,
+    "0",
+  );
+  addedMigration = `${nextVersion}_resource_sponsors.sql`;
+  await writeFile(join(copy.dir, addedMigration), MIGRATION);
   const result = await migrate({
     databaseUrl: db.url("admin"),
     lockDatabaseUrl: testServerUrl(),
@@ -125,7 +133,7 @@ async function levelsOf(userId: string): Promise<Record<string, string>> {
 
 describe("a database with users and tokens after the object-type migration", () => {
   it("applied exactly the new file on top of the existing history", () => {
-    expect(applied).toEqual(["0200_resource_sponsors.sql"]);
+    expect(applied).toEqual([addedMigration]);
   });
 
   it("lists the new objects and their maximum levels", async () => {

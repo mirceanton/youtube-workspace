@@ -208,7 +208,22 @@ class KeycloakAdmin {
 }
 
 export async function prepareIdentityProvider(): Promise<void> {
-  if (mode === "mock") return;
+  if (mode === "mock") {
+    // Restore the identities for each independent browser scenario. The login flow deliberately
+    // removes the collaborator's group, and later story files reuse the same running provider.
+    for (const username of ["owner", "collaborator", "outsider"]) {
+      const response = await fetch(`${new URL(issuer).origin}/_e2e/users/${username}/groups`, {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${process.env.E2E_MOCK_ADMIN_TOKEN ?? "ytw-e2e-local-mock-admin"}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ groups: username === "outsider" ? [] : [groupName] }),
+      });
+      if (!response.ok) throw new Error(`Mock identity preparation failed (${response.status})`);
+    }
+    return;
+  }
   if (mode !== "keycloak") throw new Error("E2E_IDP must be either mock or keycloak");
   keycloakAdmin = new KeycloakAdmin();
   await keycloakAdmin.prepareForTests();

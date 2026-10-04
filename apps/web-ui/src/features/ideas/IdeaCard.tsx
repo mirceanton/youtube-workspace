@@ -18,7 +18,7 @@ export function IdeaCard({ idea, draggable = false, onMove, onDragStart }: IdeaC
   return (
     <article>
       <Card className="flex flex-col gap-3 p-3 shadow-sm transition-shadow hover:shadow-md">
-        <div className="flex items-start justify-between gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
           <Link
             to={`/ideas/${idea.id}`}
             className="min-h-11 min-w-0 flex-1 rounded-md text-base font-semibold leading-snug text-link hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
@@ -26,9 +26,14 @@ export function IdeaCard({ idea, draggable = false, onMove, onDragStart }: IdeaC
             {idea.title}
           </Link>
           {idea.score === null ? (
-            <Badge>Unscored</Badge>
+            <Badge className="col-start-1 row-start-2 w-fit">Unscored</Badge>
           ) : (
-            <Badge tone={idea.score >= 70 ? "ok" : "neutral"}>Score {idea.score}</Badge>
+            <Badge
+              className="col-start-1 row-start-2 w-fit"
+              tone={idea.score >= 70 ? "ok" : "neutral"}
+            >
+              Score {idea.score}
+            </Badge>
           )}
           {draggable && onDragStart ? (
             <button
@@ -37,7 +42,7 @@ export function IdeaCard({ idea, draggable = false, onMove, onDragStart }: IdeaC
               aria-label={`Drag ${idea.title} to another stage`}
               title="Drag to a new stage, or use the stage menu below."
               onDragStart={(event) => onDragStart(idea, event)}
-              className="-mr-1 -mt-1 inline-flex size-11 shrink-0 cursor-grab items-center justify-center rounded-lg text-ink-muted active:cursor-grabbing"
+              className="col-start-2 row-start-1 -mr-1 -mt-1 inline-flex size-11 shrink-0 cursor-grab items-center justify-center rounded-lg text-ink-muted active:cursor-grabbing"
             >
               <GripVertical aria-hidden="true" className="size-5" />
             </button>
