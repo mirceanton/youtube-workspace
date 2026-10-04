@@ -234,7 +234,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Setup mise
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@94c60b39bc2d90ab2f9bab27f38d3cc4812c1834 # v5.1.0
       # The steps below are independent, so one finding does not hide the others.
       # Dependencies are covered by this audit and by the Trivy image scans in the `images` job
       # (their node-pkg targets), not by the filesystem scan below.
