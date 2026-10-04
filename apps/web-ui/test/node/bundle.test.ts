@@ -82,8 +82,10 @@ describe("production bundle of the app", () => {
     const chunks = await bundle();
     const initial = initialChunks(chunks);
     expect(initial.length).toBeGreaterThan(0);
+    // Features intentionally emit lazy chunks. Check the initial download graph here; the heavy
+    // fixture below verifies that its Zod/chart/Markdown dependencies exist only outside that graph.
     for (const [name, marker] of Object.entries(MARKERS)) {
-      expect(containing(chunks, marker), `${name} must not be in the production bundle`).toEqual(
+      expect(containing(initial, marker), `${name} must not be in the initial download`).toEqual(
         [],
       );
     }

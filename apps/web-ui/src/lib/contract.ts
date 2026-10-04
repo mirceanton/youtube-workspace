@@ -4,6 +4,8 @@
 // keeps its own copy and test/contract.test.ts asserts that the two never drift apart.
 
 export const ME_PATH = "/api/me";
+export const NOTES_PATH = "/api/notes";
+export const NOTE_BODY_MAX_BYTES = 65_536;
 export const LOGIN_PATH = "/auth/login";
 export const LOGOUT_PATH = "/auth/logout";
 export const RETURN_TO_PARAM = "return_to";

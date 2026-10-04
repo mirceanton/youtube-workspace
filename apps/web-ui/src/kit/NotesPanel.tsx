@@ -2,16 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare } from "lucide-react";
 import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { NoteEntityType } from "@ytw/shared/constants";
-// zod schemas: this module is only ever loaded by code-split feature chunks, never by the shell.
-import {
-  NOTES_PATH,
-  createNoteRequestSchema,
-  createNoteResponseSchema,
-  listNotesResponseSchema,
-  type Note,
-} from "@ytw/shared/api/notes";
+import type { Note } from "@ytw/shared/api/notes";
 import { api } from "@/lib/api.ts";
 import { cx } from "@/lib/cx.ts";
+import { NOTE_BODY_MAX_BYTES, NOTES_PATH } from "@/lib/contract.ts";
 import { describeError } from "@/lib/errors.ts";
 import { formatDateTime, formatRelativeTime } from "@/lib/format.ts";
 import { useLevel } from "@/lib/session.ts";
@@ -23,6 +17,65 @@ import { MarkdownView } from "./MarkdownView.tsx";
 import { EmptyState, ErrorState, LoadingState } from "./states.tsx";
 import { notesQueryKey } from "./notes-keys.ts";
 import { WriteGuard } from "./WriteGuard.tsx";
+
+const NOTE_ENTITY_TYPES = ["idea", "script", "video", "experiment"] as const;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseNote(value: unknown): Note {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    value.id.length === 0 ||
+    !NOTE_ENTITY_TYPES.includes(value.entity_type as (typeof NOTE_ENTITY_TYPES)[number]) ||
+    typeof value.entity_id !== "string" ||
+    !UUID_PATTERN.test(value.entity_id) ||
+    typeof value.author !== "string" ||
+    value.author.length === 0 ||
+    (value.actor_type !== "human" && value.actor_type !== "agent") ||
+    typeof value.body_md !== "string" ||
+    typeof value.created_at !== "string" ||
+    Number.isNaN(Date.parse(value.created_at)) ||
+    typeof value.updated_at !== "string" ||
+    Number.isNaN(Date.parse(value.updated_at))
+  ) {
+    throw new TypeError("The server returned an invalid note");
+  }
+  return value as unknown as Note;
+}
+
+function parseNotesResponse(
+  value: unknown,
+  entityType: NoteEntityType,
+  entityId: string,
+): { notes: Note[] } {
+  if (!isRecord(value) || !Array.isArray(value.notes)) {
+    throw new TypeError("The server returned an invalid notes list");
+  }
+  const notes = value.notes.map(parseNote);
+  if (notes.some((note) => note.entity_type !== entityType || note.entity_id !== entityId)) {
+    throw new TypeError("The server returned notes for a different entity");
+  }
+  return { notes };
+}
+
+function parseNoteResponse(
+  value: unknown,
+  entityType: NoteEntityType,
+  entityId: string,
+): { note: Note } {
+  if (!isRecord(value) || !("note" in value)) {
+    throw new TypeError("The server returned an invalid note response");
+  }
+  const note = parseNote(value.note);
+  if (note.entity_type !== entityType || note.entity_id !== entityId) {
+    throw new TypeError("The server returned a note for a different entity");
+  }
+  return { note };
+}
 
 export interface NotesPanelProps {
   /** What the notes are attached to. */
@@ -67,7 +120,7 @@ export function NotesPanel({
     queryFn: ({ signal }) =>
       api.get(NOTES_PATH, {
         query: { entity_type: entityType, entity_id: entityId },
-        parse: listNotesResponseSchema,
+        parse: { parse: (value: unknown) => parseNotesResponse(value, entityType, entityId) },
         signal,
       }),
   });
@@ -82,7 +135,7 @@ export function NotesPanel({
       api.post(
         NOTES_PATH,
         { entity_type: entityType, entity_id: entityId, body_md },
-        { parse: createNoteResponseSchema },
+        { parse: { parse: (value: unknown) => parseNoteResponse(value, entityType, entityId) } },
       ),
     onSuccess: ({ note }) => {
       queryClient.setQueryData(key, (old: { notes: Note[] } | undefined) => ({
@@ -98,17 +151,16 @@ export function NotesPanel({
   function submit(event?: FormEvent) {
     event?.preventDefault();
     setAdded(false);
-    const request = createNoteRequestSchema.safeParse({
-      entity_type: entityType,
-      entity_id: entityId,
-      body_md: draft,
-    });
-    if (!request.success) {
-      setValidation(request.error.issues[0]?.message ?? "This note cannot be saved");
+    if (draft.trim().length === 0) {
+      setValidation("A note cannot be empty");
+      return;
+    }
+    if (new TextEncoder().encode(draft).length > NOTE_BODY_MAX_BYTES) {
+      setValidation(`A note can be at most ${NOTE_BODY_MAX_BYTES} bytes`);
       return;
     }
     setValidation(null);
-    add.mutate(request.data.body_md);
+    add.mutate(draft);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {

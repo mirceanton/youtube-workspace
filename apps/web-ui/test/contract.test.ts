@@ -6,6 +6,10 @@ import {
   RETURN_TO_PARAM as SHARED_RETURN_TO_PARAM,
   meResponseSchema,
 } from "@ytw/shared/api/session";
+import {
+  NOTE_BODY_MAX_BYTES as SHARED_NOTE_BODY_MAX_BYTES,
+  NOTES_PATH as SHARED_NOTES_PATH,
+} from "@ytw/shared/api/notes";
 import { RESOURCES } from "@ytw/shared/constants";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,6 +17,8 @@ import {
   LOGIN_PATH,
   LOGOUT_PATH,
   ME_PATH,
+  NOTE_BODY_MAX_BYTES,
+  NOTES_PATH,
   RETURN_TO_PARAM,
 } from "../src/lib/contract.ts";
 import { parseMe } from "../src/lib/session.ts";
@@ -100,6 +106,10 @@ describe("web contract constants", () => {
       LOGOUT_PATH: SHARED_LOGOUT_PATH,
       RETURN_TO_PARAM: SHARED_RETURN_TO_PARAM,
       CSRF_HEADER: SHARED_CSRF_HEADER,
+    });
+    expect({ NOTES_PATH, NOTE_BODY_MAX_BYTES }).toEqual({
+      NOTES_PATH: SHARED_NOTES_PATH,
+      NOTE_BODY_MAX_BYTES: SHARED_NOTE_BODY_MAX_BYTES,
     });
   });
 });

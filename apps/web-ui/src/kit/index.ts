@@ -1,5 +1,5 @@
-// The UI kit. Features import from "@/kit"; the app shell imports the individual files, so a
-// feature-only dependency (zod through NotesPanel) never reaches the initial bundle.
+// The UI kit. Features import from "@/kit"; the app shell imports the individual files, so heavy
+// feature dependencies such as charts and the markdown renderer never reach the initial bundle.
 export { Alert } from "./Alert.tsx";
 export { Badge, type Tone } from "./Badge.tsx";
 export { Button, type ButtonProps } from "./Button.tsx";
