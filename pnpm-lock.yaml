@@ -255,6 +255,9 @@ importers:
 
   apps/web-server:
     dependencies:
+      '@ytw/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@ytw/shared':
         specifier: workspace:*
         version: link:../../packages/shared
