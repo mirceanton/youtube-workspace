@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestDb } from "@ytw/db/testing";
+import { prepareIdentityProvider, restoreIdentityProvider } from "./src/idp.js";
 
 const e2eDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(e2eDirectory, "..");
@@ -32,6 +33,10 @@ async function main(): Promise<void> {
   let testDb: Awaited<ReturnType<typeof createTestDb>> | undefined;
   try {
     testDb = await createTestDb();
+    // Keep one stable Keycloak subject across all story files. Per-file preparation restores
+    // group changes, but must not repeatedly delete/recreate the same collaborator while the
+    // disposable database still contains its user record.
+    if (mode === "keycloak") await prepareIdentityProvider();
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
       E2E_IDP: mode,
@@ -52,6 +57,15 @@ async function main(): Promise<void> {
     process.stderr.write(`[e2e] Setup failed: ${message}\n`);
     process.exitCode = 1;
   } finally {
+    if (mode === "keycloak") {
+      try {
+        await restoreIdentityProvider();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown cleanup error";
+        process.stderr.write(`[e2e] Could not restore its Keycloak fixtures: ${message}\n`);
+        process.exitCode = 1;
+      }
+    }
     if (testDb !== undefined) {
       try {
         await testDb.drop();

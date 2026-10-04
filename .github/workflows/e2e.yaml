@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: ["main"]
   push:
-    branches: ["main", "claude/**", "renovate/**"]
+    branches: ["main", "claude/**", "codex/**", "renovate/**"]
     paths:
       - ".github/actions/setup/action.yaml"
       - ".github/workflows/e2e.yaml"

@@ -98,8 +98,8 @@ const servers = [
 ];
 
 export default defineConfig({
-  testDir: "./flows",
-  testMatch: "**/*.spec.ts",
+  testDir: ".",
+  testMatch: ["flows/**/*.spec.ts", "stories/**/*.spec.ts"],
   fullyParallel: false,
   workers: 1,
   retries: 0,

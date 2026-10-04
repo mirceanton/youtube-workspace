@@ -376,6 +376,9 @@ importers:
       '@ytw/db':
         specifier: workspace:*
         version: link:../packages/db
+      '@ytw/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
       jose:
         specifier: ^6.2.12
         version: 6.2.12
