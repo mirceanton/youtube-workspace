@@ -14,6 +14,7 @@
   "dependencies": {
     "@ytw/db": "workspace:*",
     "@ytw/policy": "workspace:*",
+    "@ytw/script-md": "workspace:*",
     "@ytw/shared": "workspace:*",
     "fastify": "catalog:",
     "zod": "catalog:"
