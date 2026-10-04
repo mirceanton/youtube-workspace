@@ -8,7 +8,9 @@ export const ACTIVITY_PAGE_SIZE = 50;
 
 const timestampSchema = z.iso.datetime({ offset: true });
 const entityTypeSchema = z.string().trim().min(1).max(64);
-const cursorSchema = z.string().max(512);
+// Live-poll cursors carry compressed PostgreSQL snapshots and can grow when many transactions are
+// open at once. The route applies the same bound before decoding.
+const cursorSchema = z.string().max(8192);
 
 export const activityEventSchema = z.object({
   id: z.uuid(),

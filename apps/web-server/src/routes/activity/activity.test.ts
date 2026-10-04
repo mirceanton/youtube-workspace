@@ -1,14 +1,7 @@
-import {
-  addNote,
-  createExperiment,
-  createIdea,
-  registerVideo,
-  saveScriptVersion,
-  withActor,
-  type Actor,
-} from "@ytw/db";
+import { createIdea, registerVideo, saveScriptVersion, withActor, type Actor } from "@ytw/db";
 import { createTestDb, type TestDb } from "@ytw/db/testing";
 import { randomUUID } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   dbBackedFeatureCore,
@@ -21,10 +14,9 @@ import activityRoutes from "./index.js";
 const acting = (username: string): Actor => ({ name: username, type: "human" });
 
 function decodePollCursor(cursor: string): Record<string, unknown> {
-  return JSON.parse(Buffer.from(cursor.slice(3), "base64url").toString("utf8")) as Record<
-    string,
-    unknown
-  >;
+  return JSON.parse(
+    inflateRawSync(Buffer.from(cursor.slice(3), "base64url")).toString("utf8"),
+  ) as Record<string, unknown>;
 }
 
 describe("/api/activity and the compact change poll (PostgreSQL integration)", () => {
@@ -166,7 +158,9 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     expect(bootstrap.statusCode).toBe(200);
     const cursor = bootstrap.json().cursor as string;
     const cursorPayload = decodePollCursor(cursor);
-    expect(Object.keys(cursorPayload).toSorted()).toEqual(["scan", "through", "watermark"]);
+    expect(Object.keys(cursorPayload).toSorted()).toEqual(["scan", "snapshot", "through"]);
+    expect(cursorPayload.snapshot).toMatch(/^\d+:\d+:/);
+    expect(cursorPayload.through).toBeNull();
     expect(JSON.stringify(cursorPayload)).not.toContain("entityType");
     const activityBootstrap = await app.inject({
       method: "GET",
@@ -216,7 +210,7 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     expect(JSON.stringify(poll.json())).not.toContain(owner.username);
     expect(JSON.stringify(poll.json())).not.toContain(nextIdea.id);
     const pollCursor = decodePollCursor(poll.json().cursor as string);
-    expect(Object.keys(pollCursor).toSorted()).toEqual(["scan", "through", "watermark"]);
+    expect(Object.keys(pollCursor).toSorted()).toEqual(["scan", "snapshot", "through"]);
     expect(JSON.stringify(pollCursor)).not.toContain("entityType");
     expect(JSON.stringify(pollCursor)).not.toContain("No video access");
 
@@ -243,9 +237,33 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     expect(hiddenOnlyPoll.statusCode).toBe(200);
     expect(hiddenOnlyPoll.json().changed_resources).toEqual([]);
     const hiddenOnlyCursor = decodePollCursor(hiddenOnlyPoll.json().cursor as string);
-    expect(Object.keys(hiddenOnlyCursor).toSorted()).toEqual(["scan", "through", "watermark"]);
+    expect(Object.keys(hiddenOnlyCursor).toSorted()).toEqual(["scan", "snapshot", "through"]);
     expect(JSON.stringify(hiddenOnlyCursor)).not.toContain("entityType");
     expect(JSON.stringify(hiddenOnlyCursor)).not.toContain("videos");
+  });
+
+  it("rejects malformed and modified snapshot cursors", async () => {
+    const bootstrap = await app.inject({
+      method: "GET",
+      url: "/api/activity/changes",
+      headers: { "x-test-user": notesOnly.username },
+    });
+    expect(bootstrap.statusCode).toBe(200);
+    const cursor = bootstrap.json().cursor as string;
+    const payload = decodePollCursor(cursor);
+    const alteredPayload = { ...payload, entityType: "videos" };
+    const alteredCursor =
+      "v3_" + deflateRawSync(Buffer.from(JSON.stringify(alteredPayload))).toString("base64url");
+    const malformedCursor = cursor.slice(0, -1) + (cursor.endsWith("A") ? "B" : "A");
+
+    for (const invalidCursor of ["v3_not-a-snapshot", alteredCursor, malformedCursor]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/activity/changes?since=" + encodeURIComponent(invalidCursor),
+        headers: { "x-test-user": notesOnly.username },
+      });
+      expect(response.statusCode).toBe(400);
+    }
   });
 
   it("keeps row-bearing page cursors limited to timestamp and event id", async () => {
@@ -258,41 +276,34 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     const cursor = bootstrap.json().cursor as string;
     const initialPayload = decodePollCursor(cursor);
     expect(initialPayload).toEqual({
-      watermark: expect.any(String),
+      snapshot: expect.stringMatching(/^\d+:\d+:/),
       through: null,
       scan: null,
     });
 
-    const recent = await db.pool("ytw_web").query<{ count: string }>(
-      `SELECT count(*)::text AS count
-         FROM public.events
-        WHERE created_at >= ($1::timestamptz - interval '5 minutes')`,
-      [initialPayload.watermark],
+    const firstTimestamp = new Date(Date.now() - 1_000).toISOString();
+    const entityId = randomUUID();
+    await db.admin.query(
+      `INSERT INTO public.events (
+         created_at, actor, actor_type, action, entity_type, entity_id, payload
+       )
+       SELECT $1::timestamptz + i * interval '1 millisecond',
+              $2, 'human', 'insert',
+              CASE WHEN i = 249 THEN 'video' ELSE 'note' END,
+              $3::uuid,
+              CASE WHEN i = 249 THEN '{"title":"Hidden video event"}'::jsonb ELSE '{}'::jsonb END
+         FROM generate_series(0, 251) AS i`,
+      [firstTimestamp, owner.username, entityId],
     );
-    const earlierEvents = Number(recent.rows[0]!.count);
-    const notesBeforeHiddenEvent = 250 - earlierEvents - 1;
-    expect(notesBeforeHiddenEvent).toBeGreaterThan(0);
-    await withActor(db.pool("ytw_web"), acting(owner.username), async (tx) => {
-      for (let index = 0; index < notesBeforeHiddenEvent; index += 1) {
-        await addNote(tx, {
-          entityType: "idea",
-          entityId: ideaId,
-          bodyMd: `Visible note ${index}.`,
-        });
-      }
+
+    const deniedPoll = await app.inject({
+      method: "GET",
+      url: "/api/activity/changes?since=" + encodeURIComponent(cursor),
+      headers: { "x-test-user": experimentsOnly.username },
     });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await withActor(db.pool("ytw_web"), acting(owner.username), (tx) =>
-      registerVideo(tx, {
-        youtubeId: "T47HideV001",
-        title: "Hidden video event",
-        publishedAt: new Date().toISOString(),
-      }),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await withActor(db.pool("ytw_web"), acting(owner.username), (tx) =>
-      addNote(tx, { entityType: "idea", entityId: ideaId, bodyMd: "Last page fixture note." }),
-    );
+    expect(deniedPoll.statusCode).toBe(200);
+    expect(deniedPoll.json().changed_resources).toEqual([]);
+    expect(deniedPoll.json().has_more).toBe(false);
 
     const firstPage = await app.inject({
       method: "GET",
@@ -303,14 +314,37 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     expect(firstPage.json().has_more).toBe(true);
     expect(firstPage.json().changed_resources).toEqual(["notes"]);
     const pagePayload = decodePollCursor(firstPage.json().cursor as string);
-    expect(Object.keys(pagePayload).toSorted()).toEqual(["scan", "through", "watermark"]);
-    expect(pagePayload.scan).not.toBeNull();
+    expect(Object.keys(pagePayload).toSorted()).toEqual(["scan", "snapshot", "through"]);
+    expect(pagePayload.through).toMatch(/^\d+:\d+:/);
+    expect(pagePayload.scan).toEqual({
+      createdAt: expect.any(String),
+      id: expect.any(String),
+    });
     expect(Object.keys(pagePayload.scan as Record<string, unknown>).toSorted()).toEqual([
       "createdAt",
       "id",
     ]);
     expect(JSON.stringify(pagePayload)).not.toContain("entityType");
     expect(JSON.stringify(pagePayload)).not.toContain("Hidden video event");
+    const deniedVideo = await db.admin.query<{ id: string }>(
+      `SELECT id::text AS id
+         FROM public.events
+        WHERE entity_type = 'video' AND entity_id = $1::uuid`,
+      [entityId],
+    );
+    expect((pagePayload.scan as { id: string }).id).not.toBe(deniedVideo.rows[0]?.id);
+
+    const delayedEntityId = randomUUID();
+    await db.admin.query(
+      `INSERT INTO public.events (
+         created_at, actor, actor_type, action, entity_type, entity_id, payload
+       )
+       VALUES (
+         $1::timestamptz - interval '100 milliseconds', $2, 'human', 'insert',
+         'note', $3::uuid, '{}'::jsonb
+       )`,
+      [firstTimestamp, owner.username, delayedEntityId],
+    );
 
     const lastPage = await app.inject({
       method: "GET",
@@ -320,16 +354,18 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     expect(lastPage.statusCode).toBe(200);
     expect(lastPage.json().changed_resources).toEqual(["notes"]);
     expect(lastPage.json().has_more).toBe(false);
+
+    const nextPoll = await app.inject({
+      method: "GET",
+      url: "/api/activity/changes?since=" + encodeURIComponent(lastPage.json().cursor),
+      headers: { "x-test-user": notesOnly.username },
+    });
+    expect(nextPoll.statusCode).toBe(200);
+    expect(nextPoll.json().changed_resources).toEqual(["notes"]);
+    expect(nextPoll.json().has_more).toBe(false);
   });
 
-  it("finds a late transaction with an older event time and deduplicates resource hints", async () => {
-    const experimentVideo = await withActor(db.pool("ytw_web"), acting(owner.username), (tx) =>
-      registerVideo(tx, {
-        youtubeId: "T47LateBas1",
-        title: "Commit ordering fixture",
-        publishedAt: new Date().toISOString(),
-      }),
-    );
+  it("finds a six-minute-backdated event after its transaction commits", async () => {
     const bootstrap = await app.inject({
       method: "GET",
       url: "/api/activity/changes",
@@ -337,37 +373,29 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
     });
     expect(bootstrap.statusCode).toBe(200);
 
-    let markStarted!: () => void;
-    let releaseLateTransaction!: () => void;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    const holdTransaction = new Promise<void>((resolve) => {
-      releaseLateTransaction = resolve;
-    });
-    let lateExperimentId = "";
-    const lateTransaction = withActor(db.pool("ytw_web"), acting(owner.username), async (tx) => {
-      const experiment = await createExperiment(tx, {
-        videoId: experimentVideo.id,
-        type: "title",
-        hypothesis: "A held transaction gets polled after a newer event.",
-        variants: [
-          { label: "Control", content: "Original title", isControl: true },
-          { label: "Variant", content: "New title" },
-        ],
-      });
-      lateExperimentId = experiment.id;
-      markStarted();
-      await holdTransaction;
-    }).catch((error: unknown) => {
-      markStarted();
-      throw error;
-    });
-
+    const heldClient = await db.admin.connect();
+    let transactionOpen = false;
+    const lateEventId = randomUUID();
     try {
-      await started;
-      // Give PostgreSQL a later transaction-start timestamp for the event we observe first.
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await heldClient.query("BEGIN");
+      transactionOpen = true;
+      const lateEvent = await heldClient.query<{
+        id: string;
+        transaction_xid: string;
+        created_at: Date;
+      }>(
+        `INSERT INTO public.events (
+           created_at, actor, actor_type, action, entity_type, entity_id, payload
+         )
+         VALUES (
+           clock_timestamp() - interval '6 minutes', $1, 'human', 'insert',
+           'experiment', $2::uuid, '{}'::jsonb
+         )
+         RETURNING id::text AS id, transaction_xid::text AS transaction_xid, created_at`,
+        [owner.username, lateEventId],
+      );
+      expect(lateEvent.rows[0]?.transaction_xid).not.toBe("2");
+
       const newerVideo = await withActor(db.pool("ytw_web"), acting(owner.username), (tx) =>
         registerVideo(tx, {
           youtubeId: "T47LateV001",
@@ -378,40 +406,50 @@ describe("/api/activity and the compact change poll (PostgreSQL integration)", (
 
       const newerPoll = await app.inject({
         method: "GET",
-        url: `/api/activity/changes?since=${encodeURIComponent(bootstrap.json().cursor)}`,
+        url: "/api/activity/changes?since=" + encodeURIComponent(bootstrap.json().cursor),
         headers: { "x-test-user": overlapReader.username },
       });
       expect(newerPoll.statusCode).toBe(200);
       expect(newerPoll.json().changed_resources).toEqual(["videos"]);
 
-      releaseLateTransaction();
-      await lateTransaction;
-      const timestampOrder = await db.pool("ytw_web").query<{ late_event_is_older: boolean }>(
-        `SELECT late_event.created_at < newer_event.created_at AS late_event_is_older
+      await heldClient.query("COMMIT");
+      transactionOpen = false;
+      const timestampOrder = await db.pool("ytw_web").query<{
+        late_event_is_older: boolean;
+        late_event_is_over_five_minutes_old: boolean;
+      }>(
+        `SELECT late_event.created_at < newer_event.created_at AS late_event_is_older,
+                late_event.created_at < clock_timestamp() - interval '5 minutes' AS late_event_is_over_five_minutes_old
            FROM public.events AS late_event
            JOIN public.events AS newer_event ON newer_event.entity_id = $2::uuid
-          WHERE late_event.entity_type = 'experiment'
-            AND late_event.entity_id = $1::uuid
-            AND newer_event.entity_type = 'video'
-          LIMIT 1`,
-        [lateExperimentId, newerVideo.id],
+          WHERE late_event.id = $1::uuid`,
+        [lateEvent.rows[0]!.id, newerVideo.id],
       );
       expect(timestampOrder.rows[0]?.late_event_is_older).toBe(true);
+      expect(timestampOrder.rows[0]?.late_event_is_over_five_minutes_old).toBe(true);
 
       const latePoll = await app.inject({
         method: "GET",
-        url: `/api/activity/changes?since=${encodeURIComponent(newerPoll.json().cursor)}`,
+        url: "/api/activity/changes?since=" + encodeURIComponent(newerPoll.json().cursor),
         headers: { "x-test-user": overlapReader.username },
       });
       expect(latePoll.statusCode).toBe(200);
-      expect(latePoll.json().changed_resources.toSorted()).toEqual(["experiments", "videos"]);
+      expect(latePoll.json().changed_resources).toEqual(["experiments"]);
       expect(new Set(latePoll.json().changed_resources).size).toBe(
         latePoll.json().changed_resources.length,
       );
       expect(JSON.stringify(decodePollCursor(latePoll.json().cursor))).not.toContain("entityType");
+
+      const drainedPoll = await app.inject({
+        method: "GET",
+        url: "/api/activity/changes?since=" + encodeURIComponent(latePoll.json().cursor),
+        headers: { "x-test-user": overlapReader.username },
+      });
+      expect(drainedPoll.statusCode).toBe(200);
+      expect(drainedPoll.json().changed_resources).toEqual([]);
     } finally {
-      releaseLateTransaction();
-      await lateTransaction;
+      if (transactionOpen) await heldClient.query("ROLLBACK");
+      heldClient.release();
     }
   });
 });

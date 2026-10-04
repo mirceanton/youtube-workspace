@@ -7,19 +7,18 @@ import {
 } from "@ytw/shared/api/activity";
 import type { Resource } from "@ytw/shared/constants";
 import type { FastifyInstance, FastifyReply, preHandlerHookHandler } from "fastify";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import type { WebAuth } from "../../core/types.js";
 
 const POLL_BATCH_SIZE = 250;
+const POLL_CURSOR_MAX_LENGTH = 8192;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POLL_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
-// events.created_at defaults to transaction-start `now()`. A transaction can therefore commit
-// after a newer event has already been polled. Rescan a bounded five-minute overlap so those late
-// commits are found; event rows inside each response are collapsed to resource names below.
-const POLL_OVERLAP = "5 minutes";
+const PG_SNAPSHOT_PATTERN = /^\d+:\d+:(?:\d+(?:,\d+)*)?$/;
 
 type PollPosition = { createdAt: string; id: string };
 type PollRow = PollPosition & { entityType: string | null };
-type PollCursor = { watermark: string; through: string | null; scan: PollPosition | null };
+type PollCursor = { snapshot: string; through: string | null; scan: PollPosition | null };
 type ActivityCore = FastifyInstance & {
   requireLevel(resource: "activity", level: "read"): preHandlerHookHandler;
   requireAnyLevel(level: "read" | "write"): preHandlerHookHandler;
@@ -30,6 +29,36 @@ function isPollTime(value: unknown): value is string {
   return (
     typeof value === "string" && POLL_TIME_PATTERN.test(value) && Number.isFinite(Date.parse(value))
   );
+}
+
+function isPgSnapshot(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 65_536 || !PG_SNAPSHOT_PATTERN.test(value)) {
+    return false;
+  }
+  try {
+    const [xminText, xmaxText, xipText] = value.split(":");
+    if (xminText === undefined || xmaxText === undefined || xipText === undefined) return false;
+    if (
+      xminText.length > 20 ||
+      xmaxText.length > 20 ||
+      (xipText !== "" && xipText.split(",").some((xidText) => xidText.length > 20))
+    ) {
+      return false;
+    }
+    const xmin = BigInt(xminText);
+    const xmax = BigInt(xmaxText);
+    const xid8Max = 18_446_744_073_709_551_615n;
+    if (xmin > xmax || xmax > xid8Max) return false;
+    let previous = xmin - 1n;
+    for (const xidText of xipText === "" ? [] : xipText.split(",")) {
+      const xid = BigInt(xidText);
+      if (xid < xmin || xid >= xmax || xid <= previous || xid > xid8Max) return false;
+      previous = xid;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isPosition(value: unknown): value is PollPosition {
@@ -45,36 +74,45 @@ function isPosition(value: unknown): value is PollPosition {
 
 function encodeCursor(cursor: PollCursor): string {
   // Project every field explicitly. In particular, never serialize a runtime PollRow, whose
-  // entityType could disclose events the caller cannot read.
+  // entityType could disclose events the caller cannot read. Compress snapshot xids so the cursor
+  // remains small when several database transactions are active.
   const payload = {
-    watermark: cursor.watermark,
+    snapshot: cursor.snapshot,
     through: cursor.through,
     scan: cursor.scan === null ? null : { createdAt: cursor.scan.createdAt, id: cursor.scan.id },
   };
-  return `v2_${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
+  return `v3_${deflateRawSync(Buffer.from(JSON.stringify(payload), "utf8")).toString("base64url")}`;
 }
 
 function decodeCursor(encodedCursor: string): PollCursor | null {
-  if (!/^v2_[A-Za-z0-9_-]{1,480}$/.test(encodedCursor)) return null;
+  if (
+    encodedCursor.length > POLL_CURSOR_MAX_LENGTH ||
+    !/^v3_[A-Za-z0-9_-]{1,8189}$/.test(encodedCursor)
+  ) {
+    return null;
+  }
   const encoded = encodedCursor.slice(3);
   try {
-    const text = Buffer.from(encoded, "base64url").toString("utf8");
-    if (Buffer.from(text, "utf8").toString("base64url") !== encoded) return null;
+    const compressed = Buffer.from(encoded, "base64url");
+    if (compressed.toString("base64url") !== encoded) return null;
+    const text = inflateRawSync(compressed, { maxOutputLength: 65_536 }).toString("utf8");
     const value: unknown = JSON.parse(text);
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     const row = value as Record<string, unknown>;
     if (
-      Object.keys(row).toSorted().join(",") !== "scan,through,watermark" ||
-      !isPollTime(row.watermark) ||
-      (row.through !== null && !isPollTime(row.through)) ||
+      Object.keys(row).toSorted().join(",") !== "scan,snapshot,through" ||
+      !isPgSnapshot(row.snapshot) ||
+      (row.through !== null && !isPgSnapshot(row.through)) ||
       (row.scan !== null && !isPosition(row.scan)) ||
-      (row.through !== null && Date.parse(row.through as string) < Date.parse(row.watermark)) ||
-      (row.through === null && row.scan !== null)
+      (row.through !== null &&
+        BigInt(row.through.split(":")[1]!) < BigInt(row.snapshot.split(":")[1]!)) ||
+      (row.through === null && row.scan !== null) ||
+      (row.through !== null && row.scan === null)
     ) {
       return null;
     }
     return {
-      watermark: row.watermark,
+      snapshot: row.snapshot,
       through: row.through,
       scan: row.scan,
     } as PollCursor;
@@ -85,10 +123,8 @@ function decodeCursor(encodedCursor: string): PollCursor | null {
 
 function initialCursor(pool: Queryable): Promise<PollCursor> {
   return pool
-    .query<{ watermark: string }>(
-      `SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS watermark`,
-    )
-    .then(({ rows }) => ({ watermark: rows[0]!.watermark, through: null, scan: null }));
+    .query<{ snapshot: string }>(`SELECT pg_current_snapshot()::text AS snapshot`)
+    .then(({ rows }) => ({ snapshot: rows[0]!.snapshot, through: null, scan: null }));
 }
 
 function eventResource(entityType: string | null): Resource {
@@ -121,6 +157,21 @@ function eventResource(entityType: string | null): Resource {
 
 function effectiveCanRead(auth: WebAuth, resource: Resource): boolean {
   return auth.isAdmin || auth.levels[resource] !== "none";
+}
+
+function readableEventTypes(auth: WebAuth): string[] | null {
+  if (effectiveCanRead(auth, "activity")) return null;
+  const readable: string[] = [];
+  if (effectiveCanRead(auth, "ideas")) readable.push("idea", "ideas");
+  if (effectiveCanRead(auth, "scripts")) readable.push("script", "scripts");
+  if (effectiveCanRead(auth, "videos")) {
+    readable.push("video", "videos", "video_metric", "video_metrics");
+  }
+  if (effectiveCanRead(auth, "experiments")) {
+    readable.push("experiment", "experiments", "experiment_variant", "experiment_variants");
+  }
+  if (effectiveCanRead(auth, "notes")) readable.push("note", "notes");
+  return readable;
 }
 
 function sendFailure(reply: FastifyReply, error: unknown) {
@@ -206,30 +257,45 @@ export default async function activityRoutes(server: FastifyInstance): Promise<v
           cursor.through ??
           (
             await app.db.pool.query<{ through: string }>(
-              `SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS through`,
+              `SELECT pg_current_snapshot()::text AS through`,
             )
           ).rows[0]!.through;
-        const { rows } = cursor.scan
-          ? await app.db.pool.query<PollRow>(
-              `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
-                      id::text AS id, entity_type AS "entityType"
-                 FROM public.events
-                WHERE (created_at, id) > ($1::timestamptz, $2::uuid)
-                  AND created_at <= $3::timestamptz
-                ORDER BY created_at ASC, id ASC
-                LIMIT $4::integer`,
-              [cursor.scan.createdAt, cursor.scan.id, through, POLL_BATCH_SIZE + 1],
-            )
-          : await app.db.pool.query<PollRow>(
-              `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
-                      id::text AS id, entity_type AS "entityType"
-                 FROM public.events
-                WHERE created_at >= ($1::timestamptz - interval '${POLL_OVERLAP}')
-                  AND created_at <= $2::timestamptz
-                ORDER BY created_at ASC, id ASC
-                LIMIT $3::integer`,
-              [cursor.watermark, through, POLL_BATCH_SIZE + 1],
-            );
+        const allowedEventTypes = readableEventTypes(auth);
+        const scanPredicate = cursor.scan
+          ? "AND (created_at, id) > ($4::timestamptz, $5::uuid)"
+          : "";
+        const params = cursor.scan
+          ? [
+              cursor.snapshot,
+              through,
+              allowedEventTypes,
+              cursor.scan.createdAt,
+              cursor.scan.id,
+              POLL_BATCH_SIZE + 1,
+            ]
+          : [cursor.snapshot, through, allowedEventTypes, POLL_BATCH_SIZE + 1];
+        const limitParameter = cursor.scan ? "$6" : "$4";
+        const { rows } = await app.db.pool.query<PollRow>(
+          `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
+                  id::text AS id, entity_type AS "entityType"
+             FROM public.events
+            WHERE transaction_xid < pg_snapshot_xmax($2::pg_snapshot)
+              AND (
+                transaction_xid >= pg_snapshot_xmax($1::pg_snapshot)
+                OR EXISTS (
+                  SELECT 1
+                    FROM pg_snapshot_xip($1::pg_snapshot) AS previous_active(xid)
+                   WHERE previous_active.xid = events.transaction_xid
+                )
+              )
+              AND NOT pg_visible_in_snapshot(transaction_xid, $1::pg_snapshot)
+              AND pg_visible_in_snapshot(transaction_xid, $2::pg_snapshot)
+              AND ($3::text[] IS NULL OR entity_type = ANY($3::text[]))
+              ${scanPredicate}
+            ORDER BY created_at ASC, id ASC
+            LIMIT ${limitParameter}::integer`,
+          params,
+        );
         const hasMore = rows.length > POLL_BATCH_SIZE;
         const page = rows.slice(0, POLL_BATCH_SIZE);
         const changed = new Set<Resource>();
@@ -241,11 +307,11 @@ export default async function activityRoutes(server: FastifyInstance): Promise<v
         const last = page.at(-1);
         const nextCursor: PollCursor = hasMore
           ? {
-              watermark: cursor.watermark,
+              snapshot: cursor.snapshot,
               through,
               scan: last ? { createdAt: last.createdAt, id: last.id } : null,
             }
-          : { watermark: through, through: null, scan: null };
+          : { snapshot: through, through: null, scan: null };
         return reply.send({
           changed_resources: [...changed],
           cursor: encodeCursor(nextCursor),

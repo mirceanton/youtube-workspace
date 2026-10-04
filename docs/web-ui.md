@@ -173,12 +173,15 @@ T47 ownership exception: keeping the hook inside the Dashboard route would stop 
 while a user was working elsewhere. The poller imports no zod schemas, so it stays in the shell's
 small initial bundle.
 
-The poll cursor scans a five-minute overlap because `events.created_at` uses PostgreSQL transaction-
-start `now()`: a transaction can commit after a later event has already been polled while keeping an
-older event timestamp. Each request pins an upper time bound while it drains a paginated batch, then
-the next poll overlaps the prior watermark. Resource hints are deduplicated within each response and
-cache invalidation is safe to repeat. This guarantees discovery when an event transaction commits
-within five minutes; a transaction held open longer than that falls outside the live-poll guarantee.
+The poll checkpoints PostgreSQL transaction snapshots, not event timestamps. Each event stores its
+full inserting transaction ID. A poll reports events whose transaction was invisible in the prior
+snapshot and visible in the new one, even when a writer stayed open long enough for
+`events.created_at` to be older than events already observed. If a response has more than one
+batch, its cursor pins the new snapshot until every page is scanned; the next cycle then advances
+the checkpoint. The cursor contains only snapshots and the last scanned timestamp/ID, never an
+event's type, actor or payload. The query filters event types against the caller's current resource
+Read levels before pagination, so hidden rows do not affect returned resources or `has_more`.
+Resource hints are deduplicated within each response and cache invalidation is safe to repeat.
 
 ### Optimistic concurrency (never overwrite silently)
 
