@@ -2,6 +2,7 @@ import { authorize, DENIAL_HTTP_STATUS, type UserPrincipal } from "@ytw/policy";
 import { RESOURCES, type ResourceLevels } from "@ytw/shared/constants";
 import type { Idea } from "@ytw/shared/api/ideas";
 import type { ActorTx, Queryable } from "@ytw/db";
+import type { WebAuth } from "../../core/types.js";
 import {
   getIdeaPipeline,
   listNotes,
@@ -12,22 +13,19 @@ import {
 import { createTestDb, type TestDb } from "@ytw/db/testing";
 import Fastify, {
   type FastifyInstance,
-  type FastifyReply,
   type FastifyRequest,
   type preHandlerHookHandler,
 } from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import ideasRoutes from "./index.js";
 
-type TestRequest = FastifyRequest & { auth?: UserPrincipal };
-
-interface TestCore extends FastifyInstance {
+type TestCore = FastifyInstance & {
   requireLevel(resource: "ideas", level: "read" | "write"): preHandlerHookHandler;
   db: {
     pool: Queryable;
     withActor<T>(request: FastifyRequest, fn: (tx: ActorTx) => Promise<T>): Promise<T>;
   };
-}
+};
 
 const WRITE = { "x-test-ideas-level": "write" };
 const READ = { "x-test-ideas-level": "read" };
@@ -44,7 +42,7 @@ function nextTag(prefix: string): string {
 
 async function makeApp(): Promise<TestCore> {
   const instance = Fastify();
-  instance.decorateRequest("auth", null);
+  instance.decorateRequest("auth", undefined);
   instance.addHook("onRequest", async (request) => {
     const requested = request.headers["x-test-ideas-level"];
     if (typeof requested !== "string") return;
@@ -56,18 +54,30 @@ async function makeApp(): Promise<TestCore> {
     levels.ideas = requested === "write" ? "write" : requested === "read" ? "read" : "none";
     if (scripts === "read" || scripts === "write") levels.scripts = scripts;
     if (videos === "read" || videos === "write") levels.videos = videos;
-    (request as TestRequest).auth = {
-      kind: "user",
+    const auth: WebAuth = {
       userId: "ideas-test-user",
       username: "alice",
       isAdmin: false,
       levels,
+      displayName: null,
+      email: null,
     };
+    Object.assign(request, { auth });
   });
 
   const core = instance as unknown as TestCore;
-  core.requireLevel = (resource, level) => async (request: TestRequest, reply: FastifyReply) => {
-    const decision = authorize(request.auth ?? undefined, { resource, level });
+  core.requireLevel = (resource, level) => async (request, reply) => {
+    const auth = request.auth;
+    const principal: UserPrincipal | undefined = auth
+      ? {
+          kind: "user",
+          userId: auth.userId,
+          username: auth.username,
+          isAdmin: auth.isAdmin,
+          levels: auth.levels,
+        }
+      : undefined;
+    const decision = authorize(principal, { resource, level });
     if (!decision.allowed) {
       return reply.code(DENIAL_HTTP_STATUS[decision.reason]).send({ error: decision.message });
     }
@@ -75,7 +85,16 @@ async function makeApp(): Promise<TestCore> {
   core.db = {
     pool: db.pool("ytw_web"),
     withActor<T>(request: FastifyRequest, fn: (tx: ActorTx) => Promise<T>) {
-      const principal = (request as TestRequest).auth;
+      const auth = request.auth;
+      const principal: UserPrincipal | undefined = auth
+        ? {
+            kind: "user",
+            userId: auth.userId,
+            username: auth.username,
+            isAdmin: auth.isAdmin,
+            levels: auth.levels,
+          }
+        : undefined;
       if (!principal) throw new Error("Ideas route mutation ran without an authenticated user");
       return runWithActor(db.pool("ytw_web"), { name: principal.username, type: "human" }, fn);
     },
