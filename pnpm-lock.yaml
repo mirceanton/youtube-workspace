@@ -261,6 +261,9 @@ importers:
       '@ytw/policy':
         specifier: workspace:*
         version: link:../../packages/policy
+      '@ytw/script-md':
+        specifier: workspace:*
+        version: link:../../packages/script-md
       '@ytw/shared':
         specifier: workspace:*
         version: link:../../packages/shared
