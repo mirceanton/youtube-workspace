@@ -303,15 +303,18 @@ async function refreshSession(
     if (idToken !== null && refreshedClaims === undefined) {
       throw new Error("OIDC refresh ID token could not be verified");
     }
+    // Legacy encrypted sessions predate nonce retention. Accept their refresh only when the
+    // provider omits the nonce claim; any supplied nonce must match the original login nonce.
     if (
       refreshedClaims !== undefined &&
       (requiredString(refreshedClaims, "iss") !== current.issuer ||
         requiredString(refreshedClaims, "sub") !== current.subject ||
         !includesAudience(refreshedClaims.aud, dependencies.env.OIDC_CLIENT_ID) ||
         typeof refreshedClaims.exp !== "number" ||
-        refreshedClaims.exp * 1000 <= Date.now())
+        refreshedClaims.exp * 1000 <= Date.now() ||
+        (Object.hasOwn(refreshedClaims, "nonce") && refreshedClaims.nonce !== current.nonce))
     ) {
-      throw new Error("OIDC refresh changed the authenticated identity");
+      throw new Error("OIDC refresh changed the authenticated identity or nonce");
     }
 
     const profile = await dependencies.oidc.fetchUserInfo(response.access_token, current.subject);
@@ -701,6 +704,7 @@ export function registerAuthCore(
         issuer,
         subject,
         username,
+        nonce: transaction.nonce,
         refreshToken: tokens.refresh_token,
         accessTokenExpiresAt: Math.min(accessTokenExpiry, tokenExpiry(tokens, claims)),
         returnTo: transaction.returnTo,
