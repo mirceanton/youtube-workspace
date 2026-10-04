@@ -30,7 +30,7 @@ export const dashboardVideoSchema = z.object({
 export const dashboardExperimentSchema = z.object({
   id: z.uuid(),
   video_id: z.uuid(),
-  video_title: z.string(),
+  video_title: z.string().nullable(),
   type: z.enum(EXPERIMENT_TYPES),
   hypothesis: z.string().nullable(),
   starts_at: timestampSchema.nullable(),

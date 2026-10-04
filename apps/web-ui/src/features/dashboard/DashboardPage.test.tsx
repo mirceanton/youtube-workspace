@@ -115,6 +115,25 @@ describe("Dashboard page", () => {
     expect(screen.getByText("No recent activity")).toBeInTheDocument();
   });
 
+  it("shows an unavailable title when videos are not readable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          ...dashboardFixture(),
+          running_experiments: [
+            { ...dashboardFixture().running_experiments[0], video_title: null },
+          ],
+          latest_videos: null,
+        }),
+      ),
+    );
+    renderPage();
+
+    expect(await screen.findByText("Video title unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Dashboard video")).not.toBeInTheDocument();
+  });
+
   it("shows loading and retryable error states", async () => {
     vi.stubGlobal(
       "fetch",
