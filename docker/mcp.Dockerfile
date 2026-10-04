@@ -11,6 +11,12 @@
 # Keep the Node version in step with .mise.toml (Renovate bumps both).
 FROM node:24.21.0-slim AS node
 
+# The pinned Node image was published before Debian's fix for CVE-2026-103111.
+# Install the fixed Bookworm package in every stage derived from this base.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libpcre2-8-0=10.42-1+deb12u2 \
+    && rm -rf /var/lib/apt/lists/*
+
 # ---------------------------------------------------------------------------------------------
 # build: install all dependencies and compile the packages
 # ---------------------------------------------------------------------------------------------
