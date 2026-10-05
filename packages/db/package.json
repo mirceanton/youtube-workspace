@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "ytw-migrate": "./dist/src/bin/migrate.js",
+    "ytw-seed": "./dist/src/bin/seed.js"
+  },
   "exports": {
     ".": {
       "@ytw/source": "./src/index.ts",

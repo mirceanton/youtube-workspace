@@ -61,5 +61,3 @@ CREATE TRIGGER ideas_touch
 CREATE TRIGGER ideas_audit
   AFTER INSERT OR UPDATE OR DELETE ON public.ideas
   FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('idea', '-search_vector', '-updated_by');
-
-GRANT SELECT ON TABLE public.ideas TO ytw_web, ytw_mcp, ytw_readonly;

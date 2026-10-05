@@ -56,5 +56,3 @@ COMMENT ON COLUMN public.experiment_results.control_variant_id IS 'The experimen
 COMMENT ON COLUMN public.experiment_results.ctr_vs_control IS 'ctr minus the control''s ctr, in percentage points; 0 for the control; NULL when either ctr is missing.';
 COMMENT ON COLUMN public.experiment_results.ctr_lift_pct IS 'ctr_vs_control as a percentage of the control''s ctr, rounded to 4 decimals; NULL when undefined (missing ctr or a control ctr of 0).';
 COMMENT ON COLUMN public.experiment_results.is_winner IS 'True for the variant named by conclude_experiment; no variant is a winner before the conclusion or when none won.';
-
-GRANT SELECT ON TABLE public.experiment_results TO ytw_web, ytw_mcp, ytw_readonly;

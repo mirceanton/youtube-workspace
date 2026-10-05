@@ -157,5 +157,3 @@ COMMENT ON FUNCTION public.touch_token_last_used(text, text, uuid) IS
 DROP FUNCTION public.ytw_token_status(timestamptz, timestamptz);
 
 -- 6. Least privilege: the MCP server authenticates agents, the web server does not.
-REVOKE EXECUTE ON FUNCTION public.lookup_token_by_hash(text) FROM ytw_web;
-REVOKE EXECUTE ON FUNCTION public.touch_token_last_used(text, text, uuid) FROM ytw_web;

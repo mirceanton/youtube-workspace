@@ -339,8 +339,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.create_experiment(text, text, uuid, uuid, text, text, jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.create_experiment(text, text, uuid, uuid, text, text, jsonb)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.create_experiment(text, text, uuid, uuid, text, text, jsonb) IS
   'Create a planned experiment with its 2-10 variants (exactly one control) on a video. Errors: validation, not_found (video), invalid_transition (archived video).';
@@ -419,8 +418,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.update_experiment_status(text, text, uuid, uuid, integer, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.update_experiment_status(text, text, uuid, uuid, integer, text)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.update_experiment_status(text, text, uuid, uuid, integer, text) IS
   'Move an experiment planned -> running or planned/running -> cancelled; p_expected_version must be the version read. Errors: validation, not_found, version_conflict, invalid_transition (allowed lists the valid next statuses).';
@@ -489,8 +487,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.record_variant_stats(text, text, uuid, uuid, numeric, numeric) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.record_variant_stats(text, text, uuid, uuid, numeric, numeric)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.record_variant_stats(text, text, uuid, uuid, numeric, numeric) IS
   'Record impressions and/or CTR (percent) of a variant while its experiment is planned or running. Errors: validation, not_found (variant), invalid_transition (concluded or cancelled).';
@@ -586,8 +583,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.conclude_experiment(text, text, uuid, uuid, integer, uuid, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.conclude_experiment(text, text, uuid, uuid, integer, uuid, text)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.conclude_experiment(text, text, uuid, uuid, integer, uuid, text) IS
   'Conclude a running experiment with a winner (one of its variants, or NULL) and a conclusion; final. Errors: validation (winner_variant_id lists the valid ids), not_found, version_conflict, invalid_transition.';

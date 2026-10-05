@@ -76,7 +76,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.add_note(text, text, uuid, text, uuid, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.add_note(text, text, uuid, text, uuid, text) TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.add_note(text, text, uuid, text, uuid, text) IS
   'Add a comment to an idea, script revision, video or experiment. Errors: validation, not_found.';

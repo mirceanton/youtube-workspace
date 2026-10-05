@@ -82,4 +82,3 @@ CREATE TRIGGER user_permissions_audit
 -- server gets a token's owner and levels from T14's SECURITY DEFINER lookup, and ytw_readonly
 -- (query_sql) gets neither: access data is not one of the objects a Read level covers, and the
 -- access matrix is admin-only in the web UI (PRD 7).
-GRANT SELECT ON TABLE public.users, public.user_permissions TO ytw_web;

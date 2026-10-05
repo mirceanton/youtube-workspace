@@ -91,5 +91,3 @@ CREATE TRIGGER video_metrics_no_truncate
 CREATE TRIGGER video_metrics_audit
   AFTER INSERT OR UPDATE OR DELETE ON public.video_metrics
   FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('video_metric');
-
-GRANT SELECT ON TABLE public.videos, public.video_metrics TO ytw_web, ytw_mcp, ytw_readonly;

@@ -262,8 +262,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.log_metrics(text, text, uuid, uuid, timestamptz, jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.log_metrics(text, text, uuid, uuid, timestamptz, jsonb)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.log_metrics(text, text, uuid, uuid, timestamptz, jsonb) IS
   'Append a metric snapshot of a video; idempotent on (video_id, captured_at): a repeat returns the stored row with created = false, other numbers for the same key are refused. Errors: validation, not_found, invalid_transition (archived), duplicate.';

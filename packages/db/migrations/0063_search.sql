@@ -154,7 +154,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.search_all(text, integer, text[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.search_all(text, integer, text[]) TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.search_all(text, integer, text[]) IS
   'Full-text search (websearch syntax, english) over idea titles/pitches and the latest script revisions: search_all(query, limit 1-50, resources subset of {ideas, scripts}). Returns entity_type, id, idea_id, kind, version, title, rank and a plain-text snippet with U+27E6/U+27E7 around the matches.';

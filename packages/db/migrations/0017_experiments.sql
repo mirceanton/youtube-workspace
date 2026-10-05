@@ -101,5 +101,3 @@ CREATE TRIGGER experiment_variants_touch
 CREATE TRIGGER experiment_variants_audit
   AFTER INSERT OR UPDATE OR DELETE ON public.experiment_variants
   FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('experiment_variant', '-updated_by');
-
-GRANT SELECT ON TABLE public.experiments, public.experiment_variants TO ytw_web, ytw_mcp, ytw_readonly;

@@ -263,8 +263,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.create_idea(text, text, uuid, text, text, text, text[], integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.create_idea(text, text, uuid, text, text, text, text[], integer)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.create_idea(text, text, uuid, text, text, text, text[], integer) IS
   'Insert an idea in the inbox. Returns the row. Errors: validation.';
@@ -375,8 +374,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.update_idea(text, text, uuid, uuid, integer, jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.update_idea(text, text, uuid, uuid, integer, jsonb)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.update_idea(text, text, uuid, uuid, integer, jsonb) IS
   'Edit title, pitch, source, tags or score of an idea; p_expected_version must be the version read. Errors: validation, not_found, invalid_transition (archived), version_conflict.';
@@ -433,7 +431,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.archive_idea(text, text, uuid, uuid, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.archive_idea(text, text, uuid, uuid, integer) TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.archive_idea(text, text, uuid, uuid, integer) IS
   'Soft-delete an idea (archived_at). Errors: validation, not_found, version_conflict.';
@@ -548,8 +546,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.advance_idea(text, text, uuid, uuid, text, text, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.advance_idea(text, text, uuid, uuid, text, text, integer)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.advance_idea(text, text, uuid, uuid, text, text, integer) IS
   'Move an idea to another stage under the stage rules; a note is required for a move back and is written as a note on the idea. Errors: validation, not_found, invalid_transition, version_conflict.';

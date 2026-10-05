@@ -13,12 +13,14 @@ export const envSchema = z.object({
     .string()
     .url()
     .default("postgres://ytw_mcp:ytw_mcp@localhost:5432/youtube_workspace")
-    .describe("PostgreSQL connection string for the ytw_mcp application role."),
+    .describe("PostgreSQL connection string used for MCP operations."),
   READONLY_DATABASE_URL: z
     .string()
     .url()
     .optional()
-    .describe("PostgreSQL connection string for the ytw_readonly role (used by query_sql)."),
+    .describe(
+      "Optional PostgreSQL connection string used by query_sql. When unset, query_sql uses DATABASE_URL inside a read-only transaction.",
+    ),
 });
 
 export type Env = z.infer<typeof envSchema>;

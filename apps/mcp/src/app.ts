@@ -42,7 +42,7 @@ export async function buildApp(env: Env, options: BuildAppOptions = {}): Promise
     options.pool ??
     createPool({
       connectionString: env.DATABASE_URL,
-      role: "ytw_mcp",
+      role: "ytw-mcp",
     });
 
   const readonlyPool =
@@ -50,7 +50,7 @@ export async function buildApp(env: Env, options: BuildAppOptions = {}): Promise
     (env.READONLY_DATABASE_URL
       ? createPool({
           connectionString: env.READONLY_DATABASE_URL,
-          role: "ytw_readonly",
+          role: "ytw-readonly",
         })
       : undefined);
 

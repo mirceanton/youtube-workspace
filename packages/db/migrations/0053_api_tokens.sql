@@ -525,23 +525,20 @@ REVOKE ALL ON FUNCTION public.ytw_lock_own_token(uuid, uuid) FROM PUBLIC;
 -- Settings (web server): the acting person's own tokens.
 REVOKE ALL ON FUNCTION public.create_api_token(text, text, uuid, uuid, text, text, text, timestamptz, jsonb)
   FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.create_api_token(text, text, uuid, uuid, text, text, text, timestamptz, jsonb)
-  TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.update_token_permissions(text, text, uuid, uuid, uuid, jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.update_token_permissions(text, text, uuid, uuid, uuid, jsonb) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.rotate_api_token(text, text, uuid, uuid, uuid, text, text, boolean, timestamptz)
   FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.rotate_api_token(text, text, uuid, uuid, uuid, text, text, boolean, timestamptz)
-  TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.revoke_api_token(text, text, uuid, uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.revoke_api_token(text, text, uuid, uuid, uuid) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.list_api_tokens(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.list_api_tokens(uuid) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.get_api_token(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_api_token(uuid, uuid) TO ytw_web;
+
 
 -- Token authentication: the MCP server (and the web server, should it ever authenticate a token).
 REVOKE ALL ON FUNCTION public.lookup_token_by_hash(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.lookup_token_by_hash(text) TO ytw_web, ytw_mcp;
+
 REVOKE ALL ON FUNCTION public.touch_token_last_used(text, text, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.touch_token_last_used(text, text, uuid) TO ytw_web, ytw_mcp;

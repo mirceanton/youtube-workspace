@@ -36,7 +36,7 @@ CREATE INDEX events_entity_idx ON public.events (entity_type, entity_id, created
   WHERE entity_id IS NOT NULL;
 CREATE INDEX events_actor_idx ON public.events (actor, created_at DESC);
 
-GRANT SELECT ON TABLE public.events TO ytw_web, ytw_mcp, ytw_readonly;
+
 
 -- 2. Append-only guard, reusable for any table whose rows must never change (T11 attaches it to
 --    video_metrics, for example): BEFORE UPDATE OR DELETE FOR EACH ROW and BEFORE TRUNCATE.
@@ -111,7 +111,7 @@ $$;
 COMMENT ON FUNCTION public.ytw_set_actor(text, text, uuid) IS
   'Set the audit actor for the rest of the transaction. Called first by every mutating function.';
 
-GRANT EXECUTE ON FUNCTION public.ytw_set_actor(text, text, uuid) TO ytw_web, ytw_mcp;
+
 
 -- The actor set by ytw_set_actor(), for column defaults such as created_by. Raises missing_actor
 -- when nothing was set, so a forgotten ytw_set_actor() fails loudly instead of writing NULL.
@@ -384,6 +384,3 @@ $$;
 
 COMMENT ON FUNCTION public.ytw_log_event(text, text, uuid, text, text, uuid, jsonb) IS
   'Log a non-DML event (tool call, denied call, login). Returns the event id.';
-
-GRANT EXECUTE ON FUNCTION public.ytw_log_event(text, text, uuid, text, text, uuid, jsonb)
-  TO ytw_web, ytw_mcp;

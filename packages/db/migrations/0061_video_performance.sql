@@ -107,5 +107,3 @@ COMMENT ON COLUMN public.video_performance_summary.subs_gained IS 'Net subscribe
 COMMENT ON COLUMN public.video_performance_summary.median_sample_size IS 'How many videos have a snapshot, i.e. how many the medians are computed over (per metric, only those that measured it count).';
 COMMENT ON COLUMN public.video_performance_summary.median_views IS 'Channel median of views over the latest snapshots, the video itself included; the other median_* columns do the same for their metric.';
 COMMENT ON COLUMN public.video_performance_summary.views_vs_median IS 'views minus median_views (negative: below the channel median); the other *_vs_median columns do the same for their metric.';
-
-GRANT SELECT ON TABLE public.video_performance_summary TO ytw_web, ytw_mcp, ytw_readonly;

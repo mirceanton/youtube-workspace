@@ -91,5 +91,3 @@ CREATE TRIGGER notes_touch
 CREATE TRIGGER notes_audit
   AFTER INSERT OR UPDATE OR DELETE ON public.notes
   FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('note', '-author', '-updated_by');
-
-GRANT SELECT ON TABLE public.notes TO ytw_web, ytw_mcp, ytw_readonly;

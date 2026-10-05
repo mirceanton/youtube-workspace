@@ -144,8 +144,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.list_events(text, text, text, uuid, text, timestamptz, timestamptz, integer, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.list_events(text, text, text, uuid, text, timestamptz, timestamptz, integer, text)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.list_events(text, text, text, uuid, text, timestamptz, timestamptz, integer, text) IS
   'Activity feed over events, newest first: list_events(actor, actor_type, entity_type, entity_id, action_prefix, from (inclusive), to (exclusive), limit 1-100, cursor). next_cursor is NULL on the last page, otherwise pass it back as cursor.';

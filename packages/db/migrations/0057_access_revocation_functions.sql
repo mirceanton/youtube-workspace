@@ -246,9 +246,6 @@ $$;
 
 REVOKE ALL ON FUNCTION public.mark_user_outside_access_group(text, text, uuid, text, text)
   FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.mark_user_outside_access_group(text, text, uuid, text, text)
-  TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.set_user_access_revoked(text, text, uuid, uuid, uuid, boolean)
   FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.set_user_access_revoked(text, text, uuid, uuid, uuid, boolean)
-  TO ytw_web;

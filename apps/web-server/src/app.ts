@@ -1,4 +1,4 @@
-import { assertPoolRole, createPool } from "@ytw/db";
+import { createPool } from "@ytw/db";
 import {
   createLogger,
   fastifyLoggingOptions,
@@ -16,7 +16,7 @@ import { installSpaFallback } from "./core/static.js";
 import { registerAuthCore } from "./core/auth.js";
 
 export interface BuildAppOptions {
-  /** Test injection only; production creates a pool for the `ytw_web` role. */
+  /** Test injection only; production creates a pool from DATABASE_URL. */
   pool?: Pool;
   /** Replaces outbound OIDC Fetch calls for in-process provider tests. */
   oidcFetch?: OidcFetch;
@@ -43,7 +43,7 @@ export async function buildApp(env: Env, options: BuildAppOptions = {}): Promise
   const pool =
     options.pool ??
     createPool({
-      role: "ytw_web",
+      role: "ytw-web",
       connectionString: env.DATABASE_URL,
       onError: (error) => app.log.error({ err: error }, "idle database connection failed"),
     });
@@ -56,7 +56,6 @@ export async function buildApp(env: Env, options: BuildAppOptions = {}): Promise
   // authorization coverage manifest includes all Fastify routes.
   registerAuthCore(app, env, oidc, pool);
 
-  let verifiedRole: Promise<void> | undefined;
   await app.register(observabilityPlugin, {
     service: "web-server",
     version: env.APP_VERSION,
@@ -65,12 +64,9 @@ export async function buildApp(env: Env, options: BuildAppOptions = {}): Promise
     readiness: {
       database: async () => {
         try {
-          verifiedRole ??= assertPoolRole(pool, "ytw_web");
-          await verifiedRole;
           await pool.query("SELECT 1");
           return { ok: true };
         } catch (error) {
-          verifiedRole = undefined;
           return {
             ok: false,
             error: error instanceof Error ? error.message : "database unavailable",

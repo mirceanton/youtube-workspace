@@ -29,13 +29,6 @@ import { Client, type DatabaseError } from "pg";
 import { APP_ROLES, type AppRole, type Queryable } from "./client.js";
 import { isPgError } from "./errors.js";
 
-/** Environment variable that carries each role's password for `pnpm migrate`. */
-export const ROLE_PASSWORD_ENV: Readonly<Record<AppRole, string>> = {
-  ytw_web: "YTW_WEB_PASSWORD",
-  ytw_mcp: "YTW_MCP_PASSWORD",
-  ytw_readonly: "YTW_READONLY_PASSWORD",
-};
-
 /**
  * Advisory lock keys held for a whole run: one in the target database ("ytw_migr" as eight ASCII
  * bytes) and, with `lockDatabaseUrl`, one in the shared lock database ("ytw_clus"). Distinct keys
@@ -43,6 +36,13 @@ export const ROLE_PASSWORD_ENV: Readonly<Record<AppRole, string>> = {
  */
 export const MIGRATION_LOCK_KEY = "8751751227628939122";
 export const CLUSTER_LOCK_KEY = "8751751227461367155";
+
+/** @deprecated Database roles are deployment-owned and passwords are ignored. */
+export const ROLE_PASSWORD_ENV: Readonly<Record<AppRole, string>> = {
+  ytw_web: "YTW_WEB_PASSWORD",
+  ytw_mcp: "YTW_MCP_PASSWORD",
+  ytw_readonly: "YTW_READONLY_PASSWORD",
+};
 
 const FILE_PATTERN = /^(\d{4})_([a-z0-9]+(?:_[a-z0-9]+)*)\.sql$/;
 const PASSWORD_PATTERN = /^[\x21-\x7e]{16,256}$/;
@@ -82,7 +82,7 @@ export interface MigrateOptions {
    * Give every runner that may run concurrently on one cluster the same value.
    */
   lockDatabaseUrl?: string;
-  /** Passwords for the application roles; set after migrating unless already current. */
+  /** @deprecated Ignored. Database roles and credentials are deployment-owned. */
   rolePasswords?: Partial<Record<AppRole, string>>;
   /** Directory with the `NNNN_name.sql` files (default: this package's `migrations/`). */
   migrationsDir?: string;
@@ -97,9 +97,9 @@ export interface MigrateResult {
   readonly applied: string[];
   /** Number of files that were already applied before this run. */
   readonly alreadyApplied: number;
-  /** Roles whose password this run changed (a password that already matched is not counted). */
+  /** @deprecated Always empty; migrations no longer manage role passwords. */
   readonly passwordsSet: AppRole[];
-  /** What `ytw_enforce_role_settings()` repaired before migrating (empty when nothing drifted). */
+  /** @deprecated Always empty; migrations no longer manage role settings. */
   readonly roleSettingsRestored: string[];
 }
 
@@ -213,7 +213,6 @@ export async function loadMigrations(
 export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   const log = options.log ?? (() => undefined);
   const files = await loadMigrations(options.migrationsDir);
-  const passwords = validatePasswords(options.rolePasswords ?? {});
   const lockTimeoutMs = options.lockTimeoutMs ?? 300_000;
 
   const lockClient =
@@ -276,20 +275,9 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       );
     }
 
-    // Roles may have changed their own settings since the last run (Postgres lets a role do
-    // that); put them back before the guard looks at them.
-    const roleSettingsRestored = await enforceRoleSettings(client);
-    for (const line of roleSettingsRestored) {
-      log(line);
-    }
-    let guardPresent = await withRolledBackTransaction(client, () =>
-      checkGuard(client, undefined, false),
-    );
-
     const appliedNow: string[] = [];
     for (const file of status.pendingFiles) {
-      const result = await applyFile(client, file, guardPresent);
-      guardPresent = result.guardPresent;
+      const result = await applyFile(client, file);
       appliedNow.push(file.filename);
       log(`applied ${file.filename} (${result.ms} ms)`);
     }
@@ -297,27 +285,11 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       log(`up to date: ${applied.length} migrations already applied`);
     }
 
-    const passwordsSet: AppRole[] = [];
-    for (const role of APP_ROLES) {
-      const password = passwords[role];
-      if (password === undefined) {
-        log(`${role}: no password given, left unchanged`);
-        continue;
-      }
-      if ((await rolePasswordStatus(client, role, password)) === "matches") {
-        log(`${role}: password already current`);
-        continue;
-      }
-      await setRolePassword(client, role, password);
-      passwordsSet.push(role);
-      log(`${role}: password set`);
-    }
-
     return {
       applied: appliedNow,
       alreadyApplied: applied.length,
-      passwordsSet,
-      roleSettingsRestored,
+      passwordsSet: [],
+      roleSettingsRestored: [],
     };
   } finally {
     // Ending the sessions releases the advisory locks.
@@ -606,7 +578,7 @@ function compare(files: MigrationFile[], applied: AppliedRow[]) {
   return { pendingFiles, changed, changedDescriptions, unknown };
 }
 
-async function enforceRoleSettings(client: Client): Promise<string[]> {
+export async function enforceRoleSettings(client: Client): Promise<string[]> {
   if (!(await hasFunction(client, "public.ytw_enforce_role_settings()"))) {
     return [];
   }
@@ -616,7 +588,10 @@ async function enforceRoleSettings(client: Client): Promise<string[]> {
   return rows.map((row) => row.line);
 }
 
-async function withRolledBackTransaction<T>(client: Client, fn: () => Promise<T>): Promise<T> {
+export async function withRolledBackTransaction<T>(
+  client: Client,
+  fn: () => Promise<T>,
+): Promise<T> {
   await client.query("BEGIN");
   try {
     return await fn();
@@ -628,7 +603,6 @@ async function withRolledBackTransaction<T>(client: Client, fn: () => Promise<T>
 async function applyFile(
   client: Client,
   file: MigrationFile,
-  guardRequired: boolean,
 ): Promise<{ ms: number; guardPresent: boolean }> {
   const started = performance.now();
   await client.query("BEGIN");
@@ -652,7 +626,7 @@ async function applyFile(
           "Inspect the database before running the migrations again.",
       );
     }
-    const guardPresent = await checkGuard(client, file.filename, guardRequired);
+    const guardPresent = false;
     const ms = Math.round(performance.now() - started);
     await client.query(
       "INSERT INTO public.schema_migrations (version, filename, checksum, duration_ms) VALUES ($1, $2, $3, $4)",
@@ -678,7 +652,7 @@ async function currentXid(client: Client, sql: string): Promise<string | null> {
  * replaced by one that returns nothing, or stripped of those rules fails the run. `fileName` is
  * the file just applied (undefined before the first file). Returns whether the guard exists.
  */
-async function checkGuard(
+export async function checkGuard(
   client: Client,
   fileName: string | undefined,
   required: boolean,
@@ -764,7 +738,7 @@ function describeFailure(file: MigrationFile, err: unknown): string {
   return lines.join("\n");
 }
 
-function validatePasswords(
+export function validatePasswords(
   passwords: Partial<Record<AppRole, string>>,
 ): Partial<Record<AppRole, string>> {
   const result: Partial<Record<AppRole, string>> = {};
@@ -784,7 +758,11 @@ function validatePasswords(
   return result;
 }
 
-async function setRolePassword(client: Client, role: AppRole, password: string): Promise<void> {
+export async function setRolePassword(
+  client: Client,
+  role: AppRole,
+  password: string,
+): Promise<void> {
   const exists = await client.query("SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1", [role]);
   if (exists.rowCount === 0) {
     throw new MigrationError(`cannot set the password for ${role}: the role does not exist`);

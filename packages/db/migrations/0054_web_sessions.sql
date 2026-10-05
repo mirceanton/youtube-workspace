@@ -301,14 +301,13 @@ REVOKE ALL ON FUNCTION public.ytw_check_session_args(integer, integer, bytea, te
 
 -- The web server only: sessions are a browser concern, and the MCP server never sees one.
 REVOKE ALL ON FUNCTION public.create_web_session(uuid, bytea, text, integer, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.create_web_session(uuid, bytea, text, integer, integer) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.touch_web_session(uuid, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.touch_web_session(uuid, integer) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.get_web_session(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_web_session(uuid) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.update_web_session_tokens(uuid, bytea, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.update_web_session_tokens(uuid, bytea, text) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.delete_web_session(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.delete_web_session(uuid) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.purge_expired_web_sessions() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.purge_expired_web_sessions() TO ytw_web;

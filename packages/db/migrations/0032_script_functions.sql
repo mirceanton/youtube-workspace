@@ -125,8 +125,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.save_script_version(text, text, uuid, uuid, text, integer, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.save_script_version(text, text, uuid, uuid, text, integer, text)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.save_script_version(text, text, uuid, uuid, text, integer, text) IS
   'Append the next draft revision of an idea''s script or packaging doc if base_version is the latest (0 for the first). Errors: validation, not_found, invalid_transition (archived idea), version_conflict (latest_version).';
@@ -175,7 +174,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.set_script_status(text, text, uuid, uuid, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.set_script_status(text, text, uuid, uuid, text) TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.set_script_status(text, text, uuid, uuid, text) IS
   'Set the review status (draft, review, approved) of one saved script revision. Errors: validation, not_found.';

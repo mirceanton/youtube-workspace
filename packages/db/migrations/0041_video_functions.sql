@@ -68,8 +68,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.register_video(text, text, uuid, uuid, text, text, timestamptz, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.register_video(text, text, uuid, uuid, text, text, timestamptz, text)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.register_video(text, text, uuid, uuid, text, text, timestamptz, text) IS
   'Create the record of a YouTube video (idea optional, youtube_id unique). Errors: validation, not_found (idea), duplicate (existing_id).';
@@ -184,8 +183,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.update_video(text, text, uuid, uuid, integer, jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.update_video(text, text, uuid, uuid, integer, jsonb)
-  TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.update_video(text, text, uuid, uuid, integer, jsonb) IS
   'Edit title, published_at, thumbnail_url or idea_id of a video; p_expected_version must be the version read. Errors: validation, not_found, invalid_transition (archived), version_conflict.';
@@ -243,7 +241,7 @@ END
 $$;
 
 REVOKE ALL ON FUNCTION public.archive_video(text, text, uuid, uuid, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.archive_video(text, text, uuid, uuid, integer) TO ytw_web, ytw_mcp;
+
 
 COMMENT ON FUNCTION public.archive_video(text, text, uuid, uuid, integer) IS
   'Soft-delete a video (archived_at). Errors: validation, not_found, version_conflict.';

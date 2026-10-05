@@ -82,5 +82,3 @@ CREATE TRIGGER scripts_touch
 CREATE TRIGGER scripts_audit
   AFTER INSERT OR UPDATE OR DELETE ON public.scripts
   FOR EACH ROW EXECUTE FUNCTION public.ytw_audit('script', '-search_vector', '-updated_by');
-
-GRANT SELECT ON TABLE public.scripts TO ytw_web, ytw_mcp, ytw_readonly;

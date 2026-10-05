@@ -155,7 +155,5 @@ COMMENT ON FUNCTION public.get_user_access(uuid) IS
 
 REVOKE ALL ON FUNCTION public.upsert_user_on_login(text, text, uuid, text, text, text, text, text)
   FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.upsert_user_on_login(text, text, uuid, text, text, text, text, text)
-  TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.get_user_access(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_user_access(uuid) TO ytw_web;

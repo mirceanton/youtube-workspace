@@ -47,9 +47,9 @@ export interface Queryable {
 }
 
 export interface CreatePoolOptions {
-  /** The role this process connects as; it names the connection (`application_name`). */
-  role: AppRole;
-  /** `DATABASE_URL` (or `READONLY_DATABASE_URL` for ytw_readonly). */
+  /** A descriptive connection name, not a required PostgreSQL role name. */
+  role: string;
+  /** `DATABASE_URL` (or an optional `READONLY_DATABASE_URL`). */
   connectionString: string;
   /** Maximum connections (default 10; PRD 9 sizes the system for 10 concurrent users). */
   max?: number;
@@ -64,19 +64,17 @@ export interface CreatePoolOptions {
 
 /**
  * Settings sent in the startup packet of every connection a pool opens for `role`. They take
- * precedence over the role-level defaults, which Postgres lets a role change itself
- * (`ALTER ROLE ytw_readonly SET ...`), so `ytw_readonly` connections stay read-only with the
- * query_sql timeout whatever is stored for the role.
+ * precedence over deployment-level defaults. A dedicated readonly URL receives a database-enforced
+ * read-only startup setting in addition to query_sql's transaction-level guard.
  */
-export function roleConnectionOptions(role: AppRole): string | undefined {
-  return role === "ytw_readonly"
+export function roleConnectionOptions(role: string): string | undefined {
+  return role === "ytw_readonly" || role === "ytw-readonly"
     ? `-c default_transaction_read_only=on -c statement_timeout=${QUERY_SQL_TIMEOUT_MS}`
     : undefined;
 }
 
 /**
- * Creates the process's pool for its own role. Call {@link assertPoolRole} once at startup so a
- * `DATABASE_URL` that points at the wrong role (or a superuser) stops the process.
+ * Creates a process pool. The PostgreSQL role comes entirely from the deployment-owned URL.
  */
 export function createPool(options: CreatePoolOptions): Pool {
   const pinned = roleConnectionOptions(options.role);
@@ -214,9 +212,8 @@ export interface ReadOnlyQueryOptions {
  * `ytw_readonly`. Nothing else may run SQL that a client wrote. In order:
  *
  * 1. `BEGIN READ ONLY` and `SET LOCAL statement_timeout`;
- * 2. a query that checks the connection is `ytw_readonly` (any other pool is refused) and takes the
- *    transaction's snapshot: from then on `SET TRANSACTION READ WRITE` and its `set_config`
- *    equivalent are rejected, so the statement cannot make its own transaction writable;
+ * 2. the transaction's read-only snapshot: from then on `SET TRANSACTION READ WRITE` and its
+ *    `set_config` equivalent are rejected, so the statement cannot make itself writable;
  * 3. the statement alone, through the extended protocol, which refuses a string holding more than
  *    one statement (with no parameters node-postgres would use the simple protocol, which runs
  *    several);
@@ -244,15 +241,6 @@ export async function queryReadOnly<R extends QueryResultRow = QueryResultRow>(
   try {
     await client.query("BEGIN READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
-    const { rows } = await client.query<{ session: string; current: string }>(
-      "SELECT session_user AS session, current_user AS current",
-    );
-    const who = rows[0];
-    if (who?.session !== "ytw_readonly" || who.current !== "ytw_readonly") {
-      throw new Error(
-        `queryReadOnly needs a ytw_readonly pool, but this connection is ${who?.session ?? "unknown"}`,
-      );
-    }
     // `queryMode` is supported by node-postgres but missing from its type definitions.
     const config: QueryConfig & { queryMode: "extended" } = {
       text: statement,

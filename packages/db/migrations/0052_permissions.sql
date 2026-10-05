@@ -254,8 +254,7 @@ COMMENT ON FUNCTION public.list_users_with_levels(uuid) IS
   'Admin only: all users with their effective levels (the access matrix of the settings page).';
 
 REVOKE ALL ON FUNCTION public.set_user_permission(text, text, uuid, uuid, uuid, text, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.set_user_permission(text, text, uuid, uuid, uuid, text, text) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.set_user_admin(text, text, uuid, uuid, uuid, boolean, boolean) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.set_user_admin(text, text, uuid, uuid, uuid, boolean, boolean) TO ytw_web;
+
 REVOKE ALL ON FUNCTION public.list_users_with_levels(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.list_users_with_levels(uuid) TO ytw_web;

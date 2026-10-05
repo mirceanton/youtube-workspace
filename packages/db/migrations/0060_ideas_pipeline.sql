@@ -96,6 +96,3 @@ BEGIN
   END LOOP;
 END
 $$;
-
-GRANT SELECT ON TABLE public.ideas_pipeline, public.ideas_pipeline_all
-  TO ytw_web, ytw_mcp, ytw_readonly;
