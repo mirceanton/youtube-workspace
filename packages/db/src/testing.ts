@@ -26,7 +26,7 @@
 import { randomBytes } from "node:crypto";
 import { Client, Pool } from "pg";
 import { APP_ROLES, createPool, type AppRole } from "./client.js";
-import { ROLE_PASSWORD_ENV, migrate, rolePasswordStatus } from "./migrate.js";
+import { migrate } from "./migrate.js";
 
 /** Used when TEST_DATABASE_URL is unset: the dev superuser of pg-local.sh and docker-compose.yml. */
 export const DEFAULT_TEST_DATABASE_URL = "postgres://postgres:postgres@localhost:5432/postgres";
@@ -41,11 +41,6 @@ export const DISPOSABLE_TEST_SERVER_ENV = "YTW_DISPOSABLE_TEST_SERVER";
  * Role passwords the harness uses when YTW_*_PASSWORD are unset. They equal the dev values in
  * .env.example, so running tests never changes the passwords a local dev server relies on.
  */
-export const DEV_ROLE_PASSWORDS: Readonly<Record<AppRole, string>> = {
-  ytw_web: "ytw-web-dev-password",
-  ytw_mcp: "ytw-mcp-dev-password",
-  ytw_readonly: "ytw-readonly-dev-password",
-};
 
 export interface CreateTestDbOptions {
   /** Apply the migrations (default true). Without them the application roles may not exist yet. */
@@ -110,16 +105,16 @@ export function isLocalServer(url: string): boolean {
   return host === "" || host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
-/** Role passwords for test databases: YTW_*_PASSWORD when set, otherwise {@link DEV_ROLE_PASSWORDS}. */
+/** @deprecated Test databases now use the database owner URL for every named pool. */
+export const DEV_ROLE_PASSWORDS: Readonly<Record<AppRole, string>> = {
+  ytw_web: "",
+  ytw_mcp: "",
+  ytw_readonly: "",
+};
+
+/** @deprecated Retained for test-source compatibility; values are never used by the harness. */
 export function testRolePasswords(): Record<AppRole, string> {
-  const result = { ...DEV_ROLE_PASSWORDS };
-  for (const role of APP_ROLES) {
-    const value = process.env[ROLE_PASSWORD_ENV[role]];
-    if (value !== undefined && value !== "") {
-      result[role] = value;
-    }
-  }
-  return result;
+  return { ...DEV_ROLE_PASSWORDS };
 }
 
 /** Creates (and by default migrates) a uniquely named database. Call `drop()` in `afterAll`. */
@@ -132,28 +127,17 @@ export async function createTestDb(options: CreateTestDbOptions = {}): Promise<T
     );
   }
   const name = `ytw_test_${Date.now().toString(36)}_${randomBytes(5).toString("hex")}`;
-  const passwords = testRolePasswords();
-
   await withAdminClient(serverUrl, async (client) => {
     await client.query(
       `CREATE DATABASE ${client.escapeIdentifier(name)} TEMPLATE template0 ENCODING 'UTF8'`,
     );
   });
 
-  const db = new TestDatabase(serverUrl, name, passwords);
+  const db = new TestDatabase(serverUrl, name);
   if (options.migrate !== false) {
     const dir = options.migrationsDir === undefined ? {} : { migrationsDir: options.migrationsDir };
     try {
       await migrate({ databaseUrl: db.url("admin"), lockDatabaseUrl: serverUrl, ...dir });
-      const missing = await passwordsToSet(serverUrl, passwords);
-      if (Object.keys(missing).length > 0) {
-        await migrate({
-          databaseUrl: db.url("admin"),
-          lockDatabaseUrl: serverUrl,
-          rolePasswords: missing,
-          ...dir,
-        });
-      }
     } catch (err) {
       await db.drop();
       throw new Error(
@@ -169,15 +153,13 @@ export async function createTestDb(options: CreateTestDbOptions = {}): Promise<T
 class TestDatabase implements TestDb {
   readonly name: string;
   readonly #serverUrl: string;
-  readonly #passwords: Record<AppRole, string>;
   readonly #pools = new Map<AppRole | "admin", Pool>();
   readonly #extraPools: Pool[] = [];
   #dropped = false;
 
-  constructor(serverUrl: string, name: string, passwords: Record<AppRole, string>) {
+  constructor(serverUrl: string, name: string) {
     this.#serverUrl = serverUrl;
     this.name = name;
-    this.#passwords = passwords;
   }
 
   get admin(): Pool {
@@ -214,13 +196,9 @@ class TestDatabase implements TestDb {
     return this.registerPool(pool);
   }
 
-  url(role: AppRole | "admin"): string {
+  url(_role: AppRole | "admin"): string {
     const url = new URL(this.#serverUrl);
     url.pathname = `/${this.name}`;
-    if (role !== "admin") {
-      url.username = role;
-      url.password = this.#passwords[role];
-    }
     return url.toString();
   }
 
@@ -274,38 +252,6 @@ export function ignoreIdleError(): void {
 
 function isDisposable(): boolean {
   return process.env[DISPOSABLE_TEST_SERVER_ENV] === "1";
-}
-
-/**
- * The roles whose password the harness may set: those without a password, or every role whose
- * password differs when the server is declared disposable. A different password on a server that
- * is not disposable is an error, so the harness never overwrites one somebody relies on.
- */
-async function passwordsToSet(
-  serverUrl: string,
-  passwords: Record<AppRole, string>,
-): Promise<Partial<Record<AppRole, string>>> {
-  const toSet: Partial<Record<AppRole, string>> = {};
-  const blocked: string[] = [];
-  await withAdminClient(serverUrl, async (client) => {
-    for (const role of APP_ROLES) {
-      const status = await rolePasswordStatus(client, role, passwords[role]);
-      if (status === "unset" || (status !== "matches" && isDisposable())) {
-        toSet[role] = passwords[role];
-      } else if (status !== "matches") {
-        blocked.push(`${role} (${status === "unknown" ? "unreadable" : "different password"})`);
-      }
-    }
-  });
-  if (blocked.length > 0) {
-    throw new Error(
-      `the test passwords do not match these roles: ${blocked.join(", ")}. Export ` +
-        `${APP_ROLES.map((role) => ROLE_PASSWORD_ENV[role]).join(", ")} with the roles' real ` +
-        `passwords (TEST_DATABASE_URL must be a superuser to compare them), or set ` +
-        `${DISPOSABLE_TEST_SERVER_ENV}=1 if the server is disposable and may be changed.`,
-    );
-  }
-  return toSet;
 }
 
 function describeHost(url: string): string {

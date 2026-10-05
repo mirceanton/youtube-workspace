@@ -46,9 +46,9 @@ async function main(): Promise<void> {
       ...process.env,
       E2E_IDP: mode,
       E2E_DATABASE_URL: testDb.url("admin"),
-      E2E_WEB_DATABASE_URL: testDb.url("ytw_web"),
-      E2E_MCP_DATABASE_URL: testDb.url("ytw_mcp"),
-      E2E_READONLY_DATABASE_URL: testDb.url("ytw_readonly"),
+      E2E_WEB_DATABASE_URL: testDb.url("admin"),
+      E2E_MCP_DATABASE_URL: testDb.url("admin"),
+      E2E_READONLY_DATABASE_URL: testDb.url("admin"),
       OIDC_ISSUER_URL:
         mode === "mock"
           ? "http://127.0.0.1:4100/realms/youtube-workspace"

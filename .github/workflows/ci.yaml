@@ -110,8 +110,8 @@ jobs:
           --health-start-period 10s
     env:
       # Dev-only credentials of the service container above; nothing real is configured here.
-      MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/youtube_workspace
-      # The @ytw/db test harness never falls back to MIGRATION_DATABASE_URL (docs/database.md).
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/youtube_workspace
+      # The @ytw/db test harness uses TEST_DATABASE_URL to create isolated databases.
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
