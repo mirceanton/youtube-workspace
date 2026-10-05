@@ -25,7 +25,7 @@ own git worktrees, so **stay inside the paths your card owns**.
 - Reference repo for conventions (read-only): `/home/user/mirceanton/model-hub`.
 - Shared Postgres cluster: every test run creates its own uniquely named database and drops it.
   **Never stop/reset the shared cluster or drop databases you did not create.**
-- CI is cost-gated on this private repo: a normal push runs only the light jobs; put `[ci full]` in your LAST commit message when you touched Docker/CI/lockfile/security-relevant code or when your card says to confirm the full CI (see docs/ci-cd.md). Docs-only pushes run nothing. Check results with the GitHub MCP actions tools (load via ToolSearch; owner mirceanton, repo youtube-workspace).
+- CI runs `lint.yaml` + `test.yaml` on every push except documentation-only and on every pull request; there is no cost gating and no `[ci full]` token. Images are built and published only by `docker.yaml` when a release tag is pushed: when you touch Docker, the lockfile or workflow files, verify with the local commands in docs/ci-cd.md ("Reproducing CI locally"). Check results with the GitHub MCP actions tools (load via ToolSearch; owner mirceanton, repo youtube-workspace).
 - Max ~6 workers run at once on 4 CPUs: keep test parallelism modest, kill every dev server / background
   process you start before you finish.
 

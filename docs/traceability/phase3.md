@@ -25,7 +25,7 @@ pnpm test
 pnpm lint
 pnpm build
 pnpm format:check
-actionlint -shellcheck= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/keycloak-smoke.yaml
+actionlint -shellcheck= .github/workflows/lint.yaml .github/workflows/test.yaml .github/workflows/docker.yaml .github/workflows/e2e.yaml .github/workflows/keycloak-smoke.yaml .github/workflows/release.yaml
 ```
 
 Final local browser result: **12 passing tests (30.9 seconds)**, including the mock OIDC flow.

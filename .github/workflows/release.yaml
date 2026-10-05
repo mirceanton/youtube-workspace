@@ -41,10 +41,10 @@ jobs:
         with:
           sparse-checkout: .github/scripts
           persist-credentials: false
-      # main is pushed through ci.yaml, which runs every job for it, so a green push run of
-      # ci.yaml is the proof. Documentation-only pushes start no run; the script accepts a green
-      # run on an older commit only when everything since then is documentation.
-      - name: Require a green ci.yaml run for this commit
+      # main gets a green run of the CI workflows (lint.yaml and test.yaml) on every push, so a
+      # green push run is the proof. Documentation-only pushes start no run; the script accepts a
+      # green run on an older commit only when everything since then is documentation.
+      - name: Require a green CI run for this commit
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}

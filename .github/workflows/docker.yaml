@@ -3,9 +3,9 @@
 name: Docker
 permissions: { contents: read }
 
-# Pushes the images to ghcr.io when a GitHub release is published (see release.yaml). Nothing else
-# publishes: building and checking the images on pushes and pull requests is the `images` job of
-# ci.yaml, and the release is only cut from a commit whose CI run was green.
+# The only image build: it runs when a GitHub release is published (see release.yaml) and pushes
+# the images to ghcr.io. There is no build-on-push anymore; the release is only cut from a commit
+# whose CI runs were green (lint.yaml and test.yaml).
 on:
   release:
     types: ["published"]
@@ -54,6 +54,12 @@ jobs:
         env:
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: echo "version=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+      # Files that exist on a developer machine (apps/<app>/.env, key files, ...) are untracked, so
+      # only .dockerignore stands between them and `COPY . .`. Plant some in the build context;
+      # docker/smoke.sh fails if any of them, or a file with the sentinel, ends up in the image.
+      - name: Plant local files that must not reach the image
+        id: plant
+        run: echo "sentinel=$(docker/plant-local-files.sh)" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - name: Set up Docker Buildx
@@ -81,7 +87,8 @@ jobs:
           SERVICE: ${{ matrix.service }}
           PORT: ${{ matrix.port }}
           VERSION: ${{ steps.build-meta.outputs.version }}
-        run: docker/smoke.sh "ytw-${TARGET}:release" "$SERVICE" "$PORT" "$VERSION" "$GITHUB_SHA"
+          SENTINEL: ${{ steps.plant.outputs.sentinel }}
+        run: docker/smoke.sh "ytw-${TARGET}:release" "$SERVICE" "$PORT" "$VERSION" "$GITHUB_SHA" "$SENTINEL"
       - name: Login to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:

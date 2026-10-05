@@ -1,0 +1,59 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Lint and build
+permissions: { contents: read }
+
+# Lint, typecheck, format, workflow lint, build and a dependency audit.
+#   - Pushes that only change documentation (docs/, *.md, LICENSE) start nothing.
+#   - Everything else runs check on every push, pull requests to main, manual runs and the weekly
+#     schedule (the schedule keeps `pnpm audit` noticing new advisories without any commit).
+# GitHub skips every workflow for a push whose head commit message contains [skip ci], [ci skip],
+# [no ci], [skip actions] or [actions skip].
+on:
+  workflow_dispatch: {}
+  pull_request: { branches: ["main"] }
+  push:
+    branches: ["main", "claude/**", "codex/**", "renovate/**"]
+    paths-ignore: ["docs/**", "*.md", "**/*.md", "LICENSE"]
+  # Weekly, so new advisories are noticed without any commit.
+  schedule: [{ cron: "23 4 * * 1" }]
+
+# One run per commit; only pull request runs are cancelled by a newer push, so every commit of the
+# shared integration branch keeps a complete result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Lint, typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+      - name: Lint the workflows (actionlint)
+        run: mise exec -- actionlint
+      - name: Test the CI helper scripts
+        run: .github/scripts/test-scripts.sh
+      - name: Typecheck and lint (tsc -b and oxlint)
+        run: mise exec -- pnpm lint
+      - name: Check formatting
+        run: mise exec -- pnpm format:check
+      # The PRD asks for lint, tests and a build on every pull request; this is the build.
+      - name: Build (tsc -b per package, vite build for the web UI)
+        run: mise exec -- pnpm build
+      - name: Check the build output exists
+        run: |
+          for file in \
+            apps/web-server/dist/src/index.js \
+            apps/mcp/dist/src/index.js \
+            apps/web-ui/dist/index.html; do
+            test -f "$file" || { echo "::error::missing build output: $file"; exit 1; }
+          done
+      - name: Audit dependencies (fails on high or critical advisories)
+        run: mise exec -- pnpm audit --audit-level=high
