@@ -4,7 +4,7 @@
 
 [tools]
 node = "24.21.0"
-"aqua:pnpm/pnpm" = "12.8.2"
+"aqua:pnpm/pnpm" = "12.9.0"
 
 # CI tools
 "aqua:rhysd/actionlint" = "1"
