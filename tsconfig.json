@@ -4,14 +4,8 @@
     { "path": "packages/shared" },
     { "path": "packages/db" },
     { "path": "packages/policy" },
-    { "path": "packages/tokens" },
     { "path": "packages/script-md" },
-    { "path": "packages/observability" },
-    { "path": "apps/mcp" },
-    { "path": "apps/web-server" },
-    { "path": "apps/web-ui" },
-    { "path": "apps/admin-cli" },
-    { "path": "e2e" },
-    { "path": "tests" }
+    { "path": "apps/server" },
+    { "path": "apps/web" }
   ]
 }

@@ -1,9 +1,8 @@
 import { z } from "zod";
 import { resourceLevelsSchema } from "../schemas.js";
 
-// The "web contract" between the Fastify BFF (T40) and the SPA (T41), PLAN.md section 3.
-// The web server validates what it sends against these schemas; the SPA shell keeps a zod-free
-// copy of the checks (apps/web-ui/src/lib/session.ts) and a test keeps the two in agreement.
+// The "web contract" between the server's web routes and the SPA. The server validates what it
+// sends against these schemas; the SPA shell keeps a zod-free copy of the checks.
 
 /** `GET` returns the signed-in user and their stored access levels. */
 export const ME_PATH = "/api/me";

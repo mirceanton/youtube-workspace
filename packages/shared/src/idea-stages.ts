@@ -1,4 +1,4 @@
-/** Every stage an idea can be in (PRD 4, "Idea stages"). */
+/** Every stage an idea can be in. */
 export const IDEA_STAGES = [
   "inbox",
   "shortlisted",
@@ -48,7 +48,7 @@ export interface IdeaStageTransition {
 /**
  * Every allowed stage move, as data. Anything not listed here is rejected.
  *
- * The database function that moves ideas (T12) is the only enforcement point; its SQL must match
+ * The database function that moves ideas is the only enforcement point; its SQL must match
  * this table exactly and a test asserts that it does. Clients use the table only to offer valid
  * moves and to explain errors, never to decide what is allowed.
  */

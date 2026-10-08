@@ -1,34 +1,8 @@
-# Toolchain pins and the tasks PRD 9 asks for. Every task is a thin wrapper around the root pnpm
-# script of the same name, so `mise run <task>` and `pnpm run <task>` always do the same thing.
-# Keep the pnpm pin equal to `packageManager` in package.json.
-
+# Keep the pnpm pin equal to `packageManager` in package.json, and the Node pin equal to the
+# Dockerfile's base image.
 [tools]
 node = "24.21.0"
 "aqua:pnpm/pnpm" = "12.9.0"
 
-# CI tools
+# CI Tools
 "aqua:rhysd/actionlint" = "1"
-
-[tasks.dev]
-description = "Run the web server, the MCP server and the web UI in watch mode"
-run = "pnpm run dev"
-
-[tasks.test]
-description = "Run every test suite (vitest)"
-run = "pnpm run test"
-
-[tasks.lint]
-description = "Typecheck every package (tsc -b) and lint (oxlint)"
-run = "pnpm run lint"
-
-[tasks.format]
-description = "Format the repository with prettier"
-run = "pnpm run format"
-
-[tasks.migrate]
-description = "Apply database migrations (uses MIGRATION_DATABASE_URL)"
-run = "pnpm run migrate"
-
-[tasks.build]
-description = "Build every package and the web UI bundle"
-run = "pnpm run build"

@@ -17,7 +17,7 @@ export interface UserLevelsSource {
   readonly levels: Readonly<ResourceLevels>;
 }
 
-/** A signed-in human using the web app. Build it from the database on every request (PRD 7). */
+/** A signed-in human using the web app. Build it from the database on every request. */
 export interface UserPrincipal extends UserLevelsSource {
   readonly kind: "user";
   readonly userId: string;
@@ -57,7 +57,7 @@ export function assertPrincipal(value: unknown): asserts value is Principal {
 
 /**
  * The effective level for one object: the lower of the owner's level and the token's level
- * (PRD 7). Called without a token it is the owner's (user's) own level. Passing `undefined` as the
+ * Called without a token it is the owner's (user's) own level. Passing `undefined` as the
  * token (say, from a token map that lacks the object) throws a `PolicyError` instead of falling
  * back to the owner's level.
  */
@@ -96,8 +96,8 @@ export function hasAdminFlag(user: UserLevelsSource): boolean {
 }
 
 /**
- * A user's effective levels. Admins have the maximum on every object (PRD 7: "Admins have Write on
- * everything"), whatever rows are stored; everyone else has their stored levels, capped per object.
+ * A user's effective levels. Admins have the maximum on every object, whatever rows are
+ * stored; everyone else has their stored levels, capped per object.
  */
 export function userLevels(user: UserLevelsSource): ResourceLevels {
   return hasAdminFlag(user) ? { ...FULL_ACCESS } : effectiveLevels(user.levels);

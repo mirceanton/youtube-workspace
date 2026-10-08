@@ -1,9 +1,7 @@
-# Prettier also honours .gitignore. Listed here: tracked files it must not format, plus explicit
-# copies of ignores that matter even without .gitignore (build output, agent worktrees).
 pnpm-lock.yaml
 dist/
 coverage/
 node_modules/
 .claude/worktrees/
-# Markdown is hand-formatted (wide tables in the PRD and plan read better unwrapped).
+# Markdown is hand-formatted.
 *.md
