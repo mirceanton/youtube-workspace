@@ -98,7 +98,7 @@ export function levelsEverywhere(level: Level): ResourceLevels {
   return mapResources((resource) => capLevel(resource, level));
 }
 
-/** None on every object: a new user (PRD 7) and the starting point for parsing stored rows. */
+/** None on every object: a new user and the starting point for parsing stored rows. */
 export const NO_ACCESS: Readonly<ResourceLevels> = Object.freeze(levelsEverywhere("none"));
 
 /** The maximum on every object: Write everywhere and Read on the activity log. What admins hold. */

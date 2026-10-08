@@ -1,4 +1,4 @@
-// Status and type enums from PRD 4. The database mirrors each one with a CHECK constraint or enum.
+// Status and type enums. The database mirrors each one with a CHECK constraint or enum.
 // The matching zod schemas are in schemas.ts.
 
 /** `scripts.kind`: a video script or its packaging doc (title, thumbnail and description ideas). */
@@ -23,8 +23,7 @@ export type ActorType = (typeof ACTOR_TYPES)[number];
 
 /**
  * `notes.entity_type`: the kinds of record a note can be attached to. These are the objects that
- * exist in PRD 4 ("notes on any entity"); extending the list means editing it here and the
- * database CHECK constraint together (docs/adr/0001-stack.md).
+ * exist; extending the list means editing it here and the database CHECK constraint together.
  */
 export const NOTE_ENTITY_TYPES = ["idea", "script", "video", "experiment"] as const;
 export type NoteEntityType = (typeof NOTE_ENTITY_TYPES)[number];
