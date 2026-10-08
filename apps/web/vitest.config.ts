@@ -6,7 +6,7 @@ export default mergeConfig(
   mergeConfig(viteConfig, baseProjectConfig),
   defineProject({
     test: {
-      name: "@ytw/web-ui",
+      name: "@ytw/web",
       environment: "jsdom",
       setupFiles: ["./test/setup.ts"],
     },
