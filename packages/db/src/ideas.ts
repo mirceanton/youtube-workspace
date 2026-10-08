@@ -1,7 +1,6 @@
 /**
- * Typed wrappers for ideas (migration 0031): `create_idea`, `update_idea`, `advance_idea`,
- * `archive_idea`, and `getIdea` to read one back. Owned by task T12 (docs/orchestration/PLAN.md
- * section 3); behaviour and error codes: docs/database.md, "Ideas, scripts and notes".
+ * Typed wrappers for ideas: `create_idea`, `update_idea`, `advance_idea`, `archive_idea`, and
+ * `getIdea` to read one back.
  *
  * Writes take the transaction of {@link withActor} and pass the actor to the database function, so
  * the audit log names who did it. Database errors arrive typed (errors.ts): a stale
@@ -14,7 +13,7 @@ import { rejectNul, requireInteger, requireUuid } from "./args.js";
 import type { ActorTx, Queryable } from "./client.js";
 import { ValidationError } from "./errors.js";
 
-/** An idea as stored (PRD 4 "ideas"). */
+/** An idea as stored. */
 export interface IdeaRecord {
   id: string;
   title: string;
@@ -171,7 +170,7 @@ export async function archiveIdea(tx: ActorTx, input: ArchiveIdeaInput): Promise
 
 export interface AdvanceIdeaInput {
   id: string;
-  /** The stage to move to; the stage rules (PRD 4) decide whether that is allowed. */
+  /** The stage to move to; the stage rules decide whether that is allowed. */
   newStatus: IdeaStage;
   /**
    * Why: required for a move back one stage, welcome for any other move. Saved as a note on the

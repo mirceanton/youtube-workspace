@@ -1,15 +1,10 @@
 /**
- * Connections: one pool per process for its own role, the `sql` template for parameterized
- * queries, and {@link withActor}, the transaction every mutation runs in. Conventions:
- * docs/database.md.
+ * Connections: one pool per process, the `sql` template for parameterized queries, and
+ * {@link withActor}, the transaction every mutation runs in.
  */
 import { ACTOR_TYPES, QUERY_SQL_TIMEOUT_MS, type ActorType } from "@ytw/shared/constants";
 import { Pool, type QueryConfig, type QueryResult, type QueryResultRow } from "pg";
 import { ValidationError, formatAllowed, toDbError } from "./errors.js";
-
-/** The fixed database roles created by migration 0001 (PRD 5, "Database roles"). */
-export const APP_ROLES = ["ytw_web", "ytw_mcp", "ytw_readonly"] as const;
-export type AppRole = (typeof APP_ROLES)[number];
 
 /** Largest `payload` that `ytw_log_event` accepts, in bytes of its JSON text. */
 export const EVENT_PAYLOAD_MAX_BYTES = 65_536;
@@ -47,13 +42,11 @@ export interface Queryable {
 }
 
 export interface CreatePoolOptions {
-  /** The role this process connects as; it names the connection (`application_name`). */
-  role: AppRole;
-  /** `DATABASE_URL` (or `READONLY_DATABASE_URL` for ytw_readonly). */
+  /** `DATABASE_URL`: the one role that owns the database. */
   connectionString: string;
-  /** Maximum connections (default 10; PRD 9 sizes the system for 10 concurrent users). */
+  /** Maximum connections (default 10). */
   max?: number;
-  /** Overrides the default `application_name` (`ytw-web`, `ytw-mcp`, `ytw-readonly`). */
+  /** Shown in `pg_stat_activity` (default `ytw`). */
   applicationName?: string;
   /**
    * Called when an idle pooled connection fails (for example the server restarted). Without a
@@ -62,60 +55,23 @@ export interface CreatePoolOptions {
   onError?: (err: Error) => void;
 }
 
-/**
- * Settings sent in the startup packet of every connection a pool opens for `role`. They take
- * precedence over the role-level defaults, which Postgres lets a role change itself
- * (`ALTER ROLE ytw_readonly SET ...`), so `ytw_readonly` connections stay read-only with the
- * query_sql timeout whatever is stored for the role.
- */
-export function roleConnectionOptions(role: AppRole): string | undefined {
-  return role === "ytw_readonly"
-    ? `-c default_transaction_read_only=on -c statement_timeout=${QUERY_SQL_TIMEOUT_MS}`
-    : undefined;
-}
-
-/**
- * Creates the process's pool for its own role. Call {@link assertPoolRole} once at startup so a
- * `DATABASE_URL` that points at the wrong role (or a superuser) stops the process.
- */
+/** Creates the process's pool. */
 export function createPool(options: CreatePoolOptions): Pool {
-  const pinned = roleConnectionOptions(options.role);
   const pool = new Pool({
     connectionString: options.connectionString,
-    application_name: options.applicationName ?? options.role.replace("_", "-"),
+    application_name: options.applicationName ?? "ytw",
     max: options.max ?? 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
-    ...(pinned === undefined ? {} : { options: pinned }),
   });
   pool.on(
     "error",
     options.onError ??
       ((err: Error) => {
-        console.error(`@ytw/db: idle ${options.role} connection failed: ${err.message}`);
+        console.error(`@ytw/db: idle connection failed: ${err.message}`);
       }),
   );
   return pool;
-}
-
-/**
- * Verifies that the pool logs in as `role` itself (not a superuser, not another role). Throws an
- * Error naming the role it actually got.
- */
-export async function assertPoolRole(pool: Queryable, role: AppRole): Promise<void> {
-  const { rows } = await pool.query<{ current: string; session: string; superuser: boolean }>(
-    `SELECT current_user AS current, session_user AS session, r.rolsuper AS superuser
-       FROM pg_catalog.pg_roles r WHERE r.rolname = current_user`,
-  );
-  const row = rows[0];
-  if (row === undefined || row.current !== role || row.session !== role || row.superuser) {
-    const actual = row === undefined ? "an unknown role" : `role ${row.session}`;
-    throw new Error(
-      `the database connection must log in as ${role}, but it logs in as ${actual}` +
-        (row?.superuser === true ? " (a superuser)" : "") +
-        "; fix the connection string",
-    );
-  }
 }
 
 /** Who is acting: a person (username, no token) or an agent (API token name and id). */
@@ -210,13 +166,13 @@ export interface ReadOnlyQueryOptions {
 }
 
 /**
- * Runs ONE untrusted SQL statement, for the MCP `query_sql` tool (PRD 5), on a pool created for
- * `ytw_readonly`. Nothing else may run SQL that a client wrote. In order:
+ * Runs ONE untrusted SQL statement, for the MCP `query_sql` tool, on the normal pool. Nothing else
+ * may run SQL that a client wrote. In order:
  *
  * 1. `BEGIN READ ONLY` and `SET LOCAL statement_timeout`;
- * 2. a query that checks the connection is `ytw_readonly` (any other pool is refused) and takes the
- *    transaction's snapshot: from then on `SET TRANSACTION READ WRITE` and its `set_config`
- *    equivalent are rejected, so the statement cannot make its own transaction writable;
+ * 2. a query that takes the transaction's snapshot: from then on `SET TRANSACTION READ WRITE` and
+ *    its `set_config('transaction_read_only', ...)` equivalent are rejected, so the statement
+ *    cannot make its own transaction writable;
  * 3. the statement alone, through the extended protocol, which refuses a string holding more than
  *    one statement (with no parameters node-postgres would use the simple protocol, which runs
  *    several);
@@ -224,9 +180,12 @@ export interface ReadOnlyQueryOptions {
  *    statement changed in its session (settings, advisory locks, prepared statements, LISTEN)
  *    outlives the call.
  *
- * Errors are the driver's, with the SQLSTATE in `code`: 25006 for a write, 42501 for a missing
- * privilege, 57014 for the timeout, 42601 for a syntax error or several statements. Capping rows
- * and output size is the caller's job.
+ * Errors are the driver's, with the SQLSTATE in `code`: 25006 for a write, 57014 for the timeout,
+ * 42601 for a syntax error or several statements. Capping rows and output size is the caller's job.
+ *
+ * The statement runs as the database role of the pool and can read every table, `ytw_private`
+ * included (that is why credentials are stored hashed). Connect as the role that owns the
+ * database, never as a superuser, which can read files and start programs from SQL.
  */
 export async function queryReadOnly<R extends QueryResultRow = QueryResultRow>(
   pool: Pool,
@@ -244,15 +203,8 @@ export async function queryReadOnly<R extends QueryResultRow = QueryResultRow>(
   try {
     await client.query("BEGIN READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
-    const { rows } = await client.query<{ session: string; current: string }>(
-      "SELECT session_user AS session, current_user AS current",
-    );
-    const who = rows[0];
-    if (who?.session !== "ytw_readonly" || who.current !== "ytw_readonly") {
-      throw new Error(
-        `queryReadOnly needs a ytw_readonly pool, but this connection is ${who?.session ?? "unknown"}`,
-      );
-    }
+    // Takes the snapshot: from here on the transaction can no longer be switched to read write.
+    await client.query("SELECT 1");
     // `queryMode` is supported by node-postgres but missing from its type definitions.
     const config: QueryConfig & { queryMode: "extended" } = {
       text: statement,

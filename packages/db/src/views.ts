@@ -1,13 +1,10 @@
 /**
- * Typed readers for the views of migrations 0060-0062: the idea pipeline (`ideas_pipeline`,
- * `ideas_pipeline_all`), video performance against the channel median
- * (`video_performance_summary`) and experiment results (`experiment_results`). Owned by task T15
- * (docs/orchestration/PLAN.md section 3); definitions and edge cases: docs/database.md, "Views,
- * search and activity (T15)".
+ * Typed readers for the views: the idea pipeline (`ideas_pipeline`, `ideas_pipeline_all`), video
+ * performance against the channel median (`video_performance_summary`) and experiment results
+ * (`experiment_results`); the definitions and their edge cases are in the baseline migration.
  *
- * Every function needs only SELECT on the views (all three application roles have it), so it takes
- * any {@link Queryable}. The views are `security_invoker`: they read the tables with the caller's own
- * privileges. The service decides which resources a token may read before it calls these.
+ * Every function only selects from the views, so it takes any {@link Queryable}. The service decides
+ * which resources a token may read before it calls these.
  *
  * Numbers: counts and measurements are exact in the database (`bigint`, `numeric`) and come back as
  * strings; medians and differences are `numeric` too. `ctr` is a percentage from 0 to 100.
@@ -221,7 +218,7 @@ export async function listIdeaPipeline(
 /**
  * Filtered, deterministically ordered and paged Ideas reader for the web UI. All predicates are
  * bound values; only a fixed, allow-listed sort expression is interpolated into SQL. The total
- * travels with the page so the UI can paginate a channel with the PRD's 10,000-idea target without
+ * travels with the page so the UI can paginate a channel with a 10,000-idea channel without
  * silently filtering a truncated in-memory subset.
  */
 export async function listIdeas(
@@ -337,7 +334,7 @@ export async function getIdeaPipeline(
 }
 
 /**
- * How many ideas are in each stage (the "ideas per stage" row of the dashboard, PRD 6). Archived
+ * How many ideas are in each stage (the "ideas per stage" row of the dashboard). Archived
  * ideas are not counted; every stage is present, with 0 when it holds no idea.
  */
 export async function countIdeasByStage(db: Queryable): Promise<Record<IdeaStage, number>> {

@@ -1,7 +1,5 @@
 /**
- * Typed wrapper for global full-text search (migration 0063): `search_all`. Owned by task T15
- * (docs/orchestration/PLAN.md section 3); behaviour: docs/database.md, "Views, search and activity
- * (T15)".
+ * Typed wrapper for global full-text search: `search_all`.
  *
  * It searches the titles and pitches of ideas that are not archived and the latest revision of each
  * (idea, kind) of their scripts, with the `english` configuration and web-search syntax (quoted

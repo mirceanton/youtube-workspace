@@ -1,8 +1,7 @@
 /**
  * Typed wrappers for permissions: the access matrix (`set_user_permission`,
- * `list_users_with_levels`). Used by the web server only (settings, T42); the rules (admins only,
- * `activity` never write, an admin's levels are never lowered) are in the database functions, not
- * here. Conventions: docs/database.md ("Identity, permissions, tokens, sessions").
+ * `list_users_with_levels`). The rules (admins only, `activity` never write, an admin's levels
+ * are never lowered) are in the database functions, not here.
  */
 import type { Level, Resource } from "@ytw/shared/constants";
 import { rejectNul, requireUuid } from "./args.js";

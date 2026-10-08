@@ -1,7 +1,6 @@
 /**
- * Typed wrappers for videos (migration 0041): `register_video`, `update_video`, `archive_video`,
- * and `getVideo` to read one back. Owned by task T13 (docs/orchestration/PLAN.md section 3);
- * behaviour and error codes: docs/database.md, "Videos, metrics and experiments".
+ * Typed wrappers for videos: `register_video`, `update_video`, `archive_video`, and `getVideo`
+ * to read one back.
  *
  * Writes take the transaction of {@link withActor} and pass the actor to the database function, so
  * the audit log names who did it. Database errors arrive typed (errors.ts): registering a YouTube id
@@ -13,7 +12,7 @@ import { rejectNul, requireInteger, requireUuid } from "./args.js";
 import type { ActorTx, Queryable } from "./client.js";
 import { instantText } from "./value-args.js";
 
-/** A video as stored (PRD 4 "videos"). */
+/** A video as stored. */
 export interface VideoRecord {
   id: string;
   /** The idea the video came from, or null. */

@@ -1,9 +1,9 @@
 /**
  * Typed wrappers for web sessions: create, touch, get, update the refresh tokens, delete and purge
- * expired. The web server (T40) is the only caller. Sessions are not business records: they are not
- * audited and take no actor, and the session id is the bearer handle behind the session cookie, so
- * it appears in no message and no event. Conventions: docs/database.md ("Identity, permissions,
- * tokens, sessions").
+ * expired. Sessions are not business records: they are not audited and take no actor. The session
+ * id is the bearer handle behind the session cookie, so it appears in no message and no event, and
+ * the database stores only its SHA-256: callers pass and receive the raw id, `createWebSession`
+ * returns it once, and every other function hashes its argument inside the database.
  *
  * Two clocks: the idle expiry moves forward on activity (`touchWebSession`), the absolute expiry
  * is fixed at login; a session is alive only while both lie in the future.

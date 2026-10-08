@@ -1,5 +1,5 @@
 /**
- * Row mapping shared by the identity, permissions, tokens and sessions wrappers (T14). Internal:
+ * Row mapping shared by the identity, permissions, tokens and sessions wrappers. Internal:
  * `index.ts` does not export this file; the public types are re-exported by the wrapper modules.
  */
 import {
@@ -66,7 +66,7 @@ export function onlyRow<R>(rows: readonly R[], fn: string): R {
  * level map for the objects this build knows (`RESOURCES`), the way `@ytw/policy` reads stored rows:
  *
  * - an object the database lists but this build does not know is ignored, so a migration that adds
- *   an object type can run before the services that understand it are deployed (docs/policy.md);
+ *   an object type can run before the services that understand it are deployed;
  * - an object this build knows but the database does not list yet is `none` (fail closed);
  * - a value that is not a level, or something that is not an object, is corrupt data and throws a
  *   plain Error, so the caller fails instead of guessing a level.

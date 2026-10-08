@@ -19,14 +19,11 @@
     "build": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
     "test": "vitest run",
-    "migrate": "tsx --conditions=@ytw/source --env-file-if-exists=../../.env src/bin/migrate.ts"
+    "migrate": "tsx --conditions=@ytw/source --env-file-if-exists=../../apps/server/.env src/bin/migrate.ts"
   },
   "dependencies": {
     "@types/pg": "^8.23.0",
     "@ytw/shared": "workspace:*",
     "pg": "^8.23.0"
-  },
-  "devDependencies": {
-    "@ytw/policy": "workspace:*"
   }
 }
