@@ -1,7 +1,7 @@
 import { LOGIN_PATH, RETURN_TO_PARAM } from "./contract.ts";
 
 /**
- * Full-page navigations (leaving the SPA for the web server's `/auth/*` routes). Kept behind an
+ * Full-page navigations (leaving the SPA for the server's `/auth/*` routes). Kept behind an
  * object so tests can replace `assign`: jsdom cannot navigate.
  */
 export const browser = {

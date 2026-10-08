@@ -24,7 +24,7 @@ export type { RequiredLevel };
 
 /**
  * One rule a feature or a part of a screen can declare, in the policy layer's vocabulary
- * (`@ytw/policy`, docs/policy.md): a level on one object, `{ resource: "ideas", level: "read" }`;
+ * (`@ytw/policy`): a level on one object, `{ resource: "ideas", level: "read" }`;
  * `"authenticated"` for screens every signed-in user may open (the settings page); `"admin"` for
  * admin-only parts (the access matrix).
  */
@@ -39,7 +39,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Validates `GET /api/me` without zod (the shell must stay zod-free). Mirrors `meResponseSchema`
- * in packages/shared/src/api/session.ts; test/contract.test.ts keeps the two in agreement.
+ * in packages/shared/src/api/session.ts; test/lib/contract.test.ts keeps the two in agreement.
  */
 export function parseMe(json: unknown): MeResponse {
   if (!isObject(json)) throw new Error("/api/me did not return an object");

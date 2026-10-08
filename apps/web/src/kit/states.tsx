@@ -6,7 +6,7 @@ import { Button } from "./Button.tsx";
 import { Spinner } from "./Spinner.tsx";
 import type { IconComponent } from "./types.ts";
 
-// The three states every screen needs (PRD 6): empty, loading, error. Use them for whole screens
+// The three states every screen needs: empty, loading, error. Use them for whole screens
 // and for sections; `compact` is the in-card variant.
 
 interface Frame {

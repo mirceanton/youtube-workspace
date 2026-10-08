@@ -1,9 +1,4 @@
-import type {
-  VideoDetailResponse,
-  ListVideosResponse,
-  Video,
-  VideoPerformance,
-} from "@ytw/shared/api/videos";
+import type { VideoDetailResponse, ListVideosResponse, Video } from "@ytw/shared/api/videos";
 import { api } from "@/lib/api.ts";
 
 export const VIDEOS_PATH = "/api/videos";
@@ -58,5 +53,3 @@ export function parseVideo(value: unknown): Video | null {
   }
   return video as unknown as Video;
 }
-
-export type VideoListItem = VideoPerformance;

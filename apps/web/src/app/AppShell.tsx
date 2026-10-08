@@ -13,8 +13,8 @@ import { navEntriesFor, type FeatureDefinition, type NavEntry } from "./features
 import { WideLayoutContext } from "@/kit/layout.ts";
 import { LiveUpdatePoller } from "@/features/dashboard/LiveUpdatePoller.tsx";
 
-/** Items in the phone bottom bar before "More" (PRD 8: bottom navigation on phones). */
-export const BOTTOM_BAR_ITEMS = 4;
+/** Items in the phone bottom bar before "More" (bottom navigation on phones). */
+const BOTTOM_BAR_ITEMS = 4;
 
 function SideLink({ entry, onNavigate }: { entry: NavEntry; onNavigate?: () => void }) {
   const Icon = entry.icon;
@@ -75,7 +75,7 @@ function AccountBlock({ bordered = true }: { bordered?: boolean }) {
         <p className="truncate text-sm text-ink-muted">{user.email || user.username}</p>
         {user.isAdmin ? <Badge className="mt-1">Admin</Badge> : null}
       </div>
-      {/* A plain link: the browser leaves the SPA and the web server ends the session. */}
+      {/* A plain link: the browser leaves the SPA and the server ends the session. */}
       <a href={LOGOUT_PATH} className={buttonClasses("secondary")}>
         <LogOut aria-hidden="true" className="size-4" />
         Sign out
@@ -241,7 +241,7 @@ export function AppShell({ features }: { features: readonly FeatureDefinition[] 
   const entries = useMemo(() => navEntriesFor(features, me), [features, me]);
   return (
     <ShellFrame entries={entries}>
-      {/* T47 exception to feature-only files: this small, zod-free poller must run on every route. */}
+      {/* Not a feature: this small, zod-free poller must run on every route. */}
       <LiveUpdatePoller />
       <Outlet />
     </ShellFrame>

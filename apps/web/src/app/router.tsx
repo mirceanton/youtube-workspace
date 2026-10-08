@@ -13,7 +13,7 @@ import { SessionGate } from "./SessionGate.tsx";
  *  - everything else sits behind `SessionGate` inside `AppShell`; every feature's routes are wrapped
  *    in an access check built from its `requires`; unknown addresses get a "not found" page.
  */
-export function buildRoutes(features: readonly FeatureDefinition[]): RouteObject[] {
+function buildRoutes(features: readonly FeatureDefinition[]): RouteObject[] {
   return [
     { path: ACCESS_DENIED_PATH, element: <AccessDeniedPage />, HydrateFallback },
     {

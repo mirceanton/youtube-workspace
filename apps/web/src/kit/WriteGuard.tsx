@@ -21,7 +21,7 @@ export interface WriteGuardProps {
 
 /**
  * Wraps write controls (buttons, inputs, forms). When the user lacks Write on `resource`, or the
- * browser is offline (v1 queues nothing offline, PRD 8), every form control inside is disabled and
+ * browser is offline (nothing is queued offline), every form control inside is disabled and
  * the reason is stated in text. Hiding or disabling UI is cosmetic: the server checks every
  * mutation again.
  *
