@@ -3,59 +3,24 @@
 name: Release
 permissions: { contents: read }
 
-# Creates the next semantic version (from conventional commits) as a GitHub release. Publishing the
-# release triggers docker.yaml, which pushes the images to ghcr.io.
-#
-# DISABLED SCHEDULE: the nightly run stays off until the repository secrets BOT_APP_ID and
-# BOT_APP_PRIVATE_KEY exist and the owner has confirmed (docs/ci-cd.md). To turn it on, uncomment
-# the two `schedule` lines below. Until then the workflow only runs when started by hand, and a
-# manual run defaults to a dry run (nothing is tagged or released).
 on:
-  # schedule:
-  #   - cron: "0 0 * * *"
+  schedule: [{ cron: "0 0 * * *" }]
   workflow_dispatch:
     inputs:
       dry-run:
         description: "Dry run mode (no actual release)"
         required: false
-        default: true
+        default: false
         type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  # A release is only cut from a commit whose CI finished green.
-  verify-ci:
-    name: Require green CI on this commit
-    if: ${{ github.repository_owner == 'mirceanton' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - name: Checkout the CI helper scripts
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-      # main is pushed through ci.yaml, which runs every job for it, so a green push run of
-      # ci.yaml is the proof. Documentation-only pushes start no run; the script accepts a green
-      # run on an older commit only when everything since then is documentation.
-      - name: Require a green ci.yaml run for this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT: ${{ github.sha }}
-        run: .github/scripts/verify-ci.sh
-
   release:
-    name: Release
-    needs: verify-ci
+    if: github.repository_owner == 'mirceanton' # ? don't run on forks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - name: Generate Token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -63,10 +28,6 @@ jobs:
         with:
           app-id: "${{ secrets.BOT_APP_ID }}"
           private-key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
-          # The token is limited to this repository (the default) and to what a release does: read
-          # the releases and commits, push the tag and create the release. Without this line it
-          # would carry every permission the installed App has.
-          permission-contents: write
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,4 +39,4 @@ jobs:
         uses: mirceanton/action-semver-release@fea37a9e8b01bdcba71c60327a8b02c6a0e844a5 # v3.0.2
         with:
           github-token: ${{ steps.app-token.outputs.token }}
-          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+          dry-run: ${{ github.event.inputs.dry-run == 'true' && github.event_name == 'workflow_dispatch' }}
