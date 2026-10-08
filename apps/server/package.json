@@ -1,0 +1,30 @@
+{
+  "name": "@ytw/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "scripts": {
+    "dev": "tsx watch --conditions=@ytw/source --env-file-if-exists=../../.env --env-file-if-exists=.env src/index.ts",
+    "build": "tsc -b",
+    "start": "node dist/src/index.js",
+    "lint": "tsc -b && oxlint --deny-warnings",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@ytw/db": "workspace:*",
+    "@ytw/policy": "workspace:*",
+    "@ytw/script-md": "workspace:*",
+    "@ytw/shared": "workspace:*",
+    "fastify": "catalog:",
+    "jose": "^6.2.12",
+    "openid-client": "^6.8.8",
+    "pino": "^10.3.1",
+    "prom-client": "^15.1.3",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.0"
+  }
+}
