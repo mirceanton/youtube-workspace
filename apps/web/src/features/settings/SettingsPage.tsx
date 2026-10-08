@@ -348,7 +348,7 @@ export function Component() {
               <dd className="break-words font-medium">{ownProfile.email || "Not provided"}</dd>
             </div>
             <div>
-              <dt className="text-ink-muted">Keycloak identity</dt>
+              <dt className="text-ink-muted">Identity provider account</dt>
               <dd className="break-all font-mono text-xs">
                 {ownProfile.issuer} / {ownProfile.subject}
               </dd>

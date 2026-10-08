@@ -21,7 +21,7 @@ function CenteredPage({ children }: { children: ReactNode }) {
 }
 
 function SignOutLink({ label = "Sign out" }: { label?: string }) {
-  // A plain link: the browser leaves the SPA and the web server ends the session.
+  // A plain link: the browser leaves the SPA and the server ends the session.
   return (
     <a href={LOGOUT_PATH} className={buttonClasses("secondary")}>
       {label}
@@ -30,7 +30,7 @@ function SignOutLink({ label = "Sign out" }: { label?: string }) {
 }
 
 /**
- * Signed in, but an admin has not granted any access yet (PRD 7: None everywhere). The page checks
+ * Signed in, but an admin has not granted any access yet (None everywhere). The page checks
  * again by itself (the session query polls every 12 s) and offers a manual check.
  */
 export function AccessNotGrantedPage({
@@ -66,8 +66,8 @@ export function AccessNotGrantedPage({
 }
 
 /**
- * The OIDC group gate refused the login (PRD 7): no account was created. The web server may send
- * the browser here, or render its own page; this one exists so the wording is shared.
+ * The OIDC group gate refused the login: no account was created. The server may send the
+ * browser here, or render its own page; this one exists so the wording is shared.
  */
 export function AccessDeniedPage() {
   useDocumentTitle("Access denied");

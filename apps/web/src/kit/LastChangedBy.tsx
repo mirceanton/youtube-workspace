@@ -15,7 +15,7 @@ export interface LastChangedByProps {
 }
 
 /**
- * "Last changed by <actor> <when>" (PRD 6: every mutating screen shows who last changed the item).
+ * "Last changed by <actor> <when>" (every mutating screen shows who last changed the item).
  * Agents get an "Agent" badge so human and agent changes are told apart in text, not colour.
  */
 export function LastChangedBy({

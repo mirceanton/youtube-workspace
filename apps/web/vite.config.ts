@@ -3,9 +3,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defaultClientConditions, defineConfig, loadEnv } from "vite";
 
-// In development the SPA runs on Vite's dev server and proxies API and auth routes to the web
-// server, so the browser sees a single origin, as in production where the web server serves the
-// built SPA itself. Only these two variables are read, from the shell or the repository-root .env.
+// In development the SPA runs on Vite's dev server and proxies API and auth routes to the server,
+// so the browser sees a single origin, as in production where the server serves the built SPA
+// itself. Only these two variables are read, from the shell or the repository-root .env.
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const env = loadEnv("development", repoRoot, ["WEB_UI_PORT", "WEB_SERVER_URL"]);
 

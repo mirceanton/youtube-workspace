@@ -28,7 +28,7 @@ export interface ConflictDialogProps {
 }
 
 /**
- * Shown when a save fails with a version conflict (409, PRD 6: "never silently overwrite"). The
+ * Shown when a save fails with a version conflict (409; a save never silently overwrites). The
  * user chooses between reloading the latest version, merging their changes, or going back to the
  * editor. There is deliberately no "save anyway".
  */

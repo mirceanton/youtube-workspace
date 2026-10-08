@@ -1,8 +1,7 @@
 /*
  * Design tokens: the only place colours are defined. Light and dark follow the system setting
- * (PRD 6); there is no manual toggle. test/tokens.test.ts parses this file and checks the WCAG 2.1
- * AA contrast of every text/background pair listed there in both schemes, so keep the values as
- * plain #rrggbb hex and add a pair to the test when you add a token that carries text.
+ * there is no manual toggle. Keep the values as plain #rrggbb hex and check the WCAG 2.1 AA
+ * contrast of a new text/background pair in both schemes.
  *
  *   canvas   page background            surface  cards, dialogs, inputs
  *   subtle   quiet fills (chips, code)  line     decorative hairlines (not for input borders)

@@ -7,7 +7,6 @@ import { meetsRequirement, type FeatureAccess, type MeResponse } from "@/lib/ses
 // default-exports `defineFeature({...})`. The shell finds every such file with `import.meta.glob`
 // (src/app/registry.ts), builds the router and the navigation from them, and wraps each feature's
 // routes in an access check. Adding a feature therefore never edits a shared file.
-// How-to and examples: docs/web-ui.md.
 
 export interface FeatureNav {
   /** Text of the navigation item. */

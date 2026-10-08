@@ -21,7 +21,7 @@ const SIZES: Record<ButtonSize, string> = {
 
 /**
  * Class names of a button, for things that are not a `<button>` (a router `<Link>` that looks like
- * one). Every size is at least 44 px tall and wide (PRD 8).
+ * one). Every size is at least 44 px tall and wide, for touch.
  */
 export function buttonClasses(
   variant: ButtonVariant = "secondary",

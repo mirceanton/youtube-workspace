@@ -11,7 +11,7 @@ import {
 } from "./errors.ts";
 import { redirectToLogin } from "./navigation.ts";
 
-// The one place the SPA talks to the web server. It
+// The one place the SPA talks to the server. It
 //  - sends the CSRF token (from `GET /api/me`) with every mutation,
 //  - turns a 401 into a redirect to the OIDC login and a 409 into `ConflictError`,
 //  - normalises every failure into a typed error (src/lib/errors.ts),
