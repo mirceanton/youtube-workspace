@@ -1,11 +1,7 @@
-# Build context for docker/web.Dockerfile and docker/mcp.Dockerfile (docs/ci-cd.md).
-# The images need the pnpm workspace sources and nothing else: keep secrets, history, build output
-# and tooling out of the context. Patterns here are anchored at the context root, unlike .gitignore,
-# so anything that can appear below a package or an app needs a `**/` prefix. Do not exclude a
-# directory that is a pnpm workspace member (see pnpm-workspace.yaml), because
-# `pnpm install --frozen-lockfile` needs every member present.
-# docker/smoke.sh fails when a file listed here as local-only is found in a built image, and CI
-# plants such files (docker/plant-local-files.sh) to prove it.
+# Build context for the Dockerfile. The image needs the pnpm workspace sources and nothing else.
+# Patterns here are anchored at the context root, unlike .gitignore, so anything that can appear
+# below a package or an app needs a `**/` prefix. Do not exclude a directory that is a pnpm
+# workspace member (see pnpm-workspace.yaml): `pnpm install --frozen-lockfile` needs every member.
 
 # Version control, CI and agent tooling
 .git
@@ -19,31 +15,17 @@
 **/*.tsbuildinfo
 **/*.log
 
-# Local configuration and secrets, at the root and in every package and app: CLAUDE.md puts
-# per-process secrets in apps/<app>/.env. Only the documented examples are ever tracked.
+# Local configuration and secrets, at the root and in every app. Only the examples are tracked.
 **/.env
 **/.env.*
 !**/.env.example
-**/.mise.local.toml
-**/mise.local.toml
-**/.auth
 **/*.pem
 **/*.key
-**/*.p12
-**/*.pfx
 
-# Test output and editor files
-**/playwright-report
-**/test-results
+# Editor files and docs
 **/.idea
 **/.vscode
 **/.DS_Store
-
-# Not needed to build the services
-docs
-dev
-scripts
-docker
-docker-compose.yml
 **/*.md
 LICENSE
+docker-compose.yml

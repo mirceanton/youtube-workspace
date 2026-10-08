@@ -1,8 +1,6 @@
 packages:
   - "apps/*"
   - "packages/*"
-  - "e2e"
-  - "tests"
 
 # Versions shared by more than one workspace package. Reference them from a
 # package.json as `"zod": "catalog:"` so every package resolves the same

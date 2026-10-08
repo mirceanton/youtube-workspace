@@ -1,4 +1,3 @@
-# Dependencies and build output
 node_modules/
 dist/
 coverage/
@@ -11,11 +10,6 @@ coverage/
 !.env.example
 mise.local.toml
 .mise.local.toml
-
-# Playwright output and saved login state (e2e/)
-playwright-report/
-test-results/
-.auth/
 
 # Agent worktrees inside the main checkout (project settings in .claude/ stay tracked)
 .claude/worktrees/
