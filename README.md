@@ -1,315 +1,296 @@
 # YouTube Workspace
 
-Content operations workspace and Model Context Protocol (MCP) server for a YouTube channel, built for autonomous AI agents collaborating with human channel operators.
+A self-hosted workspace for one YouTube channel. Ideas, scripts, packaging experiments, published
+videos and their metrics live in a single Postgres database. The channel owner works in a web app;
+AI agents work through a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server.
+Both go through the same database functions, so stage rules, versioning and the audit log apply to
+humans and agents alike.
 
-> [!NOTE]
-> **Phases 0–3 implemented:** The core database layer, MCP server, Web UI, and browser-facing BFF are implemented. Phase 3 passed its CI and hosted Keycloak end-to-end checks in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7); this records implementation and CI validation, not a production deployment. Phase 4 PWA and offline support remain deferred. See the [acceptance report](docs/acceptance.md) and [Phase 3 traceability](docs/traceability/phase3.md).
-
----
+One container serves everything: the web app, the REST API behind it, the MCP endpoint and the
+script file endpoints.
 
 ## Features
 
-- **Autonomous Agent Collaboration via MCP:** Fastify-based Model Context Protocol server over Streamable HTTP with stateless Bearer token authentication per request.
-- **Strict Role-Based Access Control:** Fine-grained `none`, `read`, or `write` permissions across workspace objects (`ideas`, `scripts`, `experiments`, `videos`, `notes`, `activity`), enforced by `@ytw/policy` with token owner privilege ceilings.
-- **Database-Level Integrity & Invariants:** PostgreSQL 16 `SECURITY DEFINER` functions enforce idea stage state machines (`inbox → shortlisted → scripting → filming → editing → published`), optimistic version concurrency, and append-only constraints for scripts and video metrics.
-- **Immutable Audit Trail:** Every mutating action and tool invocation writes an immutable record to the `events` table with actor identity, action type, entity ID, and payload.
-- **Script File Export & Import:** Bidirectional synchronization between MCP tools and HTTP file routes (`GET/PUT /files/scripts/:idea_id/:kind`) using canonical YAML front matter markdown with conflict detection.
-- **Safe SQL Analytics:** Read-only `query_sql` MCP tool running on a dedicated transaction-isolated role with a 10-second hard statement timeout, 500-row cap, and 1 MB payload limit.
-- **Operator Admin CLI:** Headless management CLI (`ytw-admin`) for bootstrapping initial administrators, granting collaborator privileges, and issuing/rotating agent API tokens.
-- **Production Observability:** Pino structured JSON logging with automatic secret redaction (bearer tokens, session cookies), `/healthz` and `/readyz` probes, and Prometheus `/metrics`.
+- **Idea pipeline** — ideas move `inbox → shortlisted → scripting → filming → editing → published`
+  (plus `dropped`). Moving backwards needs a note. The rules live in one database function.
+- **Scripts and packaging docs** — append-only revisions with optimistic version checks. Agents can
+  download a script as markdown, edit it locally and upload it as a new revision
+  (`GET` / `PUT /files/scripts/:idea_id/:kind`); a stale upload gets a `409` with the latest version.
+- **Videos and metrics** — register published videos, append metric snapshots over time, compare a
+  video with the channel medians.
+- **Packaging experiments** — title, thumbnail and description variants with impressions and CTR,
+  one control, a declared winner.
+- **Notes and activity** — comments on any idea, script, video or experiment, and an immutable audit
+  log that says which human or which token changed what, and when.
+- **Search** — full-text search across idea titles and pitches and the latest script bodies.
+- **Per-object permissions** — every user and every API token has `none`, `read` or `write` on
+  `ideas`, `scripts`, `experiments`, `videos`, `notes` and `activity` (`activity` is `read` at most).
+  A token never exceeds its owner.
+- **OIDC login, optional** — any OpenID Connect provider (Authelia, Authentik, Zitadel, ...). Leave
+  it unconfigured for single-user mode.
+- **MCP token from an environment variable** — the LLM gateway works from the first boot, without
+  clicking through the UI.
 
----
+## Quick start
 
-## Architecture
+Needs Node 24 and pnpm (`mise install` sets up both) plus a Postgres. Docker is the easiest way to
+get one:
 
-```mermaid
-flowchart TD
-    subgraph Agents["AI Agents & Tools"]
-        Claude["Claude Desktop / Cursor"]
-        ScriptBot["Script Generation Agent"]
-        AnalyticsBot["Analytics Agent"]
-    end
-
-    subgraph Operator["Operator Tooling"]
-        AdminCLI["Admin CLI (ytw-admin)"]
-    end
-
-    subgraph MCPService["MCP Server (:3001)"]
-        StreamableHTTP["Streamable HTTP (/mcp)"]
-        FileRoutes["File Routes (/files/scripts/...)"]
-        HealthMetrics["/healthz · /readyz · /metrics"]
-        AuthRateLimit["Bearer Auth & Rate Limiter (@ytw/tokens)"]
-        PolicyCheck["Policy Check (@ytw/policy)"]
-        Tools["Tool Registry (Write / Read / query_sql)"]
-    end
-
-    subgraph WebApp["Web App (Phase 3)"]
-        WebBFF["Fastify Web BFF (:3000)"]
-        WebSPA["React Single Page App (:5173)"]
-    end
-
-    subgraph Database["PostgreSQL 16 Cluster"]
-        subgraph Roles["Least-Privilege Roles"]
-            ytw_mcp["ytw_mcp"]
-            ytw_web["ytw_web"]
-            ytw_readonly["ytw_readonly"]
-        end
-        subgraph Storage["Storage & Logic"]
-            Tables["public (ideas, scripts, videos, experiments, notes, events)"]
-            PrivateTables["ytw_private (api_tokens, permissions, sessions)"]
-            SecDef["SECURITY DEFINER Functions (Pinned search_path)"]
-            Views["Views (ideas_pipeline, video_performance_summary, ...)"]
-        end
-    end
-
-    Claude -->|"Streamable HTTP (Bearer token)"| StreamableHTTP
-    ScriptBot -->|"GET / PUT Markdown"| FileRoutes
-    AnalyticsBot -->|"query_sql (Read-only)"| StreamableHTTP
-    AdminCLI -->|"DATABASE_URL (ytw_web)"| SecDef
-
-    StreamableHTTP --> AuthRateLimit --> PolicyCheck --> Tools
-    FileRoutes --> AuthRateLimit --> PolicyCheck
-
-    Tools -->|"Pool (ytw_mcp)"| SecDef
-    Tools -->|"Pool (ytw_readonly)"| Views
-    FileRoutes -->|"Pool (ytw_mcp)"| SecDef
-
-    SecDef --> Tables
-    SecDef --> PrivateTables
-    SecDef -->|"Audit event"| Tables
+```bash
+docker compose up -d postgres                    # Postgres 18 on 127.0.0.1:5432
+pnpm install
+cp apps/server/.env.example apps/server/.env     # DATABASE_URL already points at the compose database
+pnpm dev                                         # server on :3000, web on :5173
 ```
 
----
+Open <http://localhost:5173>. With no `OIDC_*` variables set there is no login: you are the local
+owner (see [Authentication](#authentication)). The server applies the database migrations when it
+starts.
 
-## Getting Started
+To run the production image locally instead (built from the `Dockerfile`, served on
+<http://localhost:3000>, loopback only):
 
-### Prerequisites
-
-- **Node.js:** `>= 22.12.0` (v24.x recommended, pinned via `.mise.toml`).
-- **pnpm:** `12.8.1` (declared via `packageManager`).
-- **PostgreSQL 16:** Local binaries or Docker container.
-- **mise (optional):** For toolchain version management (`mise install`).
-
-### Local Development Setup
-
-1. **Clone and install dependencies:**
-   ```bash
-   pnpm install
-   ```
-
-2. **Start PostgreSQL:**
-   You can run PostgreSQL via Docker Compose:
-   ```bash
-   docker compose up -d postgres
-   ```
-   Or use the local script (if PostgreSQL 16 binaries are installed locally):
-   ```bash
-   scripts/pg-local.sh start
-   ```
-
-3. **Run database migrations:**
-   ```bash
-   MIGRATION_DATABASE_URL="postgres://postgres:postgres@localhost:5432/youtube_workspace" \
-     pnpm migrate
-   ```
-
-4. **Bootstrap the administrator and create an agent token:**
-   ```bash
-   # Bootstrap first user (automatically becomes admin)
-   DATABASE_URL="postgres://ytw_web:ytw-web-dev-password@localhost:5432/youtube_workspace" \
-     pnpm ytw-admin user create --username owner --email owner@channel.local
-
-   # Generate an API token for an AI agent
-   DATABASE_URL="postgres://ytw_web:ytw-web-dev-password@localhost:5432/youtube_workspace" \
-     pnpm ytw-admin token create \
-       --owner owner \
-       --name "my-agent" \
-       --grant ideas=write,scripts=write,videos=read,notes=write \
-       --expires-in 90d
-   ```
-   *Note: Save the token secret displayed in stdout (e.g. `ytw_abc...`).*
-
-5. **Start the MCP Server:**
-   ```bash
-   DATABASE_URL="postgres://ytw_mcp:ytw-mcp-dev-password@localhost:5432/youtube_workspace" \
-   READONLY_DATABASE_URL="postgres://ytw_readonly:ytw-readonly-dev-password@localhost:5432/youtube_workspace" \
-   PORT=3001 \
-     pnpm --filter @ytw/mcp run dev
-   ```
-
-6. **Verify server health:**
-   ```bash
-   curl http://localhost:3001/healthz
-   curl http://localhost:3001/readyz
-   ```
-
----
+```bash
+docker compose --profile app up -d --build
+```
 
 ## Configuration
 
-All configuration is supplied via environment variables and validated at runtime with Zod schemas.
+Everything is an environment variable. The server validates them at startup and exits with a list
+of every bad variable. An empty value counts as unset. `apps/server/.env.example` is the annotated
+list for local development; `pnpm dev` loads the root `.env`, then `apps/server/.env`.
 
-### MCP Server Environment Variables
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | *(required)* | The pre-provisioned Postgres role. It must own the database: migrations run on boot |
+| `PORT` / `HOST` | `3000` / `0.0.0.0` | Listen address |
+| `LOG_LEVEL` | `info` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent` |
+| `APP_VERSION` / `GIT_SHA` | `0.0.0-dev` / `unknown` | Shown on `/healthz`; the image build sets them |
+| `STATIC_WEB_DIR` | *(unset)* | When set, serve the built web app from there with SPA fallback (the image sets it) |
+| `METRICS_TOKEN` | *(unset)* | When set, `/metrics` requires `Authorization: Bearer <token>`. Set it if `/metrics` is reachable beyond a private network |
+| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | *(unset)* | OIDC login. All four or none |
+| `OIDC_GROUPS_CLAIM_PATH`, `OIDC_REQUIRED_GROUP` | `groups`, *(unset)* | Optional group gate: only members of `OIDC_REQUIRED_GROUP` (read from the claim at `OIDC_GROUPS_CLAIM_PATH`) may sign in |
+| `SESSION_SECRET` | *(required with OIDC)* | At least 32 characters. Signs the session cookie and encrypts refresh tokens, e.g. `openssl rand -base64 48` |
+| `SESSION_IDLE_TIMEOUT`, `SESSION_ABSOLUTE_TIMEOUT` | `28800` (8 h), `604800` (7 d) | Session lifetimes in seconds |
+| `MCP_BOOTSTRAP_TOKEN` | *(unset)* | The secret of the seeded MCP token, `ytw_` plus 43 base64url characters. Unset revokes the seeded token. See [Seeding the MCP token](#seeding-the-mcp-token) |
+| `MCP_BOOTSTRAP_TOKEN_NAME` | `bootstrap` | Name of the seeded token; the audit log attributes its calls to it |
+| `MCP_BOOTSTRAP_TOKEN_PERMISSIONS` | `ideas=write,scripts=write,experiments=write,videos=write,notes=write,activity=read` | The token's levels as `resource=level` pairs |
 
-The table below is generated from `envSchema` in [`apps/mcp/src/env.ts`](apps/mcp/src/env.ts):
+Development only: the Vite dev server reads `WEB_UI_PORT` (default `5173`) and `WEB_SERVER_URL`
+(default `http://127.0.0.1:3000`, where it proxies `/api` and `/auth`) from the shell or the root
+`.env`. Tests read `TEST_DATABASE_URL` (default `postgres://postgres:postgres@localhost:5432/postgres`).
 
-| Variable | Required | Default | Values | Description |
-| --- | --- | --- | --- | --- |
-| `HOST` | no | `0.0.0.0` | string | Interface to listen on. |
-| `PORT` | no | `3001` | integer 0 to 65535 | Port to listen on. |
-| `LOG_LEVEL` | no | `info` | one of fatal, error, warn, info, debug, trace, silent | Minimum level written to the log. |
-| `APP_VERSION` | no | `0.0.0-dev` | string | Release version shown on /healthz; container builds set it. |
-| `GIT_SHA` | no | `unknown` | string | Git commit shown on /healthz; container builds set it. |
-| `METRICS_TOKEN` | no |  | string, at least 16 characters | When set, GET /metrics requires `Authorization: Bearer <token>`. Set it whenever /metrics is reachable beyond a private network: unset, the endpoint is open. |
-| `DATABASE_URL` | no | `postgres://ytw_mcp:ytw_mcp@localhost:5432/youtube_workspace` | URL | PostgreSQL connection string for the ytw_mcp application role. |
-| `READONLY_DATABASE_URL` | no |  | URL | PostgreSQL connection string for the ytw_readonly role (used by query_sql). |
+## Authentication
 
----
+**OIDC.** Set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` and `OIDC_REDIRECT_URI`
+(plus `SESSION_SECRET`) and the web app requires a login. Register `OIDC_REDIRECT_URI` as
+`https://<host>/auth/callback` with your provider; outside `localhost` both URLs must be HTTPS. The
+first user to sign in becomes admin; everyone else starts with `none` everywhere until an admin sets
+their levels in **Settings**. Setting only some of the OIDC variables is a startup error.
 
-## Database and Migrations
+**Single-user mode.** With no `OIDC_*` variables, every web request is the built-in local owner, an
+admin with full access. The server logs a warning at startup.
 
-### Roles & Security Model
+> [!WARNING]
+> Single-user mode has no login at all. Anyone who can reach the web app is the owner. Use it for
+> local development, or behind a reverse proxy or VPN that already authenticates people.
 
-The database enforces strict least privilege:
-- `ytw_web`: Used by the web backend and Admin CLI. Has `SELECT` on users and permissions, and `EXECUTE` on identity management functions.
-- `ytw_mcp`: Used by the MCP server for workspace operations. Has `SELECT` on workspace views/tables and `EXECUTE` on tool business functions.
-- `ytw_readonly`: Dedicated read-only role with `default_transaction_read_only = on` and execution limited to read queries.
-- **Zero Table DML:** No application role has `INSERT`, `UPDATE`, `DELETE`, or `TRUNCATE` privileges on any table. All writes occur inside `SECURITY DEFINER` functions that pin `search_path = pg_catalog, pg_temp`.
+`/mcp` and the script file endpoints always need a bearer token, in every mode.
 
-### Migrations
+## Deploying with CloudNativePG
 
-Migrations are stored in [`packages/db/migrations/`](packages/db/migrations/) and managed by the `@ytw/db` runner.
+The app uses one Postgres role. It never creates roles, never sets passwords and never needs a
+superuser: the role owns the database, and the server runs the migrations as that same role every
+time it boots. Concurrent boots (several replicas, a rolling update) wait for each other on an
+advisory lock.
+
+[CloudNativePG](https://cloudnative-pg.io) creates exactly that. Its `app` user owns the database
+named in `bootstrap.initdb`, and the operator publishes the connection string in the
+`<cluster>-app` secret:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: youtube-workspace-db
+spec:
+  instances: 1
+  storage:
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: youtube_workspace
+      owner: youtube_workspace
+```
+
+Then point the Deployment at the `uri` key of that secret:
+
+```yaml
+containers:
+  - name: youtube-workspace
+    image: ghcr.io/mirceanton/youtube-workspace:latest
+    ports:
+      - containerPort: 3000
+    env:
+      - name: DATABASE_URL
+        valueFrom:
+          secretKeyRef:
+            name: youtube-workspace-db-app # <cluster>-app
+            key: uri
+      - name: MCP_BOOTSTRAP_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: youtube-workspace
+            key: mcp-bootstrap-token
+      # Remove these for single-user mode behind your own authentication.
+      - name: OIDC_ISSUER_URL
+        value: https://auth.example.com
+      - name: OIDC_CLIENT_ID
+        value: youtube-workspace
+      - name: OIDC_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef: { name: youtube-workspace, key: oidc-client-secret }
+      - name: OIDC_REDIRECT_URI
+        value: https://youtube-workspace.example.com/auth/callback
+      - name: SESSION_SECRET
+        valueFrom:
+          secretKeyRef: { name: youtube-workspace, key: session-secret }
+    livenessProbe:
+      httpGet: { path: /healthz, port: 3000 }
+    readinessProbe:
+      httpGet: { path: /readyz, port: 3000 }
+```
+
+`/readyz` fails until the database answers and the schema is current. The image runs as
+`1000:1000` and needs no writable filesystem.
+
+## Seeding the MCP token
+
+To let an LLM gateway talk to the workspace from the first boot, give the server a token through the
+environment instead of creating one in the UI.
+
+1. Generate a secret (`ytw_` plus 43 base64url characters) and keep it in your secret store:
+
+   ```bash
+   openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' | sed 's/^/ytw_/'
+   ```
+
+2. Set it as `MCP_BOOTSTRAP_TOKEN` on the server. Optionally set `MCP_BOOTSTRAP_TOKEN_NAME` (the
+   name the audit log shows for its calls) and `MCP_BOOTSTRAP_TOKEN_PERMISSIONS`, for example
+   `ideas=write,scripts=write,videos=read,activity=read`. Resources you leave out get `none`;
+   unknown resources or levels abort startup.
+
+3. Point the gateway at `POST /mcp` with the header `Authorization: Bearer ytw_...`. To check that
+   the token is accepted (`200`; a wrong token is `401`):
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' https://youtube-workspace.example.com/mcp \
+     -H "Authorization: Bearer $MCP_BOOTSTRAP_TOKEN" \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json, text/event-stream' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+   ```
+
+   In a client that takes a JSON config, for example Claude Desktop:
+
+   ```json
+   {
+     "mcpServers": {
+       "youtube-workspace": {
+         "url": "https://youtube-workspace.example.com/mcp",
+         "headers": { "Authorization": "Bearer ytw_YOUR_SECRET" }
+       }
+     }
+   }
+   ```
+
+**The environment wins.** The server reconciles the seeded token on every boot:
+
+| Environment | Result |
+| --- | --- |
+| Token set, none seeded yet | Created |
+| Same secret, same name and permissions | Unchanged |
+| Same secret, other name or permissions | Updated in place |
+| A different secret | The old seeded token is revoked, the new one created: this is how you **rotate** |
+| `MCP_BOOTSTRAP_TOKEN` unset or empty | The seeded token is **revoked** |
+
+Only the seeded token is ever touched; tokens created in the UI are unaffected. The seeded token
+never expires and is owned by a built-in system user that cannot log in, so its own permissions are
+the only limit. Only a hash of the secret is stored; the secret itself never reaches the database.
+
+Tokens for other agents are created in **Settings**, each with its own levels, never above those of
+the user who creates it.
+
+## MCP
+
+The endpoint is `POST /mcp` (Streamable HTTP, stateless; `GET` and `DELETE` answer `405`). Every
+call is checked against the token's effective permission; `query_sql` is only offered at all to
+tokens with read on every object.
+
+| Tool | Needs | What it does |
+| --- | --- | --- |
+| `whoami` | | The token's name, owner and effective permission levels |
+| `list_ideas` | read `ideas` | Ideas with age in stage and latest script revisions, filterable by stage |
+| `get_idea` | read `ideas` | One idea |
+| `create_idea` | write `ideas` | New idea in `inbox` |
+| `update_idea` | write `ideas` | Edit non-stage fields; fails on a version conflict |
+| `advance_idea` | write `ideas` | Move one stage forward, one back (needs a note), to `dropped`, or restore to `inbox` |
+| `get_script` | read `scripts` | A script or packaging revision, latest unless a version is given |
+| `export_script` | read `scripts` | The same as markdown with YAML front matter |
+| `save_script_version` | write `scripts` | Append a draft revision; fails if `base_version` is not the latest |
+| `set_script_status` | write `scripts` | Set a revision to `draft`, `review` or `approved` |
+| `register_video` | write `videos` | Register a video that exists on YouTube |
+| `log_metrics` | write `videos` | Append a metrics snapshot (idempotent per video and capture time) |
+| `list_videos` | read `videos` | Videos with headline metrics against channel medians |
+| `get_video_performance` | read `videos` | Detailed metrics for one video |
+| `create_experiment` | write `experiments` | An experiment with its variants (exactly one control) |
+| `record_variant_stats` | write `experiments` | Impressions and CTR for a variant |
+| `conclude_experiment` | write `experiments` | Pick the winner and record the conclusions |
+| `list_experiments` | read `experiments` | Experiments, filterable by video or status |
+| `get_experiment_results` | read `experiments` | Variants side by side with the declared winner |
+| `add_note` | write `notes` | Comment on an idea, script, video or experiment |
+| `list_notes` | read `notes` | Comments on one entity, oldest first |
+| `search` | | Full-text search across ideas and script bodies, limited to what the token may read |
+| `query_sql` | read on **every** object | One read-only SQL statement: `READ ONLY` transaction, 10 s timeout, 500 rows and 1 MB at most |
+
+Script files for editing outside MCP, with the same bearer token:
+
+- `GET /files/scripts/:idea_id/:kind[?version=N]` returns the markdown with front matter
+  (`idea_id`, `kind`, `version`, `status`). `kind` is `script` or `packaging`.
+- `PUT /files/scripts/:idea_id/:kind?base_version=N` with `Content-Type: text/markdown` saves the
+  body as the next draft revision. If someone saved in between, the answer is `409` with the latest
+  version.
+
+Operations endpoints, without authentication except `/metrics` when `METRICS_TOKEN` is set:
+`GET /healthz` (liveness, version and commit), `GET /readyz` (database reachable, schema current)
+and `GET /metrics` (Prometheus).
+
+## Repository layout
+
+```
+apps/server        @ytw/server   Fastify: web API (/api, /auth), MCP (/mcp), script files,
+                                 health and metrics; serves the built web app
+apps/web           @ytw/web      Vite + React + Tailwind single-page app
+packages/shared    @ytw/shared   Domain constants (resources, levels, idea stages) and zod schemas
+packages/db        @ytw/db       SQL migrations, migrator, typed wrappers, test harness
+packages/policy    @ytw/policy   Pure permission logic
+packages/script-md @ytw/script-md  The script markdown file format
+```
+
+## Development
+
 ```bash
-MIGRATION_DATABASE_URL="postgres://postgres:postgres@localhost:5432/youtube_workspace" \
-  pnpm migrate
-```
-The migration runner:
-- Acquires an exclusive cluster advisory lock (`pg_advisory_lock(714209142)`).
-- Provisions roles and executes sequential migration scripts inside transactions.
-- Records executed migrations in `schema_migrations`.
-- Verifies catalog integrity via `ytw_catalog_violations()`.
-
----
-
-## Agents (MCP)
-
-### Connecting AI Clients
-
-#### Claude Desktop
-Add to `claude_desktop_config.json`:
-```json
-{
-  "mcpServers": {
-    "youtube-workspace": {
-      "url": "http://localhost:3001/mcp",
-      "headers": {
-        "Authorization": "Bearer ytw_YOUR_TOKEN_SECRET"
-      }
-    }
-  }
-}
+pnpm dev            # server and web in watch mode
+pnpm test           # vitest; needs Postgres (TEST_DATABASE_URL, see above)
+pnpm lint           # tsc -b and oxlint
+pnpm format         # prettier
+pnpm build          # tsc -b per package and the web build
+pnpm migrate        # apply migrations to DATABASE_URL by hand (the server also does it on boot)
 ```
 
-#### Cursor
-In Cursor Settings -> Features -> MCP Servers:
-- **Type:** `command` or `sse/http`
-- **URL:** `http://localhost:3001/mcp`
-- **Headers:** `Authorization: Bearer ytw_YOUR_TOKEN_SECRET`
+Tests create and drop their own throwaway databases on the server behind `TEST_DATABASE_URL`, which
+therefore needs a superuser. See `CLAUDE.md` for the conventions.
 
-### Script Markdown Export & Import
-
-Agents can edit scripts as local files:
-- **Export:** Call the `export_script` tool or `GET /files/scripts/:idea_id/:kind` to receive markdown with canonical front matter:
-  ```markdown
-  ---
-  idea_id: 01a10214-cee3-74c2-9922-aa65ca267bfa
-  kind: script
-  version: 2
-  status: draft
-  ---
-  # Script Body
-  ...
-  ```
-- **Import:** Call `save_script_version` or `PUT /files/scripts/:idea_id/:kind?base_version=2` with the edited markdown.
-- **Conflict Handling:** If another edit succeeded in the meantime, the server rejects the request with HTTP `409 Conflict` (or an MCP tool error) returning `{ latest_version: 3 }`, enabling the agent to re-fetch, merge, and retry.
-
-### Safe SQL Analytics (`query_sql`)
-
-The `query_sql` tool provides read-only SQL querying under strict constraints:
-- Available only to tokens holding `read` permission on **every** workspace resource.
-- Runs exclusively on the `ytw_readonly` connection pool.
-- Enforces `BEGIN READ ONLY` and `SET LOCAL statement_timeout = '10s'`.
-- Hard output row cap (500 rows with `truncated: true`) and 1 MB payload limit.
-- Multi-statement execution and access to private tables are blocked.
-
----
-
-## Access Control
-
-### Permission Matrix
-
-Every user and API token has an access level of `none`, `read`, or `write` per resource:
-- `ideas` (inbox, pipeline, pitch)
-- `scripts` (script and packaging markdown versions)
-- `experiments` (A/B titles, thumbnails, hypotheses, variants, results)
-- `videos` (published videos and time-series metrics)
-- `notes` (comments on ideas, scripts, videos, experiments)
-- `activity` (immutable audit feed; allows `none` or `read` only)
-
-A token's effective access is always the minimum of its granted level and its owner's current access level (`effectiveLevel(owner, token)`). Lowering an owner's access immediately lowers all their tokens.
-
-### Adding a New Object Type
-
-To add a new object type to the workspace:
-1. Update `RESOURCES` in [`packages/shared/src/constants.ts`](packages/shared/src/constants.ts).
-2. Create a database migration adding the table and permission checks.
-3. The TypeScript compiler (`tsc -b`) will enforce updates across all policy checks, tool definitions, and CLI arguments.
-4. See [`docs/policy.md`](docs/policy.md) for full instructions.
-
----
-
-## Web App
-
-The React Web UI and Fastify BFF with OIDC authentication and cookie sessions (PRD Sections 6–7) are implemented. Phase 3 passed its CI and hosted Keycloak end-to-end checks in [PR #7](https://github.com/mirceanton/youtube-workspace/pull/7). The app still needs environment-specific production hosting and Keycloak configuration before it can be considered deployed. Phase 4 PWA and offline support remain deferred.
-
-The Admin CLI and MCP server remain available for operator administration and agent tasks.
-
----
-
-## Testing
-
-The workspace enforces complete end-to-end and integration testing against real PostgreSQL databases without database mocks:
-- `pnpm test`: Runs Vitest across all workspace packages and gate test suites.
-- `pnpm lint`: Runs `tsc -b` and `oxlint --deny-warnings`.
-- `pnpm format:check`: Validates formatting with Prettier.
-
----
-
-## Deployment
-
-Container images are built and pushed to GitHub Container Registry:
-- `ghcr.io/mirceanton/youtube-workspace-mcp`: Headless MCP Server.
-
-### Running Migrations in Production
-Run the database migration as a one-shot container or pre-deploy job:
-```bash
-docker run --rm \
-  -e MIGRATION_DATABASE_URL="postgres://postgres:${PG_SUPERUSER_PASSWORD}@postgres:5432/youtube_workspace" \
-  ghcr.io/mirceanton/youtube-workspace-mcp:latest \
-  pnpm migrate
-```
-
----
-
-## Stack and Design Decisions
-
-Key deviations from PRD Section 3 defaults are documented with written justifications in [ADR 0001: Technology Stack](docs/adr/0001-stack.md):
-- **Fastify 5 over Next.js/SvelteKit:** Provides a unified HTTP stack for the MCP server and web server with shared logging, metrics, and authentication primitives.
-- **Official TypeScript MCP SDK over Static YAML:** Dynamic, database-backed RBAC checks on every call require programmatic handler execution rather than static definitions.
-- **Database Functions over Query Builders:** Concurrency invariants (optimistic locks, stage transition validation, immutable audit logs) are enforced atomically within Postgres `SECURITY DEFINER` transactions.
-
----
-
-## License
-
-Private repository. All rights reserved.
+Releases are cut by the `Release` workflow from conventional commits. Publishing a release builds
+and pushes `ghcr.io/mirceanton/youtube-workspace` (`linux/amd64` and `linux/arm64`) tagged with the
+release version and `latest`.

@@ -3,7 +3,7 @@
   "extends": ["github>mirceanton/renovate-config//default.json5"],
   "packageRules": [
     {
-      "description": "One update for the Node version pinned in .mise.toml and in the Dockerfiles",
+      "description": "One update for the Node version pinned in .mise.toml and in the Dockerfile",
       "matchManagers": ["mise", "dockerfile"],
       "matchPackageNames": ["node"],
       "groupName": "node"

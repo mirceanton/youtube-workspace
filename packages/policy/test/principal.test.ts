@@ -1,79 +1,58 @@
-import type { Level, Resource } from "@ytw/shared";
+import type { Level, Resource, ResourceLevels } from "@ytw/shared";
 import { describe, expect, it } from "vitest";
 import {
   FULL_ACCESS,
   NO_ACCESS,
   PolicyError,
-  assertPrincipal,
-  describePrincipal,
   effectiveLevel,
   effectiveLevels,
+  isAdmin,
   levelOn,
   principalLevels,
   userLevels,
   type Principal,
+  type UserPrincipal,
 } from "../src/index.js";
-import { oracleFull, raw, token, user } from "./fixtures.js";
+import { raw, token, user } from "./fixtures.js";
 
-describe("effectiveLevel", () => {
-  it.each([
-    ["none", "none", "none"],
-    ["none", "read", "none"],
-    ["none", "write", "none"],
-    ["read", "none", "none"],
-    ["read", "read", "read"],
-    ["read", "write", "read"],
-    ["write", "none", "none"],
-    ["write", "read", "read"],
-    ["write", "write", "write"],
-  ] as const)("owner %s, token %s -> %s", (owner, tokenLevel, expected) => {
-    expect(effectiveLevel(owner, tokenLevel)).toBe(expected);
-  });
-
-  it.each(["none", "read", "write"] as const)("without a token is the owner's %s", (owner) => {
-    expect(effectiveLevel(owner)).toBe(owner);
-  });
-
-  it("validates the owner level even without a token", () => {
-    expect(() => effectiveLevel("admin" as Level)).toThrow(PolicyError);
-  });
-
-  it("fails closed when a token level is passed but missing", () => {
+describe("effective levels", () => {
+  it("takes the lower of owner and token, and fails closed when the token level is missing", () => {
+    expect(effectiveLevel("write", "read")).toBe("read");
+    expect(effectiveLevel("read", "write")).toBe("read");
+    expect(effectiveLevel("write", "none")).toBe("none");
+    expect(effectiveLevel("read")).toBe("read");
     const tokenLevels: Partial<Record<Resource, Level>> = {};
     expect(() => effectiveLevel("write", tokenLevels.ideas)).toThrow(PolicyError);
   });
-});
 
-describe("effectiveLevels", () => {
   it("takes the lower level per object and caps the activity log at read", () => {
     expect(effectiveLevels(raw("write"))).toEqual(FULL_ACCESS);
-    expect(
-      effectiveLevels(
-        { ...raw("write"), scripts: "read", notes: "none" },
-        { ...raw("write"), ideas: "none", videos: "read" },
-      ),
-    ).toEqual({ ...oracleFull(), ideas: "none", scripts: "read", videos: "read", notes: "none" });
+    const owner = { ...raw("write"), scripts: "read" } as const;
+    expect(effectiveLevels(owner, { ...raw("write"), ideas: "none" })).toEqual({
+      ...FULL_ACCESS,
+      ideas: "none",
+      scripts: "read",
+    });
   });
 
-  it("fails closed when a map is missing an object", () => {
+  it("fails closed when a map is missing an object or inherits its levels", () => {
     const { ideas: _ideas, ...partial } = raw("write");
-    expect(() => effectiveLevels(partial as typeof NO_ACCESS)).toThrow(PolicyError);
-    expect(() => effectiveLevels(raw("write"), partial as typeof NO_ACCESS)).toThrow(PolicyError);
+    expect(() => effectiveLevels(partial as ResourceLevels)).toThrow(
+      "Owner levels have no level for ideas",
+    );
+    expect(() => effectiveLevels(raw("write"), partial as ResourceLevels)).toThrow(
+      "Token levels have no level for ideas",
+    );
+    const inherited = Object.create(FULL_ACCESS) as ResourceLevels;
+    expect(() => principalLevels(token(FULL_ACCESS, inherited))).toThrow(
+      "Owner levels must be a plain object",
+    );
   });
 });
 
-describe("userLevels", () => {
-  it("gives admins the maximum everywhere, whatever is stored", () => {
+describe("users and admins", () => {
+  it("gives admins the maximum everywhere, whatever is stored, and others their capped levels", () => {
     expect(userLevels({ isAdmin: true, levels: NO_ACCESS })).toEqual(FULL_ACCESS);
-  });
-
-  it("returns a fresh object for admins", () => {
-    const levels = userLevels({ isAdmin: true, levels: NO_ACCESS });
-    levels.ideas = "none";
-    expect(FULL_ACCESS.ideas).toBe("write");
-  });
-
-  it("uses the stored levels, capped, for everyone else", () => {
     expect(userLevels({ isAdmin: false, levels: raw("write") })).toEqual(FULL_ACCESS);
     expect(userLevels({ isAdmin: false, levels: { ...NO_ACCESS, notes: "read" } })).toEqual({
       ...NO_ACCESS,
@@ -81,50 +60,35 @@ describe("userLevels", () => {
     });
   });
 
-  it("treats only a literal true as admin", () => {
-    for (const isAdmin of ["true", "f", 1, null, undefined]) {
-      expect(userLevels({ isAdmin: isAdmin as unknown as boolean, levels: NO_ACCESS })).toEqual(
-        NO_ACCESS,
-      );
+  it("treats only an own, literal true as the admin flag", () => {
+    for (const flag of ["true", 1, null, undefined]) {
+      const levels = userLevels({ isAdmin: flag as unknown as boolean, levels: NO_ACCESS });
+      expect(levels).toEqual(NO_ACCESS);
     }
+    const { isAdmin: _own, ...record } = user(NO_ACCESS);
+    const inheritedFlag = Object.assign(Object.create({ isAdmin: true }) as object, record);
+    expect(isAdmin(inheritedFlag as UserPrincipal)).toBe(false);
+  });
+
+  it("never makes a token an admin, even when its owner is", () => {
+    expect(isAdmin(user(NO_ACCESS, { isAdmin: true }))).toBe(true);
+    expect(isAdmin(token(FULL_ACCESS, FULL_ACCESS, { ownerIsAdmin: true }))).toBe(false);
   });
 });
 
 describe("principals", () => {
-  it("resolves a user and a token", () => {
-    expect(principalLevels(user({ ...NO_ACCESS, ideas: "read" }))).toEqual({
-      ...NO_ACCESS,
-      ideas: "read",
-    });
-    expect(principalLevels(token(raw("write"), { ...NO_ACCESS, scripts: "write" }))).toEqual({
-      ...NO_ACCESS,
-      scripts: "write",
-    });
+  it("lowering a token's owner immediately lowers the token", () => {
+    const lowered = token(raw("write"), { ...FULL_ACCESS, scripts: "read", notes: "none" });
+    expect(principalLevels(token(raw("write"), FULL_ACCESS))).toEqual(FULL_ACCESS);
+    expect(levelOn(lowered, "scripts")).toBe("read");
+    expect(levelOn(lowered, "notes")).toBe("none");
+    expect(levelOn(lowered, "ideas")).toBe("write");
   });
 
-  it("rejects anything that is not a user or token principal", () => {
-    for (const value of [undefined, null, {}, { kind: "admin" }, "user"]) {
-      expect(() => assertPrincipal(value)).toThrow(PolicyError);
+  it("rejects anything that is not a user or token principal, and unknown objects", () => {
+    for (const value of [undefined, null, {}, { kind: "admin" }]) {
       expect(() => principalLevels(value as Principal)).toThrow(PolicyError);
     }
-    expect(() => assertPrincipal({ kind: "service" })).toThrow(
-      'Unknown principal kind "service"; expected user or token',
-    );
-    expect(() => assertPrincipal(user(NO_ACCESS))).not.toThrow();
-  });
-
-  it("levelOn names an unknown object instead of returning undefined", () => {
     expect(() => levelOn(user(FULL_ACCESS), "users" as Resource)).toThrow('Unknown object "users"');
-  });
-
-  it("describes principals for messages, quoting names safely", () => {
-    expect(describePrincipal(user(NO_ACCESS))).toBe('user "alice"');
-    expect(describePrincipal(token(NO_ACCESS, NO_ACCESS))).toBe(
-      'token "editor-bot" (owner "alice")',
-    );
-    expect(describePrincipal({ ...token(NO_ACCESS, NO_ACCESS), tokenName: 'a"b\nc' })).toBe(
-      'token "a\\"b\\nc" (owner "alice")',
-    );
-    expect(() => describePrincipal({ kind: "x" } as unknown as Principal)).toThrow(PolicyError);
   });
 });

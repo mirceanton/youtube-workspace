@@ -1,10 +1,10 @@
 /**
- * @ytw/script-md: the script markdown file format (PRD 5, "File export and import").
+ * @ytw/script-md: the script markdown file format.
  *
  * A script file is a YAML front matter block (`idea_id`, `kind`, `version`, `status`) followed by
- * the markdown body. The MCP service (export and upload endpoints) and the web UI (download and
+ * the markdown body. The server (export and upload endpoints) and the web UI (download and
  * upload buttons) both use this package, so the rules are identical everywhere. Everything here
- * is plain JavaScript with no Node-only APIs. See `docs/script-md.md`.
+ * is plain JavaScript with no Node-only APIs.
  */
 export {
   FRONT_MATTER_MAX_BYTES,

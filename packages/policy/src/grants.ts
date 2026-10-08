@@ -42,7 +42,7 @@ export function grantCeiling(owner: GrantOwner): ResourceLevels {
 
 /**
  * The levels the settings screen offers for a new or edited token, per object, lowest first
- * (PRD 7: "The UI offers only allowed values"). An owner with Write gets None, Read, Write; with
+ * (the UI offers only allowed values). An owner with Write gets None, Read, Write; with
  * Read, None and Read; the activity log never offers Write.
  */
 export function grantOptions(owner: GrantOwner): Record<Resource, readonly Level[]> {
@@ -137,7 +137,7 @@ export function grantViolations(
 
 /**
  * Whether `owner` may give a token the `requested` levels: every level is at or below the owner's
- * effective level and within what the object allows (PRD 7). Pass the owner's user record so the
+ * effective level and within what the object allows. Pass the owner's user record so the
  * admin rule applies (see `GrantOwner`). The server must reject anything else; `grantViolations`
  * explains why.
  */

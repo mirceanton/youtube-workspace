@@ -111,13 +111,13 @@ export function readableResources(principal: Principal): Resource[] {
 
 /**
  * Read (or more) on every object, the activity log included. The MCP `query_sql` tool is offered
- * only to tokens for which this holds, because raw SQL cannot be filtered per object (PRD 5).
+ * only to tokens for which this holds, because raw SQL cannot be filtered per object.
  */
 export function hasReadOnEverything(principal: Principal): boolean {
   return readableResources(principal).length === RESOURCES.length;
 }
 
-/** Read (or more) on at least one object. A user without it sees "access not granted" (PRD 7). */
+/** Read (or more) on at least one object. A user without it sees "access not granted". */
 export function hasAnyAccess(principal: Principal): boolean {
   return readableResources(principal).length > 0;
 }
@@ -130,7 +130,7 @@ export function isAdmin(principal: Principal): boolean {
 
 /**
  * Whether the principal may create API tokens for their own account: a user (never a token) with
- * Read or Write on at least one object (PRD 7, "API tokens").
+ * Read or Write on at least one object.
  */
 export function canCreateTokens(principal: Principal): boolean {
   return principal.kind === "user" && hasAnyAccess(principal);
@@ -171,7 +171,7 @@ function adminDenialMessage(principal: Principal): string {
 
 /**
  * Decides whether `principal` (undefined when nobody authenticated) may do something guarded by
- * `rule`. Always evaluate against levels loaded for this request, never cached ones (PRD 7).
+ * `rule`. Always evaluate against levels loaded for this request, never cached ones.
  * Throws a `PolicyError` for a malformed rule or principal: that is a bug, not a denial.
  */
 export function authorize(principal: Principal | undefined, rule: AccessRule): Decision {
