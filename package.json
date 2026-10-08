@@ -8,16 +8,12 @@
   },
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" run dev",
-    "dev:stack": "docker compose up --detach --wait",
     "build": "pnpm -r run build",
-    "typecheck": "tsc -b",
     "lint": "tsc -b && oxlint --deny-warnings",
     "test": "vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "migrate": "pnpm --filter @ytw/db run migrate",
-    "ytw-admin": "pnpm --filter @ytw/admin-cli run ytw-admin",
-    "docs:mcp": "pnpm --filter @ytw/mcp run docs:mcp"
+    "migrate": "pnpm --filter @ytw/db run migrate"
   },
   "devDependencies": {
     "@types/node": "^24.19.0",
