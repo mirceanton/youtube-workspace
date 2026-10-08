@@ -22,6 +22,5 @@
     "erasableSyntaxOnly": true
   },
   "include": ["src", "test"],
-  "exclude": ["test/node"],
   "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/policy" }]
 }
