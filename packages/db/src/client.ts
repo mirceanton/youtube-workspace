@@ -6,9 +6,6 @@ import { ACTOR_TYPES, QUERY_SQL_TIMEOUT_MS, type ActorType } from "@ytw/shared/c
 import { Pool, type QueryConfig, type QueryResult, type QueryResultRow } from "pg";
 import { ValidationError, formatAllowed, toDbError } from "./errors.js";
 
-/** Largest `payload` that `ytw_log_event` accepts, in bytes of its JSON text. */
-export const EVENT_PAYLOAD_MAX_BYTES = 65_536;
-
 /** A parameterized query: `text` with `$1..$n` placeholders and their `values`. */
 export interface SqlQuery {
   text: string;
