@@ -1,10 +1,10 @@
 /**
  * Typed wrappers for API tokens: create, update permissions, rotate, revoke, look up by hash, touch,
- * and the lists of the settings screens. The caller (T21, T42) generates the secret, hashes it
- * (SHA-256, 64 lower-case hex digits) and passes only the hash and a short prefix; the secret never
- * reaches the database. The rules (a token never exceeds its owner, only the owner manages it, only
- * a person manages tokens) are in the database functions. Conventions: docs/database.md
- * ("Identity, permissions, tokens, sessions").
+ * and the lists of the settings screens. The caller generates the secret, hashes it (SHA-256, 64
+ * lower-case hex digits) and passes only the hash and a short prefix; the secret never reaches the
+ * database. The rules (a token never exceeds its owner, only the owner manages it, only a person
+ * manages tokens) are in the database functions. The token configured through the environment is
+ * `seedApiToken` (seed.ts).
  */
 import type { Level, Resource, ResourceLevels } from "@ytw/shared/constants";
 import { rejectNul, requireUuid } from "./args.js";
@@ -310,8 +310,7 @@ export function toTokenPrincipal(token: FoundToken): TokenPrincipalData {
  * `ValidationError` otherwise, so a secret passed by mistake is never searched for) and reads its
  * owner's levels in the same statement, so lowering a user (or revoking their access) lowers their
  * tokens at once. An unknown hash gives `{ status: "unknown" }`; revoked, expired and owner-revoked
- * tokens come back with their facts and `status`, and all-none `effectiveLevels`. Only the MCP role
- * may execute the function (the web server never authenticates a token).
+ * tokens come back with their facts and `status`, and all-none `effectiveLevels`.
  */
 export async function lookupTokenByHash(db: Queryable, tokenHash: string): Promise<TokenLookup> {
   rejectNul("token_hash", tokenHash);
@@ -363,7 +362,7 @@ export async function lookupTokenByHash(db: Queryable, tokenHash: string): Promi
  * `updated_at` change). Called as the token itself; a single statement, so a pool is enough. Only an
  * active token is touched (not revoked, not expired, owner's access not revoked), and only under its
  * own name: that check is defence in depth, not authentication, because a token's id and name appear
- * in the readable audit log. Returns whether a token was updated. MCP role only.
+ * in the readable audit log. Returns whether a token was updated.
  */
 export async function touchTokenLastUsed(
   db: Queryable,

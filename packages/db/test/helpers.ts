@@ -1,11 +1,14 @@
 // Helpers shared by the @ytw/db tests (not a test file itself).
-import { cp, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { defaultMigrationsDir } from "../src/migrate.js";
+import { createHash, randomBytes } from "node:crypto";
+import { withActor, type Actor, type ActorTx } from "../src/client.js";
+import { upsertUserOnLogin, type LoginResult } from "../src/identity.js";
+import type { TestDb } from "../src/testing.js";
+import { createApiToken } from "../src/tokens.js";
+
+export const alice: Actor = { name: "alice", type: "human" };
 
 /** Runs `promise`, expects it to fail, and returns the error. */
-export async function failure(promise: Promise<unknown>): Promise<Error> {
+export async function failure(promise: Promise<unknown>): Promise<Error & { code?: string }> {
   try {
     await promise;
   } catch (err) {
@@ -17,16 +20,42 @@ export async function failure(promise: Promise<unknown>): Promise<Error> {
   throw new Error("expected the promise to reject, but it resolved");
 }
 
-/** The SQLSTATE of the error `promise` fails with (driver errors and typed DbErrors alike). */
-export async function sqlstate(promise: Promise<unknown>): Promise<string> {
-  const err = await failure(promise);
-  const code: unknown = Reflect.get(err, "code") ?? Reflect.get(err, "sqlstate");
-  return typeof code === "string" ? code : `no SQLSTATE: ${err.message}`;
+/** Runs `fn` in a transaction whose audit actor is `actor`. */
+export function actAs<T>(db: TestDb, actor: Actor, fn: (tx: ActorTx) => Promise<T>): Promise<T> {
+  return withActor(db.pool, actor, fn);
 }
 
-/** A temporary copy of the real migrations directory, for tests that add or edit files. */
-export async function copyMigrations(): Promise<{ dir: string; remove: () => Promise<void> }> {
-  const dir = await mkdtemp(join(tmpdir(), "ytw-db-migrations-"));
-  await cp(defaultMigrationsDir(), dir, { recursive: true });
-  return { dir, remove: () => rm(dir, { recursive: true, force: true }) };
+/** Signs a person in (the first one ever becomes admin); the same name is the same account. */
+export function signIn(db: TestDb, username: string): Promise<LoginResult> {
+  return actAs(db, { name: username, type: "human" }, (tx) =>
+    upsertUserOnLogin(tx, { issuer: "https://id.example.test", sub: `sub-${username}`, username }),
+  );
+}
+
+/** A random token secret's SHA-256 and prefix, the way the server derives them. */
+export function newSecret(): { hash: string; prefix: string } {
+  const secret = `ytw_${randomBytes(32).toString("base64url")}`;
+  return { hash: createHash("sha256").update(secret).digest("hex"), prefix: secret.slice(0, 12) };
+}
+
+/** An agent acting through a real API token owned by `ownerUserId`. */
+export async function newAgent(db: TestDb, ownerUserId: string, owner: Actor): Promise<Actor> {
+  const secret = newSecret();
+  const token = await actAs(db, owner, (tx) =>
+    createApiToken(tx, {
+      ownerUserId,
+      name: `agent-${randomBytes(3).toString("hex")}`,
+      tokenPrefix: secret.prefix,
+      tokenHash: secret.hash,
+      expiresAt: null,
+      permissions: {
+        ideas: "write",
+        scripts: "write",
+        experiments: "write",
+        videos: "write",
+        notes: "write",
+      },
+    }),
+  );
+  return { name: token.name, type: "agent", tokenId: token.id };
 }

@@ -1,9 +1,8 @@
 /**
  * Typed wrappers for identity: signing a person in (`upsert_user_on_login`), reading a user with the
- * levels they hold (`get_user_access`) and promoting or demoting admins (`set_user_admin`). Used by
- * the web server (T40, T42). The rules (the first user ever becomes admin, race-free; the last admin
- * stays) are in the database functions. Conventions: docs/database.md ("Identity, permissions,
- * tokens, sessions").
+ * levels they hold (`get_user_access`) and promoting or demoting admins (`set_user_admin`). The
+ * rules (the first user ever becomes admin, race-free; the last admin stays) are in the database
+ * functions.
  */
 import type { ResourceLevels } from "@ytw/shared/constants";
 import { rejectNul, requireUuid } from "./args.js";
@@ -75,7 +74,7 @@ export async function upsertUserOnLogin(
 /**
  * The user and the levels they hold right now (admins: the maximum everywhere; a person whose access
  * is revoked: none, and not an admin, with `accessRevokedAt`), or null for an unknown id. Read it on
- * every request that needs a decision; never cache the levels (PRD 7).
+ * every request that needs a decision; never cache the levels.
  */
 export async function getUserAccess(db: Queryable, userId: string): Promise<UserAccess | null> {
   requireUuid("user_id", userId);
@@ -92,8 +91,8 @@ export interface MarkOutsideAccessGroupInput {
 }
 
 /**
- * The identity provider says this person is outside the required access group (the check PRD 7
- * repeats on every token refresh): revokes their access (levels none, not an admin, every token they
+ * The identity provider says this person is outside the required access group (the check repeated
+ * on every token refresh): revokes their access (levels none, not an admin, every token they
  * own dead) and ends all their browser sessions on every device. Run it in
  * `withActor(pool, { name: <their preferred_username>, type: "human" }, ...)`.
  *

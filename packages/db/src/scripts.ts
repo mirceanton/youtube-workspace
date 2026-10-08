@@ -1,7 +1,6 @@
 /**
- * Typed wrappers for scripts (migration 0032): `save_script_version`, `set_script_status`, and
- * `getScriptVersion` to read a revision back. Owned by task T12 (docs/orchestration/PLAN.md
- * section 3); behaviour and error codes: docs/database.md, "Ideas, scripts and notes".
+ * Typed wrappers for scripts: `save_script_version`, `set_script_status`, and
+ * `getScriptVersion` to read a revision back.
  *
  * A script (or packaging doc) is an append-only list of revisions per idea and kind. Saving always
  * appends a `draft` and needs the version the caller edited: when somebody saved in between, the

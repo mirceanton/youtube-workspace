@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 /**
- * `pnpm migrate` (development, loads the root .env) and `node packages/db/dist/src/bin/migrate.js`
- * (deployments). Reads MIGRATION_DATABASE_URL, the optional YTW_*_PASSWORD variables and the
- * optional MIGRATION_LOCK_DATABASE_URL (see .env.example).
- * Exit codes: 0 done, 1 failed (nothing of a failed file is applied), 2 MIGRATION_DATABASE_URL unset.
+ * `pnpm migrate` (development; loads apps/server/.env when it exists) and
+ * `node packages/db/dist/src/bin/migrate.js` (deployments). Reads DATABASE_URL.
+ * Exit codes: 0 done, 1 failed (nothing of a failed file is applied), 2 DATABASE_URL unset.
  */
-import { APP_ROLES, type AppRole } from "../client.js";
-import { MigrationError, ROLE_PASSWORD_ENV, migrate } from "../migrate.js";
+import { MigrationError, migrate } from "../migrate.js";
 
+/** Names the target without its password. */
 function describeTarget(url: string): string {
   try {
     const parsed = new URL(url);
@@ -20,31 +19,18 @@ function describeTarget(url: string): string {
 }
 
 async function main(): Promise<number> {
-  const databaseUrl = process.env.MIGRATION_DATABASE_URL?.trim();
+  const databaseUrl = process.env.DATABASE_URL?.trim();
   if (databaseUrl === undefined || databaseUrl === "") {
     console.error(
-      "MIGRATION_DATABASE_URL is not set. Pass the privileged connection string to this command " +
-        "only, e.g. `MIGRATION_DATABASE_URL=postgres://... pnpm migrate` (see .env.example).",
+      "DATABASE_URL is not set. Pass the connection string of the role that owns the database, " +
+        "e.g. `DATABASE_URL=postgres://app:secret@localhost:5432/app pnpm migrate`.",
     );
     return 2;
   }
 
-  const rolePasswords: Partial<Record<AppRole, string>> = {};
-  for (const role of APP_ROLES) {
-    const value = process.env[ROLE_PASSWORD_ENV[role]];
-    if (value !== undefined && value !== "") {
-      rolePasswords[role] = value;
-    }
-  }
-
-  const lockDatabaseUrl = process.env.MIGRATION_LOCK_DATABASE_URL?.trim();
-
-  // Never print the URL itself: it carries the password.
   console.log(`@ytw/db: migrating ${describeTarget(databaseUrl)}`);
   const result = await migrate({
     databaseUrl,
-    ...(lockDatabaseUrl === undefined || lockDatabaseUrl === "" ? {} : { lockDatabaseUrl }),
-    rolePasswords,
     log: (line) => {
       console.log(`  ${line}`);
     },
