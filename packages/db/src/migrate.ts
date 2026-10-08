@@ -22,7 +22,7 @@ import type { Queryable } from "./client.js";
 import { isPgError } from "./errors.js";
 
 /** Advisory lock key held for a whole run ("ytw_migr" as eight ASCII bytes). */
-export const MIGRATION_LOCK_KEY = "8751751227628939122";
+const MIGRATION_LOCK_KEY = "8751751227628939122";
 
 const FILE_PATTERN = /^(\d{4})_([a-z0-9]+(?:_[a-z0-9]+)*)\.sql$/;
 const BYTE_ORDER_MARK = 0xfeff;
