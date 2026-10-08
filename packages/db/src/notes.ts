@@ -1,7 +1,5 @@
 /**
- * Typed wrappers for notes (migration 0033): `add_note`, and `listNotes` to read the comments on
- * one entity. Owned by task T12 (docs/orchestration/PLAN.md section 3); behaviour and error codes:
- * docs/database.md, "Ideas, scripts and notes".
+ * Typed wrappers for notes: `add_note`, and `listNotes` to read the comments on one entity.
  *
  * Notes are append-only comments by people and agents on an idea, a script revision, a video or an
  * experiment. {@link NoteRecord} carries the same facts as the `/api/notes` contract

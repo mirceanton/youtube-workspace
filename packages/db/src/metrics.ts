@@ -1,7 +1,6 @@
 /**
- * Typed wrappers for video metric snapshots (migration 0042): `log_metrics`, and
- * `listMetricSnapshots` to read them back. Owned by task T13 (docs/orchestration/PLAN.md section 3);
- * behaviour and error codes: docs/database.md, "Videos, metrics and experiments".
+ * Typed wrappers for video metric snapshots: `log_metrics`, and `listMetricSnapshots` to read
+ * them back.
  *
  * A snapshot is append-only and unique per (video, `capturedAt`). {@link logMetrics} is idempotent on
  * that key: repeating a call returns the stored snapshot with `created: false`, and different numbers
@@ -43,7 +42,7 @@ export interface MetricValues {
   retention?: readonly RetentionPoint[] | null;
 }
 
-/** A stored snapshot (PRD 4 "video_metrics"). */
+/** A stored snapshot (`video_metrics`). */
 export interface MetricSnapshot {
   id: string;
   videoId: string;

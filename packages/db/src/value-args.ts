@@ -1,5 +1,5 @@
 /**
- * Guards for the numbers and times that the video, metric and experiment wrappers (T13) hand to the
+ * Guards for the numbers and times that the video, metric and experiment wrappers hand to the
  * database. Like args.ts, used by the typed wrappers only (not exported from the package index): they
  * refuse what could not reach the database intact (NaN and infinity, which `JSON.stringify` would
  * silently turn into null, a Date that is not a time, a time without a time zone) with a

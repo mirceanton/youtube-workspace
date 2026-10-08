@@ -1,8 +1,7 @@
 /**
- * Typed wrappers for packaging experiments (migration 0043): `create_experiment`,
- * `update_experiment_status`, `record_variant_stats`, `conclude_experiment`, and `getExperiment` to
- * read one back with its variants. Owned by task T13 (docs/orchestration/PLAN.md section 3);
- * behaviour and error codes: docs/database.md, "Videos, metrics and experiments".
+ * Typed wrappers for packaging experiments: `create_experiment`, `update_experiment_status`,
+ * `record_variant_stats`, `conclude_experiment`, and `getExperiment` to read one back with its
+ * variants.
  *
  * An experiment moves planned -> running -> concluded, or to cancelled from planned or running;
  * concluded and cancelled are final. A move the machine forbids is an {@link InvalidTransitionError}
@@ -19,7 +18,7 @@ import { rejectNul, requireInteger, requireUuid } from "./args.js";
 import type { ActorTx, Queryable } from "./client.js";
 import { decimalText, type DecimalInput } from "./value-args.js";
 
-/** An experiment as stored (PRD 4 "experiments"). */
+/** An experiment as stored. */
 export interface ExperimentRecord {
   id: string;
   videoId: string;
@@ -41,7 +40,7 @@ export interface ExperimentRecord {
   updatedBy: string;
 }
 
-/** A variant as stored (PRD 4 "experiment_variants"). */
+/** A variant as stored. */
 export interface VariantRecord {
   id: string;
   experimentId: string;

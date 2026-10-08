@@ -1,6 +1,5 @@
 /**
- * Typed errors for the SQLSTATE catalogue raised by the database functions (`ytw_raise` in
- * migration 0003, documented in docs/database.md).
+ * Typed errors for the SQLSTATE catalogue raised by the database functions (`ytw_raise`).
  *
  * The database writes the sentence a person or an LLM reads ("what failed, and the valid values or
  * the latest version") into the error MESSAGE and the same facts as a JSON object into DETAIL.
@@ -13,8 +12,8 @@
  * asserts that this list equals `ytw_error_codes()` in the database.
  *
  * `status` is the HTTP status the web server should answer with. 409 is reserved for optimistic
- * concurrency conflicts, because the web UI turns every 409 into its reload-or-merge dialog
- * (PLAN.md section 3, web contract); other state errors are 422.
+ * concurrency conflicts, because the web UI turns every 409 into its reload-or-merge dialog;
+ * other state errors are 422.
  */
 export const DB_ERROR_CATALOGUE = [
   { kind: "validation", sqlstate: "YT001", status: 400 },
@@ -29,7 +28,7 @@ export const DB_ERROR_CATALOGUE = [
 
 export type DbErrorKind = (typeof DB_ERROR_CATALOGUE)[number]["kind"];
 
-/** Machine-readable facts from the error's DETAIL (conventional keys: docs/database.md). */
+/** Machine-readable facts from the error's DETAIL. */
 export type DbErrorDetails = Readonly<Record<string, unknown>>;
 
 /** Base class: `message` is the database's LLM-readable sentence, unchanged. */
@@ -244,7 +243,7 @@ export function formatAllowed(values: readonly string[]): string {
  * and whether retrying can help. Log the original error on the server; never send it.
  *
  * Catalogue errors keep their message, hint and details, which database functions write for
- * clients. The web contract (PLAN.md section 3) answers version conflicts with `409 {error, latest}`:
+ * clients. Version conflicts are answered with `409 {error, latest}`:
  * the HTTP layers take `latest` from `details.latest_version`.
  */
 export interface ClientError {

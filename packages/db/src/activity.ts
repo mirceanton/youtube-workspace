@@ -1,7 +1,5 @@
 /**
- * Typed wrapper for the activity feed (migration 0064): `list_events`. Owned by task T15
- * (docs/orchestration/PLAN.md section 3); behaviour: docs/database.md, "Views, search and activity
- * (T15)".
+ * Typed wrapper for the activity feed: `list_events`.
  *
  * Events come newest first. A page ends with an opaque `nextCursor`; pass it back unchanged, with the
  * same filters, to get the events right behind the page. Events written between two calls never make
@@ -21,7 +19,7 @@ export const EVENTS_LIMIT_DEFAULT = 50;
 /** The largest page; a bigger limit is a validation error. */
 export const EVENTS_LIMIT_MAX = 100;
 
-/** One row of the audit log (PRD 4 "events"). */
+/** One row of the audit log (`events`). */
 export interface EventRecord {
   id: string;
   /** When the writing transaction started. */
