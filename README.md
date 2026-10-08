@@ -47,6 +47,19 @@ Open <http://localhost:5173>. With no `OIDC_*` variables set there is no login: 
 owner (see [Authentication](#authentication)). The server applies the database migrations when it
 starts.
 
+The compose database's `postgres` user is a superuser, and the server then keeps the `query_sql`
+MCP tool switched off: it runs SQL written by an agent, which a superuser could use to read files
+and start programs on the database host. To try `query_sql` locally, make a plain role the owner
+of the database before the first start (or after `docker compose down -v`) and use it in
+`DATABASE_URL`:
+
+```bash
+docker compose exec postgres psql -U postgres \
+  -c "CREATE ROLE ytw LOGIN PASSWORD 'ytw'" \
+  -c "ALTER DATABASE youtube_workspace OWNER TO ytw"
+# apps/server/.env: DATABASE_URL=postgres://ytw:ytw@localhost:5432/youtube_workspace
+```
+
 To run the production image locally instead (built from the `Dockerfile`, served on
 <http://localhost:3000>, loopback only):
 
@@ -62,19 +75,19 @@ list for local development; `pnpm dev` loads the root `.env`, then `apps/server/
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DATABASE_URL` | *(required)* | The pre-provisioned Postgres role. It must own the database: migrations run on boot |
+| `DATABASE_URL` | *(required)* | The pre-provisioned Postgres role. It must own the database (migrations run on boot) and should not be a superuser, or `query_sql` is switched off |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | Listen address |
 | `LOG_LEVEL` | `info` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent` |
 | `APP_VERSION` / `GIT_SHA` | `0.0.0-dev` / `unknown` | Shown on `/healthz`; the image build sets them |
 | `STATIC_WEB_DIR` | *(unset)* | When set, serve the built web app from there with SPA fallback (the image sets it) |
-| `METRICS_TOKEN` | *(unset)* | When set, `/metrics` requires `Authorization: Bearer <token>`. Set it if `/metrics` is reachable beyond a private network |
+| `METRICS_TOKEN` | *(unset)* | When set (at least 16 characters), `/metrics` requires `Authorization: Bearer <token>`. Set it if `/metrics` is reachable beyond a private network |
 | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | *(unset)* | OIDC login. All four or none |
 | `OIDC_GROUPS_CLAIM_PATH`, `OIDC_REQUIRED_GROUP` | `groups`, *(unset)* | Optional group gate: only members of `OIDC_REQUIRED_GROUP` (read from the claim at `OIDC_GROUPS_CLAIM_PATH`) may sign in |
-| `SESSION_SECRET` | *(required with OIDC)* | At least 32 characters. Signs the session cookie and encrypts refresh tokens, e.g. `openssl rand -base64 48` |
+| `SESSION_SECRET` | *(required with OIDC)* | At least 32 characters. Derives the CSRF tokens and encrypts the refresh and ID tokens kept in the database, e.g. `openssl rand -base64 48` |
 | `SESSION_IDLE_TIMEOUT`, `SESSION_ABSOLUTE_TIMEOUT` | `28800` (8 h), `604800` (7 d) | Session lifetimes in seconds |
 | `MCP_BOOTSTRAP_TOKEN` | *(unset)* | The secret of the seeded MCP token, `ytw_` plus 43 base64url characters. Unset revokes the seeded token. See [Seeding the MCP token](#seeding-the-mcp-token) |
 | `MCP_BOOTSTRAP_TOKEN_NAME` | `bootstrap` | Name of the seeded token; the audit log attributes its calls to it |
-| `MCP_BOOTSTRAP_TOKEN_PERMISSIONS` | `ideas=write,scripts=write,experiments=write,videos=write,notes=write,activity=read` | The token's levels as `resource=level` pairs |
+| `MCP_BOOTSTRAP_TOKEN_PERMISSIONS` | `ideas=write,scripts=write,experiments=write,videos=write,notes=write,activity=read` | The token's levels as `resource=level` pairs; anything unknown or repeated aborts startup |
 
 Development only: the Vite dev server reads `WEB_UI_PORT` (default `5173`) and `WEB_SERVER_URL`
 (default `http://127.0.0.1:3000`, where it proxies `/api` and `/auth`) from the shell or the root
@@ -89,7 +102,9 @@ first user to sign in becomes admin; everyone else starts with `none` everywhere
 their levels in **Settings**. Setting only some of the OIDC variables is a startup error.
 
 **Single-user mode.** With no `OIDC_*` variables, every web request is the built-in local owner, an
-admin with full access. The server logs a warning at startup.
+admin with full access (a real user, `owner`, so the audit log still names who acted). The server
+logs a warning at startup, and `apps/server/.env.example` makes development listen on the
+loopback interface only (`HOST=127.0.0.1`; the image listens on all interfaces).
 
 > [!WARNING]
 > Single-user mode has no login at all. Anyone who can reach the web app is the owner. Use it for
@@ -102,7 +117,9 @@ admin with full access. The server logs a warning at startup.
 The app uses one Postgres role. It never creates roles, never sets passwords and never needs a
 superuser: the role owns the database, and the server runs the migrations as that same role every
 time it boots. Concurrent boots (several replicas, a rolling update) wait for each other on an
-advisory lock.
+advisory lock. Because `query_sql` can read every table, nothing in the database works as a
+credential when read: API tokens and session ids are stored as hashes, refresh and ID tokens
+encrypted.
 
 [CloudNativePG](https://cloudnative-pg.io) creates exactly that. Its `app` user owns the database
 named in `bootstrap.initdb`, and the operator publishes the connection string in the
@@ -214,18 +231,21 @@ environment instead of creating one in the UI.
 | A different secret | The old seeded token is revoked, the new one created: this is how you **rotate** |
 | `MCP_BOOTSTRAP_TOKEN` unset or empty | The seeded token is **revoked** |
 
-Only the seeded token is ever touched; tokens created in the UI are unaffected. The seeded token
-never expires and is owned by a built-in system user that cannot log in, so its own permissions are
-the only limit. Only a hash of the secret is stored; the secret itself never reaches the database.
+Only the seeded token is ever touched; tokens created in the UI are unaffected, and the seeded token
+is not listed in **Settings**: the environment is the only place that manages it. It never expires
+and is owned by a built-in system user that cannot log in, so its own permissions are the only
+limit. Only a hash of the secret is stored; the secret itself never reaches the database or the
+log.
 
 Tokens for other agents are created in **Settings**, each with its own levels, never above those of
 the user who creates it.
 
 ## MCP
 
-The endpoint is `POST /mcp` (Streamable HTTP, stateless; `GET` and `DELETE` answer `405`). Every
-call is checked against the token's effective permission; `query_sql` is only offered at all to
-tokens with read on every object.
+The endpoint is `POST /mcp` (Streamable HTTP, stateless; `GET` and `DELETE` answer `405` to a valid
+token). Every call is checked against the token's effective permission and recorded in the audit
+log under the token's name. `query_sql` is only offered at all to tokens with read on every
+object, and only when the server's database role is not a superuser.
 
 | Tool | Needs | What it does |
 | --- | --- | --- |
