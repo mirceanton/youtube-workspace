@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { actorTypeSchema, noteEntityTypeSchema } from "../schemas.js";
 
-// `/api/notes` contract (PLAN.md, T41 defines it, T41b implements the server side, the SPA's
-// NotesPanel consumes it). Notes are append-only comments on an idea, script, video or experiment.
+// `/api/notes` contract (the server implements it, the SPA's NotesPanel consumes it). Notes are
+// append-only comments on an idea, script, video or experiment.
 //
 //   GET  /api/notes?entity_type=<type>&entity_id=<uuid>   needs Read on notes   -> 200 listNotesResponse
 //   POST /api/notes  { entity_type, entity_id, body_md }  needs Write on notes  -> 201 createNoteResponse

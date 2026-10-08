@@ -28,7 +28,7 @@ function labels(resources: readonly Resource[]): string {
 }
 
 /**
- * One line for a token list or a profile (PRD 7 "permission summary"): `No access`, `Full access`
+ * One line for a token list or a profile: `No access`, `Full access`
  * (the maximum on every object), `Read on everything`, or the groups, e.g.
  * `Write: Ideas, Scripts; Read: Activity log`. Objects at None are left out of the grouped form.
  */
