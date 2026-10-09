@@ -130,15 +130,22 @@ function requiredString(claims: Record<string, unknown>, name: string): string |
 
 /**
  * What to log about a failed sign-in step. The class name alone is not enough (openid-client throws
- * `ClientError` for most failures), so the library's error code goes with it. Never the message:
- * some quote what the provider sent.
+ * `ClientError` for most failures), so the library's error code goes with it, and for a JWT claim
+ * check the name of the claim (`aud`, `iss`, ...). Never the message: some quote what the provider
+ * sent.
  */
-function errorFields(error: unknown): { errorName: string; errorCode?: string } {
+function errorFields(error: unknown): {
+  errorName: string;
+  errorCode?: string;
+  errorClaim?: string;
+} {
   if (!(error instanceof Error)) return { errorName: "unknown" };
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string"
-    ? { errorName: error.name, errorCode: code }
-    : { errorName: error.name };
+  const { code, claim } = error as { code?: unknown; claim?: unknown };
+  return {
+    errorName: error.name,
+    ...(typeof code === "string" ? { errorCode: code } : {}),
+    ...(typeof claim === "string" ? { errorClaim: claim } : {}),
+  };
 }
 
 function includesAudience(value: unknown, clientId: string): boolean {
