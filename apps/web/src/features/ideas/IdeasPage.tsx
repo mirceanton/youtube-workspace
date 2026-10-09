@@ -22,6 +22,14 @@ import {
 import { IDEA_STAGE_TRANSITIONS } from "@ytw/shared/constants";
 import { useCan } from "@/lib/session.ts";
 import { describeError } from "@/lib/errors.ts";
+import { usePersistedState } from "@/lib/persisted-state.ts";
+import {
+  BOARD_COLUMN_WIDTH_KEYS,
+  BOARD_COLUMN_WIDTHS,
+  DEFAULT_BOARD_COLUMN_WIDTH,
+  boardGridColumns,
+  isBoardColumnWidth,
+} from "./board-columns.ts";
 import { IdeaCard } from "./IdeaCard.tsx";
 import { IdeaEditorDialog } from "./IdeaEditorDialog.tsx";
 import { IdeaStagePicker } from "./IdeaStagePicker.tsx";
@@ -61,6 +69,11 @@ export function Component() {
   const [sortBy, setSortBy] = useState<IdeaSortField>("updated_at");
   const [sortOrder, setSortOrder] = useState<IdeaSortOrder>("desc");
   const [view, setView] = useState<View>("board");
+  const [columnWidth, setColumnWidth] = usePersistedState(
+    "ytw.ideas-board-column-width",
+    DEFAULT_BOARD_COLUMN_WIDTH,
+    isBoardColumnWidth,
+  );
   const [offset, setOffset] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [moveRequest, setMoveRequest] = useState<MoveRequest | null>(null);
@@ -201,23 +214,44 @@ export function Component() {
       </Card>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <fieldset className="flex items-center gap-2">
-          <legend className="sr-only">Idea view</legend>
-          <Button
-            variant={view === "board" ? "primary" : "secondary"}
-            aria-pressed={view === "board"}
-            onClick={() => setView("board")}
-          >
-            <Columns3 aria-hidden="true" className="size-4" /> Board
-          </Button>
-          <Button
-            variant={view === "table" ? "primary" : "secondary"}
-            aria-pressed={view === "table"}
-            onClick={() => setView("table")}
-          >
-            <List aria-hidden="true" className="size-4" /> Table
-          </Button>
-        </fieldset>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <fieldset className="flex items-center gap-2">
+            <legend className="sr-only">Idea view</legend>
+            <Button
+              variant={view === "board" ? "primary" : "secondary"}
+              aria-pressed={view === "board"}
+              onClick={() => setView("board")}
+            >
+              <Columns3 aria-hidden="true" className="size-4" /> Board
+            </Button>
+            <Button
+              variant={view === "table" ? "primary" : "secondary"}
+              aria-pressed={view === "table"}
+              onClick={() => setView("table")}
+            >
+              <List aria-hidden="true" className="size-4" /> Table
+            </Button>
+          </fieldset>
+          {/* The board is only drawn from the md breakpoint up; phones get a single list. */}
+          {view === "board" ? (
+            <fieldset className="hidden items-center gap-2 md:flex">
+              <legend className="sr-only">Board column width</legend>
+              <span aria-hidden="true" className="text-sm text-ink-muted">
+                Column width
+              </span>
+              {BOARD_COLUMN_WIDTH_KEYS.map((key) => (
+                <Button
+                  key={key}
+                  variant={columnWidth === key ? "primary" : "secondary"}
+                  aria-pressed={columnWidth === key}
+                  onClick={() => setColumnWidth(key)}
+                >
+                  {BOARD_COLUMN_WIDTHS[key].label}
+                </Button>
+              ))}
+            </fieldset>
+          ) : null}
+        </div>
         <p className="text-sm text-ink-muted" aria-live="polite">
           {page
             ? `${page.total.toLocaleString()} ${includeArchived ? "ideas" : "active ideas"}`
@@ -257,8 +291,15 @@ export function Component() {
         />
       ) : view === "board" ? (
         <>
-          <div className="hidden overflow-x-auto pb-3 md:block" aria-label="Ideas by stage">
-            <div className="grid min-w-[1120px] grid-cols-7 gap-3">
+          {/* `relative`: the visually hidden (absolutely positioned) text in the cards must scroll with the board, not widen the page. */}
+          <div
+            className="relative hidden overflow-x-auto pb-3 md:block"
+            aria-label="Ideas by stage"
+          >
+            <div
+              className="grid gap-3"
+              style={{ gridTemplateColumns: boardGridColumns(IDEA_STAGES.length, columnWidth) }}
+            >
               {IDEA_STAGES.map((item) => {
                 const stageIdeas = ideas.filter((idea) => idea.status === item);
                 const nextStages = IDEA_STAGE_TRANSITIONS.filter((move) => move.from === item).map(
