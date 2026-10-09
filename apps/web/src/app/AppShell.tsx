@@ -1,12 +1,14 @@
-import { LogOut, MoreHorizontal, WifiOff } from "lucide-react";
+import { LogOut, MoreHorizontal, PanelLeftClose, PanelLeftOpen, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { NavLink, Outlet, useLocation, useNavigation } from "react-router";
 import { Badge } from "@/kit/Badge.tsx";
+import { Button } from "@/kit/Button.tsx";
 import { buttonClasses } from "@/kit/button-styles.ts";
 import { Dialog } from "@/kit/Dialog.tsx";
 import { useOnlineStatus } from "@/kit/useOnlineStatus.ts";
 import { cx } from "@/lib/cx.ts";
 import { LOGOUT_PATH } from "@/lib/contract.ts";
+import { usePersistedState } from "@/lib/persisted-state.ts";
 import { useSession } from "@/lib/session.ts";
 import { APP_NAME } from "@/lib/useDocumentTitle.ts";
 import { navEntriesFor, type FeatureDefinition, type NavEntry } from "./features.ts";
@@ -16,15 +18,24 @@ import { LiveUpdatePoller } from "@/features/dashboard/LiveUpdatePoller.tsx";
 /** Items in the phone bottom bar before "More" (bottom navigation on phones). */
 const BOTTOM_BAR_ITEMS = 4;
 
-function SideLink({ entry, onNavigate }: { entry: NavEntry; onNavigate?: () => void }) {
+interface SideLinkProps {
+  entry: NavEntry;
+  onNavigate?: () => void;
+  /** Icon only; the label stays available to assistive technology and as a tooltip. */
+  collapsed?: boolean;
+}
+
+function SideLink({ entry, onNavigate, collapsed = false }: SideLinkProps) {
   const Icon = entry.icon;
   return (
     <NavLink
       to={entry.to}
       onClick={onNavigate}
+      title={collapsed ? entry.label : undefined}
       className={({ isActive }) =>
         cx(
           "flex min-h-11 items-center gap-3 rounded-lg px-3 text-base",
+          collapsed && "justify-center px-0",
           isActive
             ? "bg-subtle font-semibold text-ink"
             : "font-medium text-ink-muted hover:bg-subtle hover:text-ink",
@@ -32,7 +43,7 @@ function SideLink({ entry, onNavigate }: { entry: NavEntry; onNavigate?: () => v
       }
     >
       <Icon aria-hidden="true" className="size-5 shrink-0" />
-      {entry.label}
+      <span className={collapsed ? "sr-only" : undefined}>{entry.label}</span>
     </NavLink>
   );
 }
@@ -66,12 +77,33 @@ function BottomLink({ entry }: { entry: NavEntry }) {
   );
 }
 
-function AccountBlock({ bordered = true }: { bordered?: boolean }) {
+function AccountBlock({
+  bordered = true,
+  collapsed = false,
+}: {
+  bordered?: boolean;
+  collapsed?: boolean;
+}) {
   const { user } = useSession();
+  const name = user.displayName || user.username;
+  if (collapsed) {
+    return (
+      <div className={cx("grid p-2", bordered && "border-t border-line")}>
+        <a
+          href={LOGOUT_PATH}
+          aria-label="Sign out"
+          title={`Sign out (${name})`}
+          className={buttonClasses("secondary", "icon")}
+        >
+          <LogOut aria-hidden="true" className="size-4" />
+        </a>
+      </div>
+    );
+  }
   return (
     <div className={cx("grid gap-3 p-3", bordered && "border-t border-line")}>
       <div className="min-w-0 px-1">
-        <p className="truncate font-medium">{user.displayName || user.username}</p>
+        <p className="truncate font-medium">{name}</p>
         <p className="truncate text-sm text-ink-muted">{user.email || user.username}</p>
         {user.isAdmin ? <Badge className="mt-1">Admin</Badge> : null}
       </div>
@@ -84,20 +116,51 @@ function AccountBlock({ bordered = true }: { bordered?: boolean }) {
   );
 }
 
-function Sidebar({ entries }: { entries: NavEntry[] }) {
+interface SidebarProps {
+  entries: NavEntry[];
+  collapsed: boolean;
+  onToggle: () => void;
+}
+
+function Sidebar({ entries, collapsed, onToggle }: SidebarProps) {
+  const toggleLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
   return (
-    <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-e border-line bg-surface md:flex">
-      <p className="px-5 py-5 text-lg font-semibold tracking-tight">{APP_NAME}</p>
+    <aside
+      className={cx(
+        "sticky top-0 hidden h-dvh shrink-0 flex-col border-e border-line bg-surface md:flex",
+        collapsed ? "w-16" : "w-64",
+      )}
+    >
+      <div
+        className={cx(
+          "flex items-center py-3",
+          collapsed ? "justify-center px-2" : "justify-between ps-5 pe-2",
+        )}
+      >
+        {collapsed ? null : (
+          <p className="truncate text-lg font-semibold tracking-tight">{APP_NAME}</p>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          onClick={onToggle}
+        >
+          <ToggleIcon aria-hidden="true" className="size-5" />
+        </Button>
+      </div>
       <nav aria-label="Main" className="flex-1 overflow-y-auto px-2">
         <ul className="grid gap-1">
           {entries.map((entry) => (
             <li key={entry.id}>
-              <SideLink entry={entry} />
+              <SideLink entry={entry} collapsed={collapsed} />
             </li>
           ))}
         </ul>
       </nav>
-      <AccountBlock />
+      <AccountBlock collapsed={collapsed} />
     </aside>
   );
 }
@@ -186,6 +249,11 @@ function useFocusMainOnNavigation(ref: RefObject<HTMLElement | null>): void {
 
 function ShellFrame({ entries, children }: { entries: NavEntry[]; children: ReactNode }) {
   const [wide, setWide] = useState(false);
+  const [collapsed, setCollapsed] = usePersistedState(
+    "ytw.sidebar-collapsed",
+    false,
+    (value): value is boolean => typeof value === "boolean",
+  );
   const mainRef = useRef<HTMLElement>(null);
   const navigation = useNavigation();
   useFocusMainOnNavigation(mainRef);
@@ -203,7 +271,7 @@ function ShellFrame({ entries, children }: { entries: NavEntry[]; children: Reac
       >
         Skip to content
       </a>
-      <Sidebar entries={entries} />
+      <Sidebar entries={entries} collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <OfflineBanner />
         {loading ? (
