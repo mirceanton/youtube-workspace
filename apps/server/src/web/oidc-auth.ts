@@ -128,6 +128,19 @@ function requiredString(claims: Record<string, unknown>, name: string): string |
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * What to log about a failed sign-in step. The class name alone is not enough (openid-client throws
+ * `ClientError` for most failures), so the library's error code goes with it. Never the message:
+ * some quote what the provider sent.
+ */
+function errorFields(error: unknown): { errorName: string; errorCode?: string } {
+  if (!(error instanceof Error)) return { errorName: "unknown" };
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string"
+    ? { errorName: error.name, errorCode: code }
+    : { errorName: error.name };
+}
+
 function includesAudience(value: unknown, clientId: string): boolean {
   return value === clientId || (Array.isArray(value) && value.includes(clientId));
 }
@@ -334,10 +347,7 @@ export function createOidcAuth(config: OidcConfig, pool: Pool, fetcher?: OidcFet
           return;
         }
       } catch (error) {
-        request.log.warn(
-          { errorName: error instanceof Error ? error.name : "unknown" },
-          "OIDC refresh failed",
-        );
+        request.log.warn(errorFields(error), "OIDC refresh failed");
         await discard();
         return;
       }
@@ -395,10 +405,7 @@ export function createOidcAuth(config: OidcConfig, pool: Pool, fetcher?: OidcFet
         });
         return reply.redirect(url.href, 302);
       } catch (error) {
-        request.log.warn(
-          { errorName: error instanceof Error ? error.name : "unknown" },
-          "OIDC discovery or authorization failed",
-        );
+        request.log.warn(errorFields(error), "OIDC discovery or authorization failed");
         return reply.code(503).send("Sign-in is temporarily unavailable.");
       }
     });
@@ -489,10 +496,7 @@ export function createOidcAuth(config: OidcConfig, pool: Pool, fetcher?: OidcFet
         });
         return reply.redirect(identity.returnTo, 303);
       } catch (error) {
-        request.log.warn(
-          { errorName: error instanceof Error ? error.name : "unknown" },
-          "OIDC callback failed",
-        );
+        request.log.warn(errorFields(error), "OIDC callback failed");
         return reply.code(401).send("Sign-in could not be completed. Please try again.");
       }
     });
