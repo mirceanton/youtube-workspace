@@ -124,7 +124,10 @@ describe("with OIDC", () => {
   it("answers 401 without a session and sends page requests to the login", async () => {
     expect((await app.inject({ url: "/api/me" })).statusCode).toBe(401);
     expect((await app.inject({ url: "/api/ideas" })).statusCode).toBe(401);
-    const page = await app.inject({ url: "/ideas?stage=inbox" });
+    const page = await app.inject({
+      url: "/ideas?stage=inbox",
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
     expect(page.statusCode).toBe(302);
     expect(page.headers.location).toBe("/auth/login?return_to=%2Fideas%3Fstage%3Dinbox");
     const forged = await app.inject({ url: "/api/me", headers: { cookie: "ytw_session=nope" } });

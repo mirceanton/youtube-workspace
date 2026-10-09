@@ -57,10 +57,19 @@ async function fileResponse(
 }
 
 /**
+ * Browsers fetch icons and manifests on their own (`/favicon.ico`, `/apple-touch-icon.png`) with
+ * no session and no `text/html` in `Accept`. Sending those to the login would start a login
+ * transaction each, and every one replaces the cookie of the sign-in the user is in the middle of.
+ */
+function wantsPage(request: FastifyRequest): boolean {
+  return request.headers.accept?.includes("text/html") === true;
+}
+
+/**
  * Everything no route matched: unknown API paths answer 401 or 404 as JSON. When the built web app
  * is available (`root`), its files are served publicly and every other path gets the app's
- * `index.html` (client-side routing) once the request has a session; without one the browser is
- * sent to the login first.
+ * `index.html` (client-side routing) once the request has a session; without one a page request is
+ * sent to the login first, and anything else is not found.
  */
 export function installSpaFallback(
   app: FastifyInstance,
@@ -84,6 +93,7 @@ export function installSpaFallback(
     if (path !== "/" && (await fileResponse(root, path, reply, request))) return reply;
     await loadSession(request, reply);
     if (request.auth === undefined) {
+      if (!wantsPage(request)) return reply.code(404).send({ error: "Not found." });
       const returnTo = encodeURIComponent(
         `${path}${new URL(request.url, "http://web.local").search}`,
       );
