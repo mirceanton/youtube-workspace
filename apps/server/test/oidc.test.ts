@@ -42,13 +42,12 @@ function providerFetch(jwks: { keys: JWK[] }): typeof fetch {
   };
 }
 
-function accessToken(claims: Record<string, unknown>): Promise<string> {
-  return new SignJWT({ typ: "Bearer", ...claims })
+function accessToken(claims: Record<string, unknown>, subject: string | null = "alice") {
+  const jwt = new SignJWT({ typ: "Bearer", ...claims })
     .setProtectedHeader({ alg: "RS256", kid: "test-key" })
     .setIssuer(ISSUER)
-    .setSubject("alice")
-    .setExpirationTime("5m")
-    .sign(privateKey);
+    .setExpirationTime("5m");
+  return (subject === null ? jwt : jwt.setSubject(subject)).sign(privateKey);
 }
 
 beforeAll(async () => {
@@ -77,11 +76,23 @@ describe("validating the access token", () => {
 
   it("refuses a token issued to another client", async () => {
     const token = await accessToken({ aud: "account", azp: "another-client" });
-    await expect(client.validateAccessToken(token, "alice")).rejects.toThrow(/client/);
+    await expect(client.validateAccessToken(token, "alice")).rejects.toMatchObject({
+      code: "access_token_wrong_client",
+    });
   });
 
   it("refuses a token for another subject", async () => {
     const token = await accessToken({ aud: "account", azp: CLIENT_ID });
-    await expect(client.validateAccessToken(token, "mallory")).rejects.toThrow(/subject/);
+    await expect(client.validateAccessToken(token, "mallory")).rejects.toMatchObject({
+      code: "access_token_subject_mismatch",
+    });
+  });
+
+  it("names the missing subject of a Keycloak client without the `basic` scope", async () => {
+    const token = await accessToken({ aud: "account", azp: CLIENT_ID }, null);
+    await expect(client.validateAccessToken(token, "alice")).rejects.toMatchObject({
+      name: "OidcCheckError",
+      code: "access_token_subject_missing",
+    });
   });
 });

@@ -15,6 +15,21 @@ const ACCESS_TOKEN_ALGORITHMS = [
   "EdDSA",
 ] as const;
 
+/**
+ * A sign-in check of this app failed. `code` names the check, so a log line can say which one
+ * rejected the token without quoting anything the provider sent.
+ */
+export class OidcCheckError extends Error {
+  override name = "OidcCheckError";
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** openid-client adapter; the optional Fetch implementation keeps provider tests in-process. */
 export class OidcClient {
   private configuration: Promise<oidc.Configuration> | undefined;
@@ -78,13 +93,16 @@ export class OidcClient {
     const configuration = await this.getConfiguration();
     const metadata = configuration.serverMetadata();
     if (typeof metadata.jwks_uri !== "string" || metadata.jwks_uri.length === 0) {
-      throw new Error("OIDC issuer metadata has no JWKS endpoint");
+      throw new OidcCheckError(
+        "jwks_endpoint_missing",
+        "OIDC issuer metadata has no JWKS endpoint",
+      );
     }
 
     const response = await this.fetcher(metadata.jwks_uri, {
       headers: { accept: "application/jwk-set+json, application/json" },
     });
-    if (!response.ok) throw new Error("OIDC JWKS request failed");
+    if (!response.ok) throw new OidcCheckError("jwks_request_failed", "OIDC JWKS request failed");
     const document: unknown = await response.json();
     if (
       typeof document !== "object" ||
@@ -92,7 +110,7 @@ export class OidcClient {
       !Array.isArray((document as { keys?: unknown }).keys) ||
       (document as { keys: unknown[] }).keys.length === 0
     ) {
-      throw new Error("OIDC JWKS response is invalid");
+      throw new OidcCheckError("jwks_response_invalid", "OIDC JWKS response is invalid");
     }
 
     // No `audience` option: the audience of an access token is the resource it is for, which the
@@ -102,11 +120,30 @@ export class OidcClient {
       algorithms: [...ACCESS_TOKEN_ALGORITHMS],
     });
     if (!this.issuedToClient(payload)) {
-      throw new Error("OIDC access token was not issued to this client");
+      throw new OidcCheckError(
+        "access_token_wrong_client",
+        "OIDC access token was not issued to this client",
+      );
     }
-    if (payload.sub !== expectedSubject) throw new Error("OIDC access token subject mismatch");
+    // Keycloak 25+ adds `sub` to access tokens through the `basic` client scope: a client whose
+    // scope list leaves it out gets tokens without one.
+    if (payload.sub === undefined) {
+      throw new OidcCheckError(
+        "access_token_subject_missing",
+        "OIDC access token has no subject (Keycloak: give the client the `basic` scope)",
+      );
+    }
+    if (payload.sub !== expectedSubject) {
+      throw new OidcCheckError(
+        "access_token_subject_mismatch",
+        "OIDC access token subject mismatch",
+      );
+    }
     if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) {
-      throw new Error("OIDC access token has no valid expiry");
+      throw new OidcCheckError(
+        "access_token_expiry_missing",
+        "OIDC access token has no valid expiry",
+      );
     }
     return payload.exp * 1000;
   }
