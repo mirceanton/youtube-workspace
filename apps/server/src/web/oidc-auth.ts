@@ -22,7 +22,7 @@ import * as oidc from "openid-client";
 import type { Pool } from "pg";
 import type { OidcConfig } from "../env.js";
 import { csrfToken } from "./csrf.js";
-import { OidcClient, type OidcFetch } from "./oidc.js";
+import { OidcCheckError, OidcClient, type OidcFetch } from "./oidc.js";
 import {
   decryptIdTokenHint,
   decryptLoginTransaction,
@@ -265,7 +265,10 @@ export function createOidcAuth(config: OidcConfig, pool: Pool, fetcher?: OidcFet
       const refreshedClaims = response.claims();
       const idToken = typeof response.id_token === "string" ? response.id_token : null;
       if (idToken !== null && refreshedClaims === undefined) {
-        throw new Error("OIDC refresh ID token could not be verified");
+        throw new OidcCheckError(
+          "refresh_id_token_unverified",
+          "OIDC refresh ID token could not be verified",
+        );
       }
       // A provider that sends a nonce on refresh must send the one of the original login.
       if (
@@ -277,7 +280,10 @@ export function createOidcAuth(config: OidcConfig, pool: Pool, fetcher?: OidcFet
           refreshedClaims.exp * 1000 <= Date.now() ||
           (Object.hasOwn(refreshedClaims, "nonce") && refreshedClaims.nonce !== current.nonce))
       ) {
-        throw new Error("OIDC refresh changed the authenticated identity or nonce");
+        throw new OidcCheckError(
+          "refresh_identity_changed",
+          "OIDC refresh changed the authenticated identity or nonce",
+        );
       }
 
       const profile = await client.fetchUserInfo(response.access_token, current.subject);

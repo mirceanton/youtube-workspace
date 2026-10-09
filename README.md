@@ -101,6 +101,12 @@ Development only: the Vite dev server reads `WEB_UI_PORT` (default `5173`) and `
 first user to sign in becomes admin; everyone else starts with `none` everywhere until an admin sets
 their levels in **Settings**. Setting only some of the OIDC variables is a startup error.
 
+The provider must issue signed JWT access tokens that carry `sub` and name the client (`azp`,
+`client_id` or `aud`). With **Keycloak** (25 or later) `sub` comes from the `basic` client scope: a
+client created with an explicit list of default scopes that leaves `basic` out gets access tokens
+without it, and sign-in fails with `errorCode: "access_token_subject_missing"` in the log. Add
+`basic` to the client's default scopes.
+
 **Single-user mode.** With no `OIDC_*` variables, every web request is the built-in local owner, an
 admin with full access (a real user, `owner`, so the audit log still names who acted). The server
 logs a warning at startup, and `apps/server/.env.example` makes development listen on the
