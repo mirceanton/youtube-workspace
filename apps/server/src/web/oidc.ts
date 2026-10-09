@@ -1,5 +1,5 @@
 import * as oidc from "openid-client";
-import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
+import { createLocalJWKSet, jwtVerify, type JSONWebKeySet, type JWTPayload } from "jose";
 import type { OidcConfig } from "../env.js";
 
 const ACCESS_TOKEN_ALGORITHMS = [
@@ -95,16 +95,32 @@ export class OidcClient {
       throw new Error("OIDC JWKS response is invalid");
     }
 
+    // No `audience` option: the audience of an access token is the resource it is for, which the
+    // provider picks (Keycloak says `account`), not necessarily this client.
     const { payload } = await jwtVerify(accessToken, createLocalJWKSet(document as JSONWebKeySet), {
       issuer: metadata.issuer,
-      audience: this.config.clientId,
       algorithms: [...ACCESS_TOKEN_ALGORITHMS],
     });
+    if (!this.issuedToClient(payload)) {
+      throw new Error("OIDC access token was not issued to this client");
+    }
     if (payload.sub !== expectedSubject) throw new Error("OIDC access token subject mismatch");
     if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) {
       throw new Error("OIDC access token has no valid expiry");
     }
     return payload.exp * 1000;
+  }
+
+  /** The client a token was issued to: `azp` (Keycloak), `client_id` (RFC 9068) or the audience. */
+  private issuedToClient(payload: JWTPayload): boolean {
+    const clientId = this.config.clientId;
+    const audience = payload.aud;
+    return (
+      payload.azp === clientId ||
+      payload.client_id === clientId ||
+      audience === clientId ||
+      (Array.isArray(audience) && audience.includes(clientId))
+    );
   }
 
   async endSessionUrl(idTokenHint: string | null): Promise<URL | undefined> {
