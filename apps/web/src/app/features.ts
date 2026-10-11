@@ -21,6 +21,12 @@ export interface FeatureNav {
   order: number;
   /** Where the item links to. Default `/<id>`; must stay inside `/<id>`. */
   to?: string;
+  /**
+   * Show the item at the bottom of the sidebar, above the account block, for screens that are not
+   * part of the daily workflow (activity, settings). `order` still sorts within each group. The
+   * phone navigation ignores it.
+   */
+  footer?: boolean;
 }
 
 export interface FeatureDefinition {
@@ -171,6 +177,8 @@ export interface NavEntry {
   label: string;
   icon: IconComponent;
   to: string;
+  /** Sidebar footer group (see `FeatureNav.footer`). */
+  footer: boolean;
 }
 
 /**
@@ -189,5 +197,6 @@ export function navEntriesFor(features: readonly FeatureDefinition[], me: MeResp
       label: feature.nav.label,
       icon: feature.nav.icon,
       to: feature.nav.to ?? `/${feature.id}`,
+      footer: feature.nav.footer ?? false,
     }));
 }

@@ -37,23 +37,11 @@ export const dashboardExperimentSchema = z.object({
   variants: z.array(z.object({ label: z.string(), is_control: z.boolean() })),
 });
 
-export const dashboardEventSchema = z.object({
-  id: z.uuid(),
-  created_at: timestampSchema,
-  actor: z.string(),
-  actor_type: z.enum(["human", "agent"]),
-  action: z.string(),
-  entity_type: z.string().nullable(),
-  entity_id: z.uuid().nullable(),
-  payload: z.record(z.string(), z.unknown()),
-});
-
 export const dashboardResponseSchema = z.object({
   ideas: z
     .object({ total: z.number().int().nonnegative(), by_stage: dashboardIdeaCountsSchema })
     .nullable(),
   running_experiments: z.array(dashboardExperimentSchema).nullable(),
   latest_videos: z.array(dashboardVideoSchema).nullable(),
-  recent_activity: z.array(dashboardEventSchema).nullable(),
 });
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>;

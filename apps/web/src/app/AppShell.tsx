@@ -125,6 +125,7 @@ interface SidebarProps {
 function Sidebar({ entries, collapsed, onToggle }: SidebarProps) {
   const toggleLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
   const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
+  const footerEntries = entries.filter((entry) => entry.footer);
   return (
     <aside
       className={cx(
@@ -153,13 +154,26 @@ function Sidebar({ entries, collapsed, onToggle }: SidebarProps) {
       </div>
       <nav aria-label="Main" className="flex-1 overflow-y-auto px-2">
         <ul className="grid gap-1">
-          {entries.map((entry) => (
-            <li key={entry.id}>
-              <SideLink entry={entry} collapsed={collapsed} />
-            </li>
-          ))}
+          {entries
+            .filter((entry) => !entry.footer)
+            .map((entry) => (
+              <li key={entry.id}>
+                <SideLink entry={entry} collapsed={collapsed} />
+              </li>
+            ))}
         </ul>
       </nav>
+      {footerEntries.length > 0 ? (
+        <nav aria-label="Secondary" className="px-2 pb-2">
+          <ul className="grid gap-1">
+            {footerEntries.map((entry) => (
+              <li key={entry.id}>
+                <SideLink entry={entry} collapsed={collapsed} />
+              </li>
+            ))}
+          </ul>
+        </nav>
+      ) : null}
       <AccountBlock collapsed={collapsed} />
     </aside>
   );

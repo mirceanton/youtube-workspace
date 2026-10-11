@@ -39,6 +39,15 @@ describe("feature access", () => {
     expect(reader).not.toContain("scripts");
   });
 
+  it("keeps activity and settings in the sidebar footer, apart from the daily screens", () => {
+    const entries = navEntriesFor(features, session({}, true));
+    expect(entries.filter((entry) => entry.footer).map((entry) => entry.id)).toEqual([
+      "activity",
+      "settings",
+    ]);
+    expect(entries.find((entry) => entry.id === "ideas")?.footer).toBe(false);
+  });
+
   it("gives an admin every screen", () => {
     expect(navIds(session({}, true))).toEqual(features.filter((f) => f.nav).map((f) => f.id));
   });
