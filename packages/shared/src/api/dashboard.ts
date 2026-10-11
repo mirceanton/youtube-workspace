@@ -3,6 +3,9 @@ import { EXPERIMENT_TYPES } from "../constants.js";
 
 export const DASHBOARD_PATH = "/api/dashboard";
 
+/** How many of the latest published videos the dashboard response carries at most. */
+export const DASHBOARD_LATEST_VIDEOS = 10;
+
 const timestampSchema = z.iso.datetime({ offset: true });
 const decimalSchema = z.string().nullable();
 
