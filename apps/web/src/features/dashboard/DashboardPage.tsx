@@ -34,7 +34,7 @@ export function Component() {
     <div className="space-y-4">
       <PageHeader
         title="Dashboard"
-        description="A current view of the channel pipeline, experiments, videos and recent work."
+        description="A current view of the channel pipeline, experiments and videos."
       />
       {query.isPending ? (
         <LoadingState label="Loading dashboard" lines={6} />
@@ -194,57 +194,6 @@ export function Component() {
                         }
                       />
                     </dl>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section
-            aria-labelledby="activity-title"
-            className="rounded-xl border border-line bg-surface p-4 min-w-0"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 id="activity-title" className="text-lg font-semibold">
-                  Recent activity
-                </h2>
-                <p className="mt-1 text-sm text-ink-muted">
-                  The latest 20 human and agent actions.
-                </p>
-              </div>
-              {query.data.recent_activity ? (
-                <Link to="/activity" className="text-sm font-medium text-link hover:underline">
-                  View all
-                </Link>
-              ) : null}
-            </div>
-            {query.data.recent_activity === null ? (
-              <p className="mt-4 text-sm text-ink-muted">
-                Read access to activity is required for this feed.
-              </p>
-            ) : query.data.recent_activity.length === 0 ? (
-              <EmptyState
-                compact
-                title="No recent activity"
-                description="Workspace changes will appear here."
-              />
-            ) : (
-              <ul className="mt-3 divide-y divide-line">
-                {query.data.recent_activity.map((event) => (
-                  <li key={event.id} className="py-3 first:pt-0 last:pb-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{event.actor}</span>
-                      <Badge tone={event.actor_type === "agent" ? "info" : "neutral"}>
-                        {event.actor_type === "agent" ? "Agent" : "Human"}
-                      </Badge>
-                      <span className="text-sm text-ink-muted">{event.action}</span>
-                    </div>
-                    <p className="mt-1 text-sm text-ink-muted">
-                      {event.entity_type ?? "Workspace"}
-                      {event.entity_id ? ` · ${event.entity_id.slice(0, 8)}` : ""}
-                      {` · ${formatRelativeTime(event.created_at)}`}
-                    </p>
                   </li>
                 ))}
               </ul>

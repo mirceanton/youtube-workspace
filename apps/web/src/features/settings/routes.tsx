@@ -4,7 +4,7 @@ import { defineFeature } from "@/app/features.ts";
 export default defineFeature({
   id: "settings",
   requires: "authenticated",
-  nav: { label: "Settings", icon: Settings, order: 90 },
+  nav: { label: "Settings", icon: Settings, order: 90, footer: true },
   routes: [
     { path: "settings", lazy: () => import("./SettingsPage.tsx") },
     { path: "settings/tokens/:tokenId", lazy: () => import("./TokenDetailPage.tsx") },

@@ -1,6 +1,5 @@
 import {
   countIdeasByStage,
-  listEvents,
   listExperimentResults,
   listVideoPerformance,
   toClientError,
@@ -26,13 +25,12 @@ export default async function dashboardRoutes(server: FastifyInstance): Promise<
     if (!auth) return reply.code(401).send({ error: "Authentication required." });
 
     try {
-      const [ideas, experiments, videoRecords, activity] = await Promise.all([
+      const [ideas, experiments, videoRecords] = await Promise.all([
         canRead(auth, "ideas") ? countIdeasByStage(app.db.pool) : null,
         canRead(auth, "experiments")
           ? listExperimentResults(app.db.pool, { statuses: ["running"], limit: 20 })
           : null,
         canRead(auth, "videos") ? listVideoPerformance(app.db.pool, { limit: 1000 }) : null,
-        canRead(auth, "activity") ? listEvents(app.db.pool, { limit: 20 }) : null,
       ]);
 
       const response = {
@@ -75,19 +73,6 @@ export default async function dashboardRoutes(server: FastifyInstance): Promise<
                   ctr: video.latest?.ctr ?? null,
                   avg_view_duration_s: video.latest?.avgViewDurationS ?? null,
                 })),
-        recent_activity:
-          activity === null
-            ? null
-            : activity.events.map((event) => ({
-                id: event.id,
-                created_at: event.createdAt.toISOString(),
-                actor: event.actor,
-                actor_type: event.actorType,
-                action: event.action,
-                entity_type: event.entityType,
-                entity_id: event.entityId,
-                payload: event.payload,
-              })),
       };
       return reply.send(dashboardResponseSchema.parse(response));
     } catch (error) {
