@@ -4,7 +4,11 @@ import {
   listVideoPerformance,
   toClientError,
 } from "@ytw/db";
-import { DASHBOARD_PATH, dashboardResponseSchema } from "@ytw/shared/api/dashboard";
+import {
+  DASHBOARD_LATEST_VIDEOS,
+  DASHBOARD_PATH,
+  dashboardResponseSchema,
+} from "@ytw/shared/api/dashboard";
 import type { FastifyInstance } from "fastify";
 import type { WebAuth } from "../../types.js";
 
@@ -62,7 +66,7 @@ export default async function dashboardRoutes(server: FastifyInstance): Promise<
             ? null
             : videoRecords
                 .filter((video) => video.publishedAt !== null && video.publishedAt <= new Date())
-                .slice(0, 10)
+                .slice(0, DASHBOARD_LATEST_VIDEOS)
                 .map((video) => ({
                   id: video.id,
                   title: video.title,

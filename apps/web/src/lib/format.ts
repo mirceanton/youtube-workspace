@@ -54,3 +54,17 @@ export function formatCompactNumber(value: number): string {
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat("en", { maximumFractionDigits: 4 }).format(value);
 }
+
+/** 42 -> "42s", 222 -> "3m 42s", 3725 -> "1h 02m"; rounds to the whole second first. */
+export function formatDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/** 4.5234 -> "4.52%", 5 -> "5%": a percentage that is already 0 to 100, at most two decimals. */
+export function formatPercent(value: number): string {
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(value)}%`;
+}
