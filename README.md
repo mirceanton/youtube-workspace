@@ -270,6 +270,7 @@ object, and only when the server's database role is not a superuser.
 | `list_videos` | read `videos` | Videos with headline metrics against channel medians |
 | `get_video_performance` | read `videos` | Detailed metrics for one video |
 | `create_experiment` | write `experiments` | An experiment with its variants (exactly one control) |
+| `update_experiment_status` | write `experiments` | Start a planned experiment (`running`) or cancel it (`cancelled`) |
 | `record_variant_stats` | write `experiments` | Impressions and CTR for a variant |
 | `conclude_experiment` | write `experiments` | Pick the winner and record the conclusions |
 | `list_experiments` | read `experiments` | Experiments, filterable by video or status |
