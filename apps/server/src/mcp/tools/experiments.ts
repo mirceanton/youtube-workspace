@@ -1,10 +1,28 @@
 /**
  * MCP write tools for experiments.
  */
-import { concludeExperiment, createExperiment, getExperiment, recordVariantStats } from "@ytw/db";
+import {
+  concludeExperiment,
+  createExperiment,
+  getExperiment,
+  recordVariantStats,
+  updateExperimentStatus,
+  type Queryable,
+} from "@ytw/db";
 import { EXPERIMENT_TYPES } from "@ytw/shared/constants";
 import { z } from "zod";
 import { defineTool, type ToolRegistry } from "../registry.js";
+
+/**
+ * The version the caller passed, or the stored one. A missing experiment falls through as version 1
+ * so the database function raises the not_found error.
+ */
+async function resolveVersion(db: Queryable, id: string, given: number | undefined) {
+  if (given !== undefined) {
+    return given;
+  }
+  return (await getExperiment(db, id))?.version ?? 1;
+}
 
 export const createExperimentTool = defineTool({
   name: "create_experiment",
@@ -50,6 +68,34 @@ export const createExperimentTool = defineTool({
           content: v.content,
           isControl: v.is_control ?? false,
         })),
+      }),
+    );
+  },
+});
+
+export const updateExperimentStatusTool = defineTool({
+  name: "update_experiment_status",
+  description:
+    "Starts a planned experiment (status running, which sets its start time) or cancels a planned or running one (status cancelled, final). Use conclude_experiment to finish a running experiment with a winner. Requires Write permission on experiments.",
+  requires: { resource: "experiments", level: "write" },
+  input: z.object({
+    id: z.string().uuid().describe("Experiment UUID"),
+    new_status: z
+      .enum(["running", "cancelled"])
+      .describe("running (from planned) or cancelled (from planned or running)"),
+    expected_version: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Expected experiment version for optimistic concurrency check"),
+  }),
+  async handler(input, context) {
+    return context.withTx(async (tx) =>
+      updateExperimentStatus(tx, {
+        id: input.id,
+        expectedVersion: await resolveVersion(tx, input.id, input.expected_version),
+        newStatus: input.new_status,
       }),
     );
   },
@@ -106,28 +152,20 @@ export const concludeExperimentTool = defineTool({
       .describe("Expected experiment version for optimistic concurrency check"),
   }),
   async handler(input, context) {
-    return context.withTx(async (tx) => {
-      let expectedVersion = input.expected_version;
-      if (expectedVersion === undefined) {
-        const exp = await getExperiment(tx, input.id);
-        if (exp) {
-          expectedVersion = exp.version;
-        } else {
-          expectedVersion = 1;
-        }
-      }
-      return concludeExperiment(tx, {
+    return context.withTx(async (tx) =>
+      concludeExperiment(tx, {
         id: input.id,
-        expectedVersion,
+        expectedVersion: await resolveVersion(tx, input.id, input.expected_version),
         winnerVariantId: input.winner_variant_id ?? null,
         conclusion: input.conclusion,
-      });
-    });
+      }),
+    );
   },
 });
 
 export function register(registry: ToolRegistry): void {
   registry.register(createExperimentTool);
+  registry.register(updateExperimentStatusTool);
   registry.register(recordVariantStatsTool);
   registry.register(concludeExperimentTool);
 }
