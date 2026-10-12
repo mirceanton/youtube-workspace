@@ -2,7 +2,7 @@
 # Dockerfile's base image.
 [tools]
 node = "24.21.0"
-"aqua:pnpm/pnpm" = "12.11.1"
+"aqua:pnpm/pnpm" = "12.11.2"
 
 # CI Tools
 "aqua:rhysd/actionlint" = "1"
