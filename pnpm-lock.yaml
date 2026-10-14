@@ -166,7 +166,7 @@ catalogs:
   default:
     fastify:
       specifier: ^5.12.5
-      version: 5.12.5
+      version: 5.12.6
     zod:
       specifier: ^4.6.5
       version: 4.6.7
@@ -213,7 +213,7 @@ importers:
         version: link:../../packages/shared
       fastify:
         specifier: 'catalog:'
-        version: 5.12.5
+        version: 5.12.6
       jose:
         specifier: ^6.2.12
         version: 6.2.12
@@ -1442,8 +1442,8 @@ packages:
   fast-uri@4.2.1:
     resolution: {integrity: sha512-TmHQgewjHtMq1E5QKA0tOE0yeYGQs25KZC/ziJpubRtWI15W92e6vPFydWOeZBVROSHBYw/QhD9d5OefdD6LDg==}
 
-  fastify@5.12.5:
-    resolution: {integrity: sha512-OB2k1dlxs5/NAABqeKV2FUHkSD2BbENsCak8yULVcymn3fHIPDVa9TI3SDnJSWYSllZmSYuZXy2gTnsT+Sut1A==}
+  fastify@5.12.6:
+    resolution: {integrity: sha512-XeErl1DDsxdbhE9RPRJ05iNnfMhHRHHewVNNAJXaGTOaCY4wHb6rEizphhgzBq5YQe4JyqQWPpGd+hLh2PXXJA==}
 
   fastq@1.20.3:
     resolution: {integrity: sha512-XKv5nnLs6nLF71NgiKJLIZFLkPyIEuOselLG7ujZnGrRfQK8HpvY+WqKhAJUAdLomwVHErVS4LfxFlPq0/FTAw==}
@@ -3401,7 +3401,7 @@ snapshots:
 
   fast-uri@4.2.1: {}
 
-  fastify@5.12.5:
+  fastify@5.12.6:
     dependencies:
       '@fastify/ajv-compiler': 4.0.6
       '@fastify/error': 4.2.0
