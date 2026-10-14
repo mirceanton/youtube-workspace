@@ -5,7 +5,7 @@
 # Needs DATABASE_URL at run time (see README.md); migrations run when the server boots.
 
 # Keep the Node version in step with .mise.toml (Renovate bumps both).
-FROM node:24.21.0-slim AS node
+FROM node:24.22.0-slim AS node
 
 # ---------------------------------------------------------------------------------------------
 # build: install all dependencies, compile the packages and bundle the web UI
