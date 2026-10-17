@@ -1,7 +1,7 @@
 # Keep the pnpm pin equal to `packageManager` in package.json, and the Node pin equal to the
 # Dockerfile's base image.
 [tools]
-node = "24.21.0"
+node = "24.22.0"
 "aqua:pnpm/pnpm" = "12.13.0"
 
 # CI Tools
